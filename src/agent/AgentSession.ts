@@ -96,6 +96,8 @@ export class AgentSession extends EventEmitter {
   private readonly config: ProjectConfig;
   private queue = new InputQueue();
   private query: Query | null = null;
+  /** Aborts the current SDK subprocess. Recreated on every launch. */
+  private abortController: AbortController | null = null;
 
   private status: AgentStatus = 'booting';
   private question?: string;
@@ -233,13 +235,21 @@ export class AgentSession extends EventEmitter {
     this.setStatus('working');
   }
 
-  /** Interrupt and end the session. */
+  /**
+   * Fully stop the session: interrupt the current turn, then abort the SDK subprocess.
+   * interrupt() alone only ends the current turn but leaves the CLI subprocess running;
+   * aborting the controller tears the process down (the SDK sends SIGTERM/SIGKILL) so the
+   * agent is actually stopped, not just paused. A later retry()/send() relaunches cleanly.
+   */
   async stop(): Promise<void> {
     try {
       await this.query?.interrupt();
     } catch {
       /* already ending */
     }
+    this.abortController?.abort();
+    this.abortController = null;
+    this.query = null;
     this.queue.close();
     if (this.status !== 'done' && this.status !== 'error') this.setStatus('stopped');
   }
@@ -269,7 +279,11 @@ export class AgentSession extends EventEmitter {
 
   private buildOptions(resume?: string): Options {
     const readOnly = this.template === 'question';
+    // A fresh controller per launch. stop() aborts it to tear down the SDK subprocess;
+    // a later retry()/send() builds new options with a new controller.
+    this.abortController = new AbortController();
     const opts: Options = {
+      abortController: this.abortController,
       // No-worktree templates (question/merge) run in the project's base repo. For
       // worktree templates, ensureWorktree() runs before every launch and guarantees the
       // path exists (recreating it if needed), so the SDK never spawns in a dead cwd.
@@ -363,6 +377,10 @@ export class AgentSession extends EventEmitter {
         this.handle(msg);
       }
     } catch (err) {
+      // A deliberate stop() aborts the SDK subprocess, which surfaces here as an
+      // AbortError. That's expected teardown, not a failure — stop() has already set the
+      // 'stopped' status and closed the queue, so don't log it as an error or clobber it.
+      if (this.status === 'stopped') return;
       this.addLog('error', oneLine(`session error: ${(err as Error).message}`));
       this.setStatus('error');
       // The SDK session is gone; close our side so the input queue and its async iterator
