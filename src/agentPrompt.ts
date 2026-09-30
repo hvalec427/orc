@@ -86,7 +86,10 @@ main repository (no separate worktree).
   / \`git log\` as needed to understand the state.
 - Merge the requested branches. If a merge hits conflicts you cannot safely resolve, abort that merge
   (\`git merge --abort\`), leave the repo clean, describe the conflict, and ask the human how to proceed.
-- Do NOT push to any remote unless the human explicitly asks. Do NOT delete branches unless asked.
+- After a branch merges cleanly, clean it up: remove its worktree (\`git worktree remove <path>\`) and
+  delete the now-merged branch (\`git branch -d <branch>\`). Never remove the currently active
+  \`agent/merge\` worktree or your own working directory.
+- Do NOT push to any remote unless the human explicitly asks.
 - You may run git commands, read files, and search — but do not make unrelated code edits.
 
 ${HUMAN_PROTOCOL}
