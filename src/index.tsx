@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 import { render } from 'ink';
 import { createElement } from 'react';
-import { loadConfig, DEFAULT_CONFIG_PATH, type CliFlags } from './config.js';
+import { loadConfig, resolveConfigPath, DEFAULT_CONFIG_PATH, type CliFlags } from './config.js';
 import { AgentManager } from './agent/AgentManager.js';
 import { App } from './ui/App.js';
+import { SetupApp } from './ui/SetupApp.js';
 
-function parseArgs(argv: string[]): CliFlags {
+type Command = 'run' | 'setup';
+
+function parseArgs(argv: string[]): { command: Command; flags: CliFlags } {
   const flags: CliFlags = {};
+  let command: Command = 'run';
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--config') flags.config = argv[++i];
+    if (a === 'setup') command = 'setup';
+    else if (a === '--config') flags.config = argv[++i];
     else if (a === '--model') flags.model = argv[++i];
     else if (a === '--no-maestro') flags.noMaestro = true;
     else if (a === '-h' || a === '--help') {
@@ -17,7 +22,7 @@ function parseArgs(argv: string[]): CliFlags {
       process.exit(0);
     }
   }
-  return flags;
+  return { command, flags };
 }
 
 function printHelp(): void {
@@ -25,14 +30,19 @@ function printHelp(): void {
     [
       'orc — TUI orchestrator for parallel Claude Code mobile agents',
       '',
-      'Usage: orc [--config <path>] [--model <id>] [--no-maestro]',
+      'Usage: orc [command] [--config <path>] [--model <id>] [--no-maestro]',
       '',
+      'Commands:',
+      '  (default)        Launch the orchestrator TUI',
+      '  setup            Prepare the config and install per-project CLAUDE.md',
+      '',
+      'Options:',
       `  --config <path>  Central config file (default: ${DEFAULT_CONFIG_PATH})`,
       '  --model <id>     Override the model for all agents',
       '  --no-maestro     Do not attach the Maestro MCP server',
       '',
-      'The config lists your projects (nice name + repo path). Pick a project when',
-      'starting each agent. See examples/config.json.',
+      'The config lists your projects (nice name + repo path). Run `orc setup` to add',
+      'projects and install CLAUDE.md, then pick a project when starting each agent.',
       '',
     ].join('\n'),
   );
@@ -64,9 +74,20 @@ for (const sig of ['SIGTERM', 'SIGHUP'] as const) {
 }
 
 async function main(): Promise<void> {
+  const { command, flags } = parseArgs(process.argv.slice(2));
+
+  if (command === 'setup') {
+    // Setup tolerates a missing config (it can create one), so it does not go through loadConfig.
+    enterAltScreen();
+    const app = render(createElement(SetupApp, { configPath: resolveConfigPath(flags) }));
+    await app.waitUntilExit();
+    leaveAltScreen();
+    return;
+  }
+
   let config;
   try {
-    config = loadConfig(parseArgs(process.argv.slice(2)));
+    config = loadConfig(flags);
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`);
     process.exit(1);

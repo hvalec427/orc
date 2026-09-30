@@ -7,9 +7,8 @@ import { AgentView } from './AgentView.js';
 import { InputBar } from './InputBar.js';
 import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
-import { ProjectsView } from './ProjectsView.js';
 
-type Mode = 'list' | 'new' | 'input' | 'projects';
+type Mode = 'list' | 'new' | 'input';
 
 export function App({ manager, config }: { manager: AgentManager; config: OrcConfig }) {
   const { exit } = useApp();
@@ -102,10 +101,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         setMode('new');
         return;
       }
-      if (input === 'p') {
-        setMode('projects');
-        return;
-      }
       if (manager.list().length === 0) return;
 
       if (key.downArrow || input === 'j' || input === 'l' || key.tab) select(selectedIndex + 1);
@@ -128,10 +123,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     },
     { isActive: mode === 'list' && !approvalPending },
   );
-
-  if (mode === 'projects') {
-    return <ProjectsView projects={manager.projects()} onExit={() => setMode('list')} />;
-  }
 
   if (mode === 'new') {
     return (
@@ -205,7 +196,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new p:projects ↑↓/hjkl:switch J/K:scroll 1-9:jump w:waiting i:answer r:resume x:stop d:remove q:quit
+        n:new ↑↓/hjkl:switch J/K:scroll 1-9:jump w:waiting i:answer r:resume x:stop d:remove q:quit
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>

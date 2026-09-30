@@ -1,8 +1,8 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { resolve, join, isAbsolute } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { resolve, join, isAbsolute, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import type { OrcConfig, PortRange, ProjectConfig } from './types.js';
+import type { OrcConfig, PortRange, ProjectConfig, ProjectType } from './types.js';
 
 const MaestroSchema = z.object({
   command: z.string(),
@@ -82,13 +82,13 @@ export const SAMPLE_CONFIG = `{
 }`;
 
 /** Collapse the home dir back to `~` for friendlier messages. */
-function displayPath(p: string): string {
+export function displayPath(p: string): string {
   const home = homedir();
   return p === home ? '~' : p.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
 }
 
 /** Expand a leading `~` and resolve to an absolute path. */
-function expandPath(p: string): string {
+export function expandPath(p: string): string {
   if (p === '~') return homedir();
   if (p.startsWith('~/')) return join(homedir(), p.slice(2));
   return isAbsolute(p) ? p : resolve(process.cwd(), p);
@@ -139,4 +139,55 @@ export function loadConfig(flags: CliFlags): OrcConfig {
   }
 
   return { projects };
+}
+
+// --- Raw config editing (used by `orc setup`) ---
+//
+// The setup wizard edits ~/.orc/config.json directly. Unlike loadConfig it must tolerate a
+// missing file and must never drop fields it doesn't understand, so it round-trips the parsed
+// JSON object instead of reconstructing it from the resolved shape.
+
+/** A single project entry as written in config.json (the raw, unresolved form). */
+export interface RawProject {
+  name: string;
+  path: string;
+  type?: ProjectType;
+  [key: string]: unknown;
+}
+
+/** The config.json document as-is; extra keys are preserved on read/write. */
+export interface RawConfig {
+  projects: RawProject[];
+  [key: string]: unknown;
+}
+
+/** Resolve the config path from flags (defaults to ~/.orc/config.json). */
+export function resolveConfigPath(flags: CliFlags): string {
+  return flags.config ? expandPath(flags.config) : DEFAULT_CONFIG_PATH;
+}
+
+/**
+ * Read config.json for editing. Returns an empty document (`{ projects: [] }`) if the file does
+ * not exist yet so setup can create it. Throws only when the file exists but is unreadable/invalid.
+ */
+export function readRawConfig(configPath: string): RawConfig {
+  if (!existsSync(configPath)) return { projects: [] };
+  let doc: unknown;
+  try {
+    doc = JSON.parse(readFileSync(configPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`Invalid JSON at ${displayPath(configPath)}: ${(err as Error).message}`);
+  }
+  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
+    throw new Error(`Config at ${displayPath(configPath)} is not a JSON object`);
+  }
+  const obj = doc as Record<string, unknown>;
+  const projects = Array.isArray(obj.projects) ? (obj.projects as RawProject[]) : [];
+  return { ...obj, projects };
+}
+
+/** Write config.json, creating the parent directory if needed. Pretty-printed with a trailing newline. */
+export function writeRawConfig(configPath: string, config: RawConfig): void {
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 }
