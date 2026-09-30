@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
+import { MultilineInput } from './MultilineInput.js';
 import type { ProjectConfig } from '../types.js';
 
 type Step = 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
@@ -137,23 +138,27 @@ export function NewAgentForm({
       )}
 
       {step === 'prompt' && (
-        <Box>
-          <Text>› prompt : </Text>
-          <TextInput
-            value={prompt}
-            onChange={(v) => setPrompt(stripBreaks(v))}
-            onSubmit={(v) => {
-              if (v.trim()) finish(v);
-            }}
-            placeholder="what should this agent do?"
-          />
+        <Box flexDirection="column">
+          <Text>› prompt :</Text>
+          <Box marginLeft={2}>
+            <MultilineInput
+              value={prompt}
+              onChange={setPrompt}
+              onSubmit={(v) => {
+                if (v.trim()) finish(v);
+              }}
+              placeholder="what should this agent do?"
+            />
+          </Box>
         </Box>
       )}
 
       <Text dimColor>
         {step === 'project'
           ? '↑↓/jk: choose · Enter: select · Esc: cancel'
-          : 'Enter: next/create · Esc: cancel'}
+          : step === 'prompt'
+            ? 'Enter: create · Alt/Shift+Enter: newline · Esc: cancel'
+            : 'Enter: next/create · Esc: cancel'}
       </Text>
     </Box>
   );
