@@ -196,7 +196,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new ↑↓/hjkl:switch J/K:scroll 1-9:jump w:waiting i:answer r:resume x:stop d:remove q:quit
+        n:new ↑↓/hjkl:switch J/K:scroll 1-9:jump w:waiting i:answer r:resume x:stop d:remove agent q:quit tui
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>
