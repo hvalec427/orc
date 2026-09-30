@@ -232,7 +232,9 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new ↑↓/hjkl:switch J/K:scroll p:pause/resume logs 1-9:jump w:waiting i:answer r:resume x:stop m:merge d:remove agent q:quit tui
+        <Text bold>global</Text> n:new ↑↓/hjkl:switch 1-9:jump w:next waiting J/K:scroll p:pause/resume logs q:quit tui
+        {'  ·  '}
+        <Text bold>agent</Text> i:answer r:resume selected x:stop m:merge d:remove
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>
