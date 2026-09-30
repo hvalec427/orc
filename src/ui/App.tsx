@@ -236,7 +236,7 @@ function HelpBar({ notice }: { notice: string }) {
       <Text dimColor>
         <Text bold>global</Text> n:new ↑↓/hjkl:switch w:next waiting J/K:scroll p:pause/resume logs q:quit tui
         {'  ·  '}
-        <Text bold>agent</Text> i:answer r:resume selected x:stop m:merge d:delete
+        <Text bold>agent</Text> i:answer r:resume x:stop m:merge d:delete
       </Text>
       {notice ? (
         <Text color="yellow" wrap="truncate">
