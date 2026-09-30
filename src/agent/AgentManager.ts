@@ -25,7 +25,8 @@ export class AgentManager extends EventEmitter {
   }
 
   list(): AgentSession[] {
-    return [...this.agents.values()];
+    // Newest first: the most recently created agent shows at the top.
+    return [...this.agents.values()].reverse();
   }
 
   get(id: string): AgentSession | undefined {
