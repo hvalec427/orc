@@ -47,10 +47,15 @@ export interface AgentInfo {
   totalCostUsd: number;
 }
 
+/** Project kind — selects which CLAUDE.md template the `p` action installs. */
+export type ProjectType = 'react-native' | 'web' | 'orc';
+
 /** Resolved config for a single project (global defaults overlaid with per-project overrides). */
 export interface ProjectConfig {
   /** Nice, human-facing project name (also selected in the new-agent form). */
   name: string;
+  /** Project kind; only used to choose the CLAUDE.md template. */
+  type: ProjectType;
   /** Absolute path to the base git repository worktrees are cut from. */
   repo: string;
   /** Model id passed to every agent session for this project. */

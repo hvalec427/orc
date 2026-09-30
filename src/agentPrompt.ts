@@ -25,13 +25,9 @@ export function buildAppendPrompt({ name, metroPort, ticket, magicLink }: Prompt
 
 ### Signing in
 
-A magic sign-in link is available (also in the MAGIC_LINK env var). After the app is installed and
-launched on your simulator, open this link on that simulator to authenticate before verifying any
-signed-in screens:
-
-  xcrun simctl openurl "<YOUR_SIMULATOR_UDID>" "${magicLink}"
-
-(or use Maestro's openLink). Use your own simulator's UDID.`
+A magic sign-in link is available in the MAGIC_LINK env var. Use it to authenticate before verifying
+any signed-in views. See your project's CLAUDE.md for how to open a link on your target (e.g.
+\`xcrun simctl openurl\` on iOS, or opening it in the browser).`
     : '';
   return `
 ## Orchestration context (injected by orc)
@@ -39,7 +35,7 @@ signed-in screens:
 You are agent "${name}", running under an orchestrator that supervises several agents in parallel.
 
 - Your unique agent name is "${name}". Use it when creating your iOS simulator.
-- Your dedicated Metro port is ${metroPort} (also available as the METRO_PORT env var). Always use it.
+- Your dedicated port is ${metroPort} (env: METRO_PORT and AGENT_PORT). Use it for Metro / your dev server / any local service.
 - You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.${ticketLine}${magicSection}
 
 ### Talking to the human

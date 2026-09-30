@@ -34,7 +34,8 @@ The agent talks back to you with two sentinels (defined in the appended prompt):
 Put the mobile agent instructions (simulator/Metro/Maestro/completion rules) in the base repo's
 `CLAUDE.md`; orc only injects per-agent identity and the human-in-the-loop protocol on top. You can
 install that `CLAUDE.md` into a project from inside the TUI — press `p`, pick the project, press `c`
-(it asks before overwriting an existing one).
+(it asks before overwriting an existing one). The template installed matches the project's `type`
+(`react-native`, `web`, or `orc`); see `examples/{mobile,web,orc}-CLAUDE.md`.
 
 orc **never writes your config** (`~/.orc/config.json`) — you create and edit it yourself. The only
 file orc writes under `~/.orc` is `state.json` (runtime agent state).
@@ -120,7 +121,9 @@ When an agent is in `default` permission mode and a tool needs approval, press `
 
 Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
 
-- `projects` (required): `[{ name, path, ...overrides }]` — the projects you can launch agents into.
+- `projects` (required): `[{ name, path, type, ...overrides }]` — the projects you launch agents into.
+- `type` (per project): `react-native` (default), `web`, or `orc`. Only used to pick which CLAUDE.md
+  template the `p` action installs.
 - `permissionMode`: `bypassPermissions` (default, fully autonomous per the mobile CLAUDE.md),
   `acceptEdits`, or `default` (routes tool approvals to the UI via `y`/`n`). Overridable per project.
 - `settingSources` **must include `project`** for the worktree's `CLAUDE.md` to load. Overridable.

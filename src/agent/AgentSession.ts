@@ -191,6 +191,7 @@ export class AgentSession extends EventEmitter {
         ...process.env,
         AGENT_NAME: this.name,
         METRO_PORT: String(this.metroPort),
+        AGENT_PORT: String(this.metroPort),
         ...(this.magicLink ? { MAGIC_LINK: this.magicLink } : {}),
       },
       model: this.config.model,

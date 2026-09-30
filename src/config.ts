@@ -11,6 +11,7 @@ const MaestroSchema = z.object({
 });
 
 const OverridableSchema = {
+  type: z.enum(['react-native', 'web', 'orc']).optional(),
   model: z.string().optional(),
   worktreeDir: z.string().optional(),
   permissionMode: z.enum(['bypassPermissions', 'default', 'acceptEdits']).optional(),
@@ -101,6 +102,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
 
   const projects: ProjectConfig[] = parsed.projects.map((p) => ({
     name: p.name,
+    type: p.type ?? parsed.type ?? 'react-native',
     repo: expandPath(p.path),
     model: flags.model ?? p.model ?? parsed.model ?? DEFAULTS.model,
     worktreeDir: p.worktreeDir ?? parsed.worktreeDir ?? DEFAULTS.worktreeDir,

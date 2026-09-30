@@ -19,8 +19,8 @@ export function ProjectsView({
   useInput((input, key) => {
     if (confirming) {
       if (input === 'y' && project) {
-        const r = installClaudeMd(project.repo, { overwrite: true });
-        setNotice(`${r} CLAUDE.md in ${project.name}`);
+        const r = installClaudeMd(project.repo, project.type, { overwrite: true });
+        setNotice(`${r} ${project.type} CLAUDE.md in ${project.name}`);
       } else if (input === 'n' || key.escape) {
         setNotice('cancelled');
       }
@@ -41,16 +41,16 @@ export function ProjectsView({
       if (hasClaudeMd(project.repo)) {
         setConfirming(true);
       } else {
-        const r = installClaudeMd(project.repo, { overwrite: false });
-        setNotice(`${r} CLAUDE.md in ${project.name}`);
+        const r = installClaudeMd(project.repo, project.type, { overwrite: false });
+        setNotice(`${r} ${project.type} CLAUDE.md in ${project.name}`);
       }
     }
   });
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan">Projects — install mobile CLAUDE.md</Text>
-      <Text dimColor>Writes the mobile agent instructions into the selected project's CLAUDE.md.</Text>
+      <Text bold color="cyan">Projects — install CLAUDE.md by type</Text>
+      <Text dimColor>Writes the CLAUDE.md template matching each project's type into its repo.</Text>
 
       <Box flexDirection="column" marginTop={1}>
         {projects.map((p, i) => {
@@ -58,7 +58,7 @@ export function ProjectsView({
           return (
             <Text key={p.name} color={i === cursor ? 'cyan' : undefined}>
               {i === cursor ? '❯ ' : '  '}
-              {p.name} <Text dimColor>{p.repo}</Text>{' '}
+              {p.name} <Text dimColor>({p.type})</Text> <Text dimColor>{p.repo}</Text>{' '}
               {has ? <Text color="green">[has CLAUDE.md]</Text> : <Text dimColor>[none]</Text>}
             </Text>
           );
