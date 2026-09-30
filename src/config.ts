@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import type { OrcConfig, ProjectConfig } from './types.js';
+import type { OrcConfig, PortRange, ProjectConfig } from './types.js';
 
 const MaestroSchema = z.object({
   command: z.string(),
@@ -10,12 +10,25 @@ const MaestroSchema = z.object({
   env: z.record(z.string()).optional(),
 });
 
+/** A port range like "8000-8099". Validated to 0 < start <= end. */
+const PortRangeSchema = z
+  .string()
+  .regex(/^\d+-\d+$/, 'portRange must look like "8000-8099"')
+  .refine(
+    (s) => {
+      const [start, end] = s.split('-').map(Number);
+      return start > 0 && end > 0 && start <= end;
+    },
+    { message: 'portRange must be "start-end" with 0 < start <= end' },
+  );
+
 const OverridableSchema = {
   type: z.enum(['react-native', 'web', 'orc']).optional(),
   model: z.string().optional(),
   worktreeDir: z.string().optional(),
   permissionMode: z.enum(['bypassPermissions', 'default', 'acceptEdits']).optional(),
   settingSources: z.array(z.enum(['user', 'project', 'local'])).optional(),
+  portRange: PortRangeSchema.optional(),
   maestroMcp: MaestroSchema.optional(),
   magicLink: z.string().optional(),
 };
@@ -30,7 +43,6 @@ const ProjectSchema = z
 
 const GlobalConfigSchema = z
   .object({
-    basePort: z.number().int().positive().optional(),
     ...OverridableSchema,
     projects: z.array(ProjectSchema).min(1),
   })
@@ -45,23 +57,27 @@ export interface CliFlags {
 const DEFAULTS = {
   model: 'claude-opus-4-8',
   worktreeDir: '.worktrees',
-  basePort: 8100,
   permissionMode: 'bypassPermissions' as const,
   settingSources: ['user', 'project', 'local'] as Array<'user' | 'project' | 'local'>,
   maestroMcp: { command: 'maestro', args: ['mcp'] },
 };
 
+/** Parse a validated "start-end" string into a PortRange. */
+function parsePortRange(range: string): PortRange {
+  const [start, end] = range.split('-').map(Number);
+  return { start, end };
+}
+
 export const DEFAULT_CONFIG_PATH = join(homedir(), '.orc', 'config.json');
 
 export const SAMPLE_CONFIG = `{
   "model": "claude-opus-4-8",
-  "basePort": 8100,
   "permissionMode": "bypassPermissions",
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "path": "~/dev/acme-app" },
-    { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5" }
+    { "name": "Acme iOS", "path": "~/dev/acme-app", "portRange": "8000-8099" },
+    { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5", "portRange": "8100-8199" }
   ]
 }`;
 
@@ -100,17 +116,21 @@ export function loadConfig(flags: CliFlags): OrcConfig {
 
   const globalMaestro = flags.noMaestro ? undefined : parsed.maestroMcp ?? DEFAULTS.maestroMcp;
 
-  const projects: ProjectConfig[] = parsed.projects.map((p) => ({
-    name: p.name,
-    type: p.type ?? parsed.type ?? 'react-native',
-    repo: expandPath(p.path),
-    model: flags.model ?? p.model ?? parsed.model ?? DEFAULTS.model,
-    worktreeDir: p.worktreeDir ?? parsed.worktreeDir ?? DEFAULTS.worktreeDir,
-    permissionMode: p.permissionMode ?? parsed.permissionMode ?? DEFAULTS.permissionMode,
-    settingSources: p.settingSources ?? parsed.settingSources ?? DEFAULTS.settingSources,
-    maestroMcp: flags.noMaestro ? undefined : p.maestroMcp ?? globalMaestro,
-    magicLink: p.magicLink ?? parsed.magicLink,
-  }));
+  const projects: ProjectConfig[] = parsed.projects.map((p) => {
+    const range = p.portRange ?? parsed.portRange;
+    return {
+      name: p.name,
+      type: p.type ?? parsed.type ?? 'react-native',
+      repo: expandPath(p.path),
+      model: flags.model ?? p.model ?? parsed.model ?? DEFAULTS.model,
+      worktreeDir: p.worktreeDir ?? parsed.worktreeDir ?? DEFAULTS.worktreeDir,
+      permissionMode: p.permissionMode ?? parsed.permissionMode ?? DEFAULTS.permissionMode,
+      settingSources: p.settingSources ?? parsed.settingSources ?? DEFAULTS.settingSources,
+      portRange: range ? parsePortRange(range) : undefined,
+      maestroMcp: flags.noMaestro ? undefined : p.maestroMcp ?? globalMaestro,
+      magicLink: p.magicLink ?? parsed.magicLink,
+    };
+  });
 
   const names = new Set<string>();
   for (const p of projects) {
@@ -118,5 +138,5 @@ export function loadConfig(flags: CliFlags): OrcConfig {
     names.add(p.name);
   }
 
-  return { basePort: parsed.basePort ?? DEFAULTS.basePort, projects };
+  return { projects };
 }

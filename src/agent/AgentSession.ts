@@ -32,7 +32,8 @@ export interface AgentSessionInit {
   magicLink?: string;
   branch: string;
   worktree: string;
-  metroPort: number;
+  /** Allocated port, or undefined when the project has no port range. */
+  metroPort?: number;
   config: ProjectConfig;
 }
 
@@ -49,7 +50,7 @@ export class AgentSession extends EventEmitter {
   private readonly magicLink?: string;
   readonly branch: string;
   readonly worktree: string;
-  readonly metroPort: number;
+  readonly metroPort?: number;
   /** Nice name of the project this agent belongs to. */
   readonly project: string;
   /** Absolute path to the project's base repo (for worktree cleanup). */
@@ -94,7 +95,8 @@ export class AgentSession extends EventEmitter {
   start(): void {
     this.queue.push(this.prompt);
     const ref = this.ticket ? ` [${this.ticket}]` : '';
-    this.addLog('system', `▶ launching agent "${this.name}"${ref} on ${this.branch} (port ${this.metroPort})`);
+    const portNote = this.metroPort !== undefined ? ` (port ${this.metroPort})` : '';
+    this.addLog('system', `▶ launching agent "${this.name}"${ref} on ${this.branch}${portNote}`);
     this.query = query({ prompt: this.queue, options: this.buildOptions() });
     void this.runLoop();
   }
@@ -190,8 +192,9 @@ export class AgentSession extends EventEmitter {
       env: {
         ...process.env,
         AGENT_NAME: this.name,
-        METRO_PORT: String(this.metroPort),
-        AGENT_PORT: String(this.metroPort),
+        ...(this.metroPort !== undefined
+          ? { METRO_PORT: String(this.metroPort), AGENT_PORT: String(this.metroPort) }
+          : {}),
         ...(this.magicLink ? { MAGIC_LINK: this.magicLink } : {}),
       },
       model: this.config.model,

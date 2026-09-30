@@ -1,12 +1,11 @@
 {
   "model": "claude-opus-4-8",
-  "basePort": 8100,
   "permissionMode": "bypassPermissions",
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "type": "react-native", "path": "~/dev/acme-app", "magicLink": "acme://login?token=REPLACE_ME" },
-    { "name": "Acme Web", "type": "web", "path": "~/dev/acme-web", "model": "claude-sonnet-5" },
+    { "name": "Acme iOS", "type": "react-native", "path": "~/dev/acme-app", "portRange": "8000-8099", "magicLink": "acme://login?token=REPLACE_ME" },
+    { "name": "Acme Web", "type": "web", "path": "~/dev/acme-web", "model": "claude-sonnet-5", "portRange": "8100-8199" },
     { "name": "Acme API", "type": "orc", "path": "~/dev/acme-api", "permissionMode": "default" }
   ]
 }

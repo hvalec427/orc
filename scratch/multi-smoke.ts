@@ -35,10 +35,9 @@ async function main() {
     configPath,
     JSON.stringify({
       model: 'claude-sonnet-5', // global default
-      basePort: 8400,
       projects: [
-        { name: 'Alpha', path: repoA }, // inherits global model
-        { name: 'Beta', path: repoB, model: 'claude-opus-4-8' }, // overrides model
+        { name: 'Alpha', path: repoA, portRange: '8400-8449' }, // inherits global model
+        { name: 'Beta', path: repoB, model: 'claude-opus-4-8', portRange: '8450-8499' }, // overrides model
       ],
     }),
   );
@@ -51,7 +50,7 @@ async function main() {
   assert(a.model === 'claude-sonnet-5', 'Alpha inherits global model');
   assert(b.model === 'claude-opus-4-8', 'Beta overrides model');
   assert(a.maestroMcp === undefined && b.maestroMcp === undefined, '--no-maestro applied to all');
-  assert(config.basePort === 8400, 'basePort from config');
+  assert(a.portRange?.start === 8400 && b.portRange?.start === 8450, 'per-project portRange resolved');
 
   // --- end-to-end launch in the SECOND project only ---
   const manager = new AgentManager(config);

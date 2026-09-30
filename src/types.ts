@@ -38,7 +38,8 @@ export interface AgentInfo {
   ticket: string;
   branch: string;
   worktree: string;
-  metroPort: number;
+  /** Allocated port, or undefined when the project has no port range. */
+  metroPort?: number;
   status: AgentStatus;
   /** The agent's last question (when status === 'needs_input'). */
   question?: string;
@@ -49,6 +50,12 @@ export interface AgentInfo {
 
 /** Project kind — selects which CLAUDE.md template the `p` action installs. */
 export type ProjectType = 'react-native' | 'web' | 'orc';
+
+/** Inclusive port range agents in a project allocate from. */
+export interface PortRange {
+  start: number;
+  end: number;
+}
 
 /** Resolved config for a single project (global defaults overlaid with per-project overrides). */
 export interface ProjectConfig {
@@ -66,16 +73,16 @@ export interface ProjectConfig {
   permissionMode: 'bypassPermissions' | 'default' | 'acceptEdits';
   /** settingSources so the worktree CLAUDE.md is loaded. */
   settingSources: Array<'user' | 'project' | 'local'>;
+  /** Port range agents allocate from. Omit to give agents no port. */
+  portRange?: PortRange;
   /** Maestro MCP server command, attached to every agent. Omit to disable. */
   maestroMcp?: { command: string; args?: string[]; env?: Record<string, string> };
   /** Magic sign-in link the agent opens on the simulator to log in. Omit to disable. */
   magicLink?: string;
 }
 
-/** Global orc config: a list of projects plus the machine-wide Metro port base. */
+/** Global orc config: the list of projects agents can be launched into. */
 export interface OrcConfig {
-  /** First METRO_PORT to hand out; allocation scans upward from here (machine-wide). */
-  basePort: number;
   /** The projects agents can be launched into. */
   projects: ProjectConfig[];
 }

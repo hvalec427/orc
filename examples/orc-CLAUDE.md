@@ -26,7 +26,7 @@ You are running inside your own dedicated Git worktree.
 
 ## Running services
 
-If you need to run a local service, use the dedicated port in the `AGENT_PORT` env var. Never assume a default port is free.
+If you need to run a local service, use the dedicated port in the `AGENT_PORT` env var. Never assume a default port is free. If `AGENT_PORT` is not set and your task needs one, stop and ask the human to add a `portRange` for this project in the orc config.
 
 ## Authentication
 

@@ -97,7 +97,8 @@ export function AgentView({
           <Text bold>{session.getInfo().name}</Text>
           <Text dimColor>
             {' '}
-            · {session.getInfo().status} · {session.getInfo().branch} · :{session.getInfo().metroPort} ·{' '}
+            · {session.getInfo().status} · {session.getInfo().branch}
+            {session.getInfo().metroPort !== undefined ? ` · :${session.getInfo().metroPort}` : ''} ·{' '}
           </Text>
           <Text color={follow ? 'green' : 'yellow'}>{scrollLabel}</Text>
         </Text>

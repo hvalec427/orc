@@ -4,7 +4,8 @@ export const DONE = '@@DONE@@';
 
 export interface PromptParams {
   name: string;
-  metroPort: number;
+  /** Allocated port, or undefined when the project has no port range. */
+  metroPort?: number;
   /** Optional ticket reference to weave into commit messages. */
   ticket?: string;
   /** Optional magic sign-in link the agent opens on its simulator to log in. */
@@ -20,6 +21,10 @@ export function buildAppendPrompt({ name, metroPort, ticket, magicLink }: Prompt
   const ticketLine = ticket
     ? `\n- Your ticket reference is "${ticket}". Reference it in your commit message(s).`
     : '';
+  const portLine =
+    metroPort !== undefined
+      ? `\n- Your dedicated port is ${metroPort} (env: METRO_PORT and AGENT_PORT). Use it for Metro / your dev server / any local service.`
+      : `\n- No port was allocated for you. If your task genuinely needs a local port (dev server, Metro, etc.), stop and ask the human to add a \`portRange\` for this project in the orc config, using the ${NEEDS_INPUT} sentinel.`;
   const magicSection = magicLink
     ? `
 
@@ -34,8 +39,7 @@ any signed-in views. See your project's CLAUDE.md for how to open a link on your
 
 You are agent "${name}", running under an orchestrator that supervises several agents in parallel.
 
-- Your unique agent name is "${name}". Use it when creating your iOS simulator.
-- Your dedicated port is ${metroPort} (env: METRO_PORT and AGENT_PORT). Use it for Metro / your dev server / any local service.
+- Your unique agent name is "${name}". Use it when creating your iOS simulator.${portLine}
 - You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.${ticketLine}${magicSection}
 
 ### Talking to the human

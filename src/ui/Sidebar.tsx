@@ -35,7 +35,8 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
               <Text dimColor> {truncate(info.ticket, 28)}</Text>
               <Text dimColor>
                 {' '}
-                <Text color={s.color}>{s.label}</Text> · :{info.metroPort}
+                <Text color={s.color}>{s.label}</Text>
+                {info.metroPort !== undefined ? ` · :${info.metroPort}` : ''}
                 {info.totalCostUsd > 0 ? ` · $${info.totalCostUsd.toFixed(2)}` : ''}
               </Text>
             </Box>
