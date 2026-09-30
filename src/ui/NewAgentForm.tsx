@@ -88,7 +88,7 @@ export function NewAgentForm({
           {step === 'magiclink' ? (
             <TextInput
               value={magicLink}
-              onChange={setMagicLink}
+              onChange={(v) => setMagicLink(stripBreaks(v))}
               onSubmit={() => setStep('name')}
               placeholder={
                 selected?.magicLink
@@ -108,7 +108,7 @@ export function NewAgentForm({
           {step === 'name' ? (
             <TextInput
               value={name}
-              onChange={setName}
+              onChange={(v) => setName(stripBreaks(v))}
               onSubmit={(v) => {
                 if (v.trim()) setStep('ticket');
               }}
@@ -126,7 +126,7 @@ export function NewAgentForm({
           {step === 'ticket' ? (
             <TextInput
               value={ticket}
-              onChange={setTicket}
+              onChange={(v) => setTicket(stripBreaks(v))}
               onSubmit={() => setStep('prompt')}
               placeholder="e.g. PROJ-123 (optional — for the commit; Enter to skip)"
             />
@@ -141,7 +141,7 @@ export function NewAgentForm({
           <Text>› prompt : </Text>
           <TextInput
             value={prompt}
-            onChange={setPrompt}
+            onChange={(v) => setPrompt(stripBreaks(v))}
             onSubmit={(v) => {
               if (v.trim()) finish(v);
             }}
@@ -159,6 +159,13 @@ export function NewAgentForm({
   );
 }
 
+// Replace line breaks (from pasted multiline text) with spaces so the
+// single-line inputs never wrap and break the bordered form layout.
+function stripBreaks(s: string): string {
+  return s.replace(/\r\n|\r|\n/g, ' ');
+}
+
 function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  const one = stripBreaks(s);
+  return one.length > n ? one.slice(0, n - 1) + '…' : one;
 }

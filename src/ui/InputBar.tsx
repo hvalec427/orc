@@ -30,9 +30,10 @@ export function InputBar({
         <Text color="yellow">reply to {agentName} › </Text>
         <TextInput
           value={value}
-          onChange={setValue}
+          onChange={(v) => setValue(stripBreaks(v))}
           onSubmit={(v) => {
-            if (v.trim()) onSubmit(v.trim());
+            const t = stripBreaks(v).trim();
+            if (t) onSubmit(t);
           }}
           placeholder="type your answer, Enter to send, Esc to cancel"
         />
@@ -41,6 +42,13 @@ export function InputBar({
   );
 }
 
+// Replace line breaks (from pasted multiline text) with spaces so the
+// single-line input never wraps and breaks the bordered box layout.
+function stripBreaks(s: string): string {
+  return s.replace(/\r\n|\r|\n/g, ' ');
+}
+
 function truncate(s: string, n: number): string {
-  return s.length > n ? '…' + s.slice(-n) : s;
+  const one = stripBreaks(s).replace(/\s+/g, ' ').trim();
+  return one.length > n ? '…' + one.slice(-n) : one;
 }
