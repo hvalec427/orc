@@ -26,7 +26,7 @@ export function NewAgentForm({
   );
   const [project, setProject] = useState<string>(single?.name ?? '');
   const [cursor, setCursor] = useState(0);
-  const [magicLink, setMagicLink] = useState<string>(single?.magicLink ?? '');
+  const [magicLink, setMagicLink] = useState<string>('');
   const [name, setName] = useState('');
   const [ticket, setTicket] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -47,13 +47,19 @@ export function NewAgentForm({
     else if (key.return) {
       const proj = projects[cursor];
       setProject(proj.name);
-      setMagicLink(proj.magicLink ?? '');
+      setMagicLink('');
       setStep(proj.magicLink ? 'magiclink' : 'name');
     }
   });
 
   const finish = (finalPrompt: string) =>
-    onSubmit(project, name.trim(), ticket.trim(), finalPrompt.trim(), hasMagic ? magicLink.trim() : undefined);
+    onSubmit(
+      project,
+      name.trim(),
+      ticket.trim(),
+      finalPrompt.trim(),
+      hasMagic ? magicLink.trim() || selected?.magicLink : undefined,
+    );
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
@@ -84,10 +90,14 @@ export function NewAgentForm({
               value={magicLink}
               onChange={setMagicLink}
               onSubmit={() => setStep('name')}
-              placeholder="Enter to use config default · edit to override · clear for none"
+              placeholder={
+                selected?.magicLink
+                  ? `${truncate(selected.magicLink, 44)} (Enter to use, or paste a new one)`
+                  : ''
+              }
             />
           ) : (
-            <Text dimColor>{magicLink ? truncate(magicLink, 48) : '(none)'}</Text>
+            <Text dimColor>{truncate(magicLink.trim() || selected?.magicLink || '(none)', 48)}</Text>
           )}
         </Box>
       )}

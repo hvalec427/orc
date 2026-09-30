@@ -64,6 +64,12 @@ export const SAMPLE_CONFIG = `{
   ]
 }`;
 
+/** Collapse the home dir back to `~` for friendlier messages. */
+function displayPath(p: string): string {
+  const home = homedir();
+  return p === home ? '~' : p.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
+}
+
 /** Expand a leading `~` and resolve to an absolute path. */
 function expandPath(p: string): string {
   if (p === '~') return homedir();
@@ -80,7 +86,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
 
   if (!existsSync(configPath)) {
     throw new Error(
-      `No config found at ${configPath}.\n\nCreate it with your projects, e.g.:\n\n${SAMPLE_CONFIG}\n`,
+      `No config found at ${displayPath(configPath)}.\n\nCreate it with your projects, e.g.:\n\n${SAMPLE_CONFIG}\n`,
     );
   }
 
@@ -88,7 +94,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
   try {
     parsed = GlobalConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf8')));
   } catch (err) {
-    throw new Error(`Invalid config at ${configPath}: ${(err as Error).message}`);
+    throw new Error(`Invalid config at ${displayPath(configPath)}: ${(err as Error).message}`);
   }
 
   const globalMaestro = flags.noMaestro ? undefined : parsed.maestroMcp ?? DEFAULTS.maestroMcp;
