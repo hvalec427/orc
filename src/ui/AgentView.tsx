@@ -30,13 +30,17 @@ export function AgentView({
   active: boolean;
 }) {
   const [follow, setFollow] = useState(true);
+  const [paused, setPaused] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
   const maxTopRef = useRef(0);
+  const followRef = useRef(follow);
+  followRef.current = follow;
 
   // Reset scroll to live-tail when the selected agent changes.
   const sessionId = session?.id;
   useEffect(() => {
     setFollow(true);
+    setPaused(false);
     setScrollTop(0);
   }, [sessionId]);
 
@@ -63,16 +67,31 @@ export function AgentView({
     (input) => {
       const mt = maxTopRef.current;
       const cur = follow ? mt : Math.min(scrollTop, mt);
-      if (input === 'K') {
+      if (input === 'p') {
+        // Toggle pause. Pausing freezes the view at the current bottom so the
+        // reader stays put while new logs keep accumulating in the buffer (none
+        // are dropped). Resuming jumps to the latest log and re-enables follow.
+        if (followRef.current) {
+          setScrollTop(mt);
+          setFollow(false);
+          setPaused(true);
+        } else {
+          setScrollTop(mt);
+          setFollow(true);
+          setPaused(false);
+        }
+      } else if (input === 'K') {
         setScrollTop(Math.max(0, cur - 1));
         setFollow(false);
       } else if (input === 'J') {
         const nt = Math.min(mt, cur + 1);
         setScrollTop(nt);
         setFollow(nt >= mt);
+        if (nt >= mt) setPaused(false);
       } else if (input === 'G') {
         setScrollTop(mt);
         setFollow(true);
+        setPaused(false);
       }
     },
     { isActive: active && !!session },
@@ -81,7 +100,17 @@ export function AgentView({
   const windowLines = lines.slice(top, top + bodyRows);
   while (windowLines.length < bodyRows) windowLines.push({ kind: 'text', text: '' });
 
-  const scrollLabel = follow || maxTop === 0 ? 'live' : `↑${maxTop - top} (G:bottom)`;
+  const behind = maxTop - top;
+  const scrollLabel = follow
+    ? 'live'
+    : paused
+      ? behind > 0
+        ? `⏸ paused ↑${behind} (p:resume)`
+        : '⏸ paused (p:resume)'
+      : maxTop === 0
+        ? 'live'
+        : `↑${behind} (G:bottom)`;
+  const labelColor = follow ? 'green' : paused ? 'magenta' : 'yellow';
 
   return (
     <Box
@@ -100,7 +129,7 @@ export function AgentView({
             · {session.getInfo().status} · {session.getInfo().branch}
             {session.getInfo().metroPort !== undefined ? ` · :${session.getInfo().metroPort}` : ''} ·{' '}
           </Text>
-          <Text color={follow ? 'green' : 'yellow'}>{scrollLabel}</Text>
+          <Text color={labelColor}>{scrollLabel}</Text>
         </Text>
       ) : (
         <Text dimColor>No agent selected. Press n to start one.</Text>
