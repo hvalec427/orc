@@ -120,10 +120,11 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     );
   }
 
-  // Reserve rows for the header (1) plus whatever occupies the bottom, so the
-  // total never exceeds the terminal height (which would shift the layout).
+  // Reserve rows for the header (1), the bottom occupant, and one safety line so the
+  // total output stays STRICTLY below the terminal height. Rendering exactly `rows`
+  // lines makes the terminal scroll and corrupts Ink's redraw (the top walks off-screen).
   const overlayRows = approvalPending ? 6 : mode === 'input' ? 5 : 1;
-  const bodyHeight = Math.max(6, rows - 1 - overlayRows);
+  const bodyHeight = Math.max(6, rows - 2 - overlayRows);
 
   return (
     <Box flexDirection="column">
