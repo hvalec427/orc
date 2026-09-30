@@ -1,9 +1,26 @@
 import { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
-import type { ProjectConfig } from '../types.js';
+import type { AgentTemplate, ProjectConfig } from '../types.js';
 
-type Step = 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
+type Step = 'template' | 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
+
+interface TemplateChoice {
+  value: AgentTemplate;
+  label: string;
+  hint: string;
+}
+
+const TEMPLATES: TemplateChoice[] = [
+  { value: 'feature', label: 'Feature', hint: 'new git worktree + branch; builds a feature' },
+  { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
+  { value: 'merge', label: 'Merge', hint: 'no worktree; merges branches you name' },
+];
+
+/** Does this template need a worktree/branch (and therefore the feature-only fields)? */
+function isFeature(t: AgentTemplate): boolean {
+  return t === 'feature';
+}
 
 export function NewAgentForm({
   projects,
@@ -12,6 +29,7 @@ export function NewAgentForm({
 }: {
   projects: ProjectConfig[];
   onSubmit: (
+    template: AgentTemplate,
     project: string,
     name: string,
     ticket: string,
@@ -21,9 +39,9 @@ export function NewAgentForm({
   onCancel: () => void;
 }) {
   const single = projects.length === 1 ? projects[0] : undefined;
-  const [step, setStep] = useState<Step>(
-    single ? (single.magicLink ? 'magiclink' : 'name') : 'project',
-  );
+  const [step, setStep] = useState<Step>('template');
+  const [template, setTemplate] = useState<AgentTemplate>('feature');
+  const [templateCursor, setTemplateCursor] = useState(0);
   const [project, setProject] = useState<string>(single?.name ?? '');
   const [cursor, setCursor] = useState(0);
   const [magicLink, setMagicLink] = useState<string>('');
@@ -32,11 +50,34 @@ export function NewAgentForm({
   const [prompt, setPrompt] = useState('');
 
   const selected = projects.find((p) => p.name === project);
-  const hasMagic = !!selected?.magicLink;
+  const feature = isFeature(template);
+  const hasMagic = feature && !!selected?.magicLink;
+
+  // After choosing a project, jump to the first relevant field for the template.
+  const afterProject = (proj: ProjectConfig): Step =>
+    feature ? (proj.magicLink ? 'magiclink' : 'name') : 'name';
 
   useInput((input, key) => {
     if (key.escape) {
       onCancel();
+      return;
+    }
+    if (step === 'template') {
+      if (key.upArrow || input === 'k')
+        setTemplateCursor((c) => (c - 1 + TEMPLATES.length) % TEMPLATES.length);
+      else if (key.downArrow || input === 'j')
+        setTemplateCursor((c) => (c + 1) % TEMPLATES.length);
+      else if (key.return) {
+        const t = TEMPLATES[templateCursor].value;
+        setTemplate(t);
+        // Single project: skip project selection and go to the template's first field.
+        if (single) {
+          setProject(single.name);
+          setStep(isFeature(t) ? (single.magicLink ? 'magiclink' : 'name') : 'name');
+        } else {
+          setStep('project');
+        }
+      }
       return;
     }
     if (step !== 'project') return;
@@ -48,41 +89,73 @@ export function NewAgentForm({
       const proj = projects[cursor];
       setProject(proj.name);
       setMagicLink('');
-      setStep(proj.magicLink ? 'magiclink' : 'name');
+      setStep(afterProject(proj));
     }
   });
 
   const finish = (finalPrompt: string) =>
     onSubmit(
+      template,
       project,
       name.trim(),
-      ticket.trim(),
+      // Ticket only applies to feature agents (they commit); others send empty.
+      feature ? ticket.trim() : '',
       finalPrompt.trim(),
       hasMagic ? magicLink.trim() || selected?.magicLink : undefined,
     );
 
+  const currentTemplate = TEMPLATES.find((t) => t.value === template)!;
+  const promptPlaceholder =
+    template === 'question'
+      ? 'what do you want to ask about this repo?'
+      : template === 'merge'
+        ? 'which branches should be merged? (e.g. merge agent/foo into master)'
+        : 'what should this agent do?';
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Text bold color="cyan">New agent</Text>
-      <Text dimColor>A git worktree + branch + simulator name are derived from the agent name.</Text>
+      <Text dimColor>
+        {feature
+          ? 'A git worktree + branch + simulator name are derived from the agent name.'
+          : 'Runs in the project repo with no worktree.'}
+      </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Text>{step === 'project' ? '› ' : '  '}project:</Text>
-        {step === 'project' ? (
+        <Text>{step === 'template' ? '› ' : '  '}template:</Text>
+        {step === 'template' ? (
           <Box flexDirection="column" marginLeft={2}>
-            {projects.map((p, i) => (
-              <Text key={p.name} color={i === cursor ? 'cyan' : undefined}>
-                {i === cursor ? '❯ ' : '  '}
-                {p.name} <Text dimColor>({p.repo})</Text>
+            {TEMPLATES.map((t, i) => (
+              <Text key={t.value} color={i === templateCursor ? 'cyan' : undefined}>
+                {i === templateCursor ? '❯ ' : '  '}
+                {t.label} <Text dimColor>— {t.hint}</Text>
               </Text>
             ))}
           </Box>
         ) : (
-          <Text>  {project}</Text>
+          <Text>  {currentTemplate.label} <Text dimColor>— {currentTemplate.hint}</Text></Text>
         )}
       </Box>
 
-      {hasMagic && step !== 'project' && (
+      {step !== 'template' && (
+        <Box flexDirection="column" marginTop={step === 'project' ? 1 : 0}>
+          <Text>{step === 'project' ? '› ' : '  '}project:</Text>
+          {step === 'project' ? (
+            <Box flexDirection="column" marginLeft={2}>
+              {projects.map((p, i) => (
+                <Text key={p.name} color={i === cursor ? 'cyan' : undefined}>
+                  {i === cursor ? '❯ ' : '  '}
+                  {p.name} <Text dimColor>({p.repo})</Text>
+                </Text>
+              ))}
+            </Box>
+          ) : (
+            <Text>  {project}</Text>
+          )}
+        </Box>
+      )}
+
+      {hasMagic && step !== 'template' && step !== 'project' && (
         <Box>
           <Text>{step === 'magiclink' ? '› ' : '  '}magic  : </Text>
           {step === 'magiclink' ? (
@@ -110,7 +183,7 @@ export function NewAgentForm({
               value={name}
               onChange={(v) => setName(stripBreaks(v))}
               onSubmit={(v) => {
-                if (v.trim()) setStep('ticket');
+                if (v.trim()) setStep(feature ? 'ticket' : 'prompt');
               }}
               placeholder="e.g. login-flow"
             />
@@ -120,7 +193,7 @@ export function NewAgentForm({
         </Box>
       )}
 
-      {(step === 'ticket' || step === 'prompt') && (
+      {feature && (step === 'ticket' || step === 'prompt') && (
         <Box>
           <Text>{step === 'ticket' ? '› ' : '  '}ticket : </Text>
           {step === 'ticket' ? (
@@ -145,13 +218,13 @@ export function NewAgentForm({
             onSubmit={(v) => {
               if (v.trim()) finish(v);
             }}
-            placeholder="what should this agent do?"
+            placeholder={promptPlaceholder}
           />
         </Box>
       )}
 
       <Text dimColor>
-        {step === 'project'
+        {step === 'template' || step === 'project'
           ? '↑↓/jk: choose · Enter: select · Esc: cancel'
           : 'Enter: next/create · Esc: cancel'}
       </Text>

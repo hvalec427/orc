@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { OrcConfig, ProjectConfig } from '../types.js';
+import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, mergeAgentBranch, removeWorktree, slugify } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
@@ -44,9 +44,16 @@ export class AgentManager extends EventEmitter {
     });
   }
 
-  /** Create a worktree + port + session in the named project and launch it. */
+  /**
+   * Create and launch an agent in the named project.
+   *
+   * `feature` agents get their own git worktree + branch and an allocated port. `question`
+   * and `merge` agents run directly in the project's base repo with no worktree, branch, or
+   * port (a question agent is additionally locked to read-only tools inside AgentSession).
+   */
   async create(
     projectName: string,
+    template: AgentTemplate,
     name: string,
     ticket: string,
     prompt: string,
@@ -58,18 +65,25 @@ export class AgentManager extends EventEmitter {
     await assertGitRepo(project.repo);
 
     const id = this.uniqueId(slugify(name));
-    const { path, branch } = await createWorktree(project.repo, project.worktreeDir, id);
-    const allocator = this.ports.get(project.name);
+
+    // Only feature agents get an isolated worktree/branch/port; question & merge agents
+    // operate on the base repo itself.
+    const isFeature = template === 'feature';
+    const worktree = isFeature
+      ? await createWorktree(project.repo, project.worktreeDir, id)
+      : undefined;
+    const allocator = isFeature ? this.ports.get(project.name) : undefined;
     const metroPort = allocator ? await allocator.allocate() : undefined;
 
     const session = new AgentSession({
       id,
       name,
+      template,
       ticket,
       prompt,
       magicLink: magicLink ?? project.magicLink,
-      branch,
-      worktree: path,
+      branch: worktree?.branch,
+      worktree: worktree?.path,
       metroPort,
       config: project,
     });
@@ -90,11 +104,14 @@ export class AgentManager extends EventEmitter {
     if (session.metroPort !== undefined) {
       this.ports.get(session.project)?.release(session.metroPort);
     }
-    try {
-      await removeWorktree(session.repo, session.worktree);
-    } catch (err) {
-      // Non-fatal: a dirty/locked worktree may need manual cleanup.
-      this.emit('log', `worktree cleanup failed for ${id}: ${(err as Error).message}`);
+    // Question/merge agents have no worktree to clean up.
+    if (session.worktree) {
+      try {
+        await removeWorktree(session.repo, session.worktree);
+      } catch (err) {
+        // Non-fatal: a dirty/locked worktree may need manual cleanup.
+        this.emit('log', `worktree cleanup failed for ${id}: ${(err as Error).message}`);
+      }
     }
     this.persist();
     this.emit('update');
@@ -111,6 +128,9 @@ export class AgentManager extends EventEmitter {
   async merge(id: string): Promise<void> {
     const session = this.agents.get(id);
     if (!session) return;
+    if (!session.branch) {
+      throw new Error(`${session.name} has no branch to merge (it is a ${session.template} agent).`);
+    }
     const { into, commit } = await mergeAgentBranch(session.repo, session.branch, session.ticket);
     this.emit('log', `merged ${session.branch} into ${into} (${commit})`);
     this.emit('update');
@@ -136,6 +156,7 @@ export class AgentManager extends EventEmitter {
         return {
           id: info.id,
           name: info.name,
+          template: info.template,
           project: info.project,
           ticket: info.ticket,
           branch: info.branch,

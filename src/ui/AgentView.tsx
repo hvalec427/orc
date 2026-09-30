@@ -126,7 +126,8 @@ export function AgentView({
           <Text bold>{session.getInfo().name}</Text>
           <Text dimColor>
             {' '}
-            · {session.getInfo().status} · {session.getInfo().branch}
+            · {session.getInfo().template} · {session.getInfo().status} ·{' '}
+            {session.getInfo().branch ?? 'no worktree'}
             {session.getInfo().metroPort !== undefined ? ` · :${session.getInfo().metroPort}` : ''} ·{' '}
           </Text>
           <Text color={labelColor}>{scrollLabel}</Text>
