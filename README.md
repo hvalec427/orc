@@ -36,15 +36,27 @@ Put the mobile agent instructions (simulator/Metro/Maestro/completion rules) in 
 
 ## Install
 
+One command — clone, build, install a version-independent `orc` launcher, and scaffold the config:
+
 ```bash
-npm install
-npm run build      # compile to dist/
-# or run from source:
-npm run dev
+git clone git@github.com:hvalec427/orc.git ~/dev/orc && cd ~/dev/orc && ./install.sh
 ```
+
+`install.sh` is idempotent and nvm-safe: it pins the launcher to the Node it finds so `orc` keeps
+working even when a project switches Node versions. Then edit `~/.orc/config.json` and run `orc`.
 
 Requires Node ≥ 20, the `claude` CLI logged in, and (for the mobile flow) `xcrun`, a React Native
 app, and the Maestro MCP server on your `PATH`.
+
+<details>
+<summary>Manual install (no script)</summary>
+
+```bash
+npm install        # auto-builds via the prepare script
+npm link           # global `orc` for the active Node version
+# or run from source without installing:  npm run dev
+```
+</details>
 
 ## Setup
 
