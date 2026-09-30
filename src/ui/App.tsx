@@ -75,8 +75,8 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       }
       if (manager.list().length === 0) return;
 
-      if (key.downArrow || input === 'j' || key.tab) select(selectedIndex + 1);
-      else if (key.upArrow || input === 'k') select(selectedIndex - 1);
+      if (key.downArrow || input === 'j' || input === 'l' || key.tab) select(selectedIndex + 1);
+      else if (key.upArrow || input === 'k' || input === 'h') select(selectedIndex - 1);
       else if (input >= '1' && input <= '9') select(Number(input) - 1);
       else if (input === 'w') {
         const waiting = manager.firstWaiting();
@@ -161,7 +161,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new p:projects ↑↓/tab:switch 1-9:jump w:next-waiting i/⏎:answer x:stop d:remove q:quit
+        n:new p:projects ↑↓/hjkl/tab:switch 1-9:jump w:next-waiting i/⏎:answer x:stop d:remove q:quit
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>

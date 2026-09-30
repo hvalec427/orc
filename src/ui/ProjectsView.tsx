@@ -32,8 +32,10 @@ export function ProjectsView({
       return;
     }
     if (projects.length === 0) return;
-    if (key.upArrow) setCursor((c) => (c - 1 + projects.length) % projects.length);
-    else if (key.downArrow) setCursor((c) => (c + 1) % projects.length);
+    if (key.upArrow || input === 'k' || input === 'h')
+      setCursor((c) => (c - 1 + projects.length) % projects.length);
+    else if (key.downArrow || input === 'j' || input === 'l')
+      setCursor((c) => (c + 1) % projects.length);
     else if (input === 'c' || key.return) {
       if (!project) return;
       if (hasClaudeMd(project.repo)) {
@@ -67,7 +69,7 @@ export function ProjectsView({
         <Text color="yellow">{project?.name}: CLAUDE.md already exists — overwrite? y/n</Text>
       ) : (
         <Text dimColor>
-          ↑↓: choose · c/Enter: install · Esc: back{notice ? `   ·   ${notice}` : ''}
+          ↑↓/jk: choose · c/Enter: install · Esc: back{notice ? `   ·   ${notice}` : ''}
         </Text>
       )}
     </Box>

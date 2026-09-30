@@ -21,14 +21,16 @@ export function NewAgentForm({
   const [ticket, setTicket] = useState('');
   const [prompt, setPrompt] = useState('');
 
-  useInput((_input, key) => {
+  useInput((input, key) => {
     if (key.escape) {
       onCancel();
       return;
     }
     if (step !== 'project') return;
-    if (key.upArrow) setCursor((c) => (c - 1 + projects.length) % projects.length);
-    else if (key.downArrow) setCursor((c) => (c + 1) % projects.length);
+    if (key.upArrow || input === 'k' || input === 'h')
+      setCursor((c) => (c - 1 + projects.length) % projects.length);
+    else if (key.downArrow || input === 'j' || input === 'l')
+      setCursor((c) => (c + 1) % projects.length);
     else if (key.return) {
       setProject(projects[cursor].name);
       setStep('name');
@@ -108,7 +110,7 @@ export function NewAgentForm({
 
       <Text dimColor>
         {step === 'project'
-          ? '↑↓: choose · Enter: select · Esc: cancel'
+          ? '↑↓/jk: choose · Enter: select · Esc: cancel'
           : 'Enter: next/create · Esc: cancel'}
       </Text>
     </Box>
