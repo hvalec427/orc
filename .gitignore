@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.orc/
+scratch/*.js
+*.log

@@ -1,0 +1,12 @@
+{
+  "model": "claude-opus-4-8",
+  "basePort": 8100,
+  "permissionMode": "bypassPermissions",
+  "settingSources": ["user", "project", "local"],
+  "maestroMcp": { "command": "maestro", "args": ["mcp"] },
+  "projects": [
+    { "name": "Acme iOS", "path": "~/dev/acme-app" },
+    { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5" },
+    { "name": "Playground", "path": "~/dev/rn-playground", "permissionMode": "default" }
+  ]
+}
