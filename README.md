@@ -94,7 +94,9 @@ orc --model claude-opus-4-8      # override model for all agents
 orc --no-maestro                 # don't attach the Maestro MCP server
 ```
 
-Press `n` to start an agent: pick a **project**, then enter a **name** and **ticket**.
+Press `n` to start an agent: pick a **project**, a **name**, an optional **ticket** (a reference like
+`PROJ-123` that the agent weaves into its commit message), and a **prompt** (what the agent should
+actually do). Steer it afterward with `i`.
 
 ### Keys
 

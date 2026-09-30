@@ -24,7 +24,10 @@ type StreamEvent =
 export interface AgentSessionInit {
   id: string;
   name: string;
+  /** Short ticket reference (for commit messages / display). May be empty. */
   ticket: string;
+  /** The actual task instructions — the agent's first message. */
+  prompt: string;
   branch: string;
   worktree: string;
   metroPort: number;
@@ -40,6 +43,7 @@ export class AgentSession extends EventEmitter {
   readonly id: string;
   readonly name: string;
   readonly ticket: string;
+  private readonly prompt: string;
   readonly branch: string;
   readonly worktree: string;
   readonly metroPort: number;
@@ -71,6 +75,7 @@ export class AgentSession extends EventEmitter {
     this.id = init.id;
     this.name = init.name;
     this.ticket = init.ticket;
+    this.prompt = init.prompt;
     this.branch = init.branch;
     this.worktree = init.worktree;
     this.metroPort = init.metroPort;
@@ -81,10 +86,11 @@ export class AgentSession extends EventEmitter {
 
   // ---- public API ---------------------------------------------------------
 
-  /** Start the session with the ticket as the first user message. */
+  /** Start the session with the prompt as the first user message. */
   start(): void {
-    this.queue.push(this.ticket);
-    this.addLog('system', `▶ launching agent "${this.name}" on ${this.branch} (port ${this.metroPort})`);
+    this.queue.push(this.prompt);
+    const ref = this.ticket ? ` [${this.ticket}]` : '';
+    this.addLog('system', `▶ launching agent "${this.name}"${ref} on ${this.branch} (port ${this.metroPort})`);
     this.query = query({ prompt: this.queue, options: this.buildOptions() });
     void this.runLoop();
   }
@@ -156,7 +162,7 @@ export class AgentSession extends EventEmitter {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: buildAppendPrompt({ name: this.name, metroPort: this.metroPort }),
+        append: buildAppendPrompt({ name: this.name, metroPort: this.metroPort, ticket: this.ticket }),
       },
       stderr: (data) => {
         const line = data.trim();

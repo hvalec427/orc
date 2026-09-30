@@ -5,6 +5,8 @@ export const DONE = '@@DONE@@';
 export interface PromptParams {
   name: string;
   metroPort: number;
+  /** Optional ticket reference to weave into commit messages. */
+  ticket?: string;
 }
 
 /**
@@ -12,7 +14,10 @@ export interface PromptParams {
  * the mobile/simulator/Maestro instructions). This only injects per-agent identity
  * and the human-in-the-loop protocol the TUI depends on.
  */
-export function buildAppendPrompt({ name, metroPort }: PromptParams): string {
+export function buildAppendPrompt({ name, metroPort, ticket }: PromptParams): string {
+  const ticketLine = ticket
+    ? `\n- Your ticket reference is "${ticket}". Reference it in your commit message(s).`
+    : '';
   return `
 ## Orchestration context (injected by orc)
 
@@ -20,7 +25,7 @@ You are agent "${name}", running under an orchestrator that supervises several a
 
 - Your unique agent name is "${name}". Use it when creating your iOS simulator.
 - Your dedicated Metro port is ${metroPort} (also available as the METRO_PORT env var). Always use it.
-- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.
+- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.${ticketLine}
 
 ### Talking to the human
 

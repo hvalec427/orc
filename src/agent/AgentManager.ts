@@ -41,7 +41,12 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Create a worktree + port + session in the named project and launch it. */
-  async create(projectName: string, name: string, ticket: string): Promise<AgentSession> {
+  async create(
+    projectName: string,
+    name: string,
+    ticket: string,
+    prompt: string,
+  ): Promise<AgentSession> {
     const project = this.config.projects.find((p) => p.name === projectName);
     if (!project) throw new Error(`Unknown project: ${projectName}`);
 
@@ -55,6 +60,7 @@ export class AgentManager extends EventEmitter {
       id,
       name,
       ticket,
+      prompt,
       branch,
       worktree: path,
       metroPort,

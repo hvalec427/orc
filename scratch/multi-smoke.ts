@@ -60,6 +60,7 @@ async function main() {
   const session = await manager.create(
     'Beta',
     'b',
+    'PROJ-1',
     "Create a file named hello.txt containing exactly the word 'hi'. Commit it with git. Do NOT build, install deps, or create simulators. Then finish.",
   );
   assert(session.repo === repoB, 'agent routed to Beta repo');

@@ -103,11 +103,11 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       <NewAgentForm
         projects={manager.projects()}
         onCancel={() => setMode('list')}
-        onSubmit={(project, name, ticket) => {
+        onSubmit={(project, name, ticket, prompt) => {
           setMode('list');
           setNotice(`creating "${name}" in ${project}…`);
           manager
-            .create(project, name, ticket)
+            .create(project, name, ticket, prompt)
             .then((s) => {
               setSelectedId(s.id);
               setNotice(`launched "${name}"`);
