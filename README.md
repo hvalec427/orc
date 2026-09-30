@@ -109,6 +109,7 @@ actually do). Steer it afterward with `i`.
 | `1`–`9`        | jump to the nth agent                           |
 | `w`            | jump to the next agent waiting on you           |
 | `i` / `Enter`  | answer the selected agent                       |
+| `r`            | resume a crashed/finished agent (same session)  |
 | `x`            | stop (interrupt) the selected agent             |
 | `d`            | remove the agent + its worktree                 |
 | `q`            | quit (stops all agents)                         |
@@ -130,8 +131,11 @@ Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
 
 ## Notes / limits
 
-- Live agent sessions run in-process; they don't survive an `orc` restart (a stored `sessionId`
-  makes future re-attach via `resume` possible — not yet wired into the UI).
+- If an agent's `claude` subprocess crashes (status `error`), the session isn't lost: press `r` (or
+  just answer it with `i`) to **resume the same Claude session** via `resume: <sessionId>` and
+  continue with full history. The same works to reopen a `done` agent.
+- Live agent sessions run in-process; they don't survive an `orc` restart (the `sessionId` is
+  persisted to `~/.orc/state.json`, so resuming across restarts is a small future addition).
 - The log pane is a fixed-height viewport (the layout never jumps as text streams). It follows the
   live tail by default; press `K`/`J` to scroll up/down and `G` to jump back to live.
 

@@ -85,6 +85,8 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         if (selected) setMode('input');
       } else if (input === 'x') {
         void selected?.stop();
+      } else if (input === 'r') {
+        selected?.retry();
       } else if (input === 'd' && selected) {
         const id = selected.id;
         setNotice(`removing ${id}…`);
@@ -169,7 +171,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new p:projects ↑↓/hjkl:switch J/K:scroll G:live 1-9:jump w:waiting i:answer x:stop d:remove q:quit
+        n:new p:projects ↑↓/hjkl:switch J/K:scroll 1-9:jump w:waiting i:answer r:resume x:stop d:remove q:quit
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>

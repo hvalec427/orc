@@ -53,7 +53,7 @@ export class AgentSession extends EventEmitter {
   readonly repo: string;
 
   private readonly config: ProjectConfig;
-  private readonly queue = new InputQueue();
+  private queue = new InputQueue();
   private query: Query | null = null;
 
   private status: AgentStatus = 'booting';
@@ -95,13 +95,46 @@ export class AgentSession extends EventEmitter {
     void this.runLoop();
   }
 
-  /** Send a human reply into the live session. */
+  /**
+   * Send a human reply. If the session is live, it continues the same turn stream.
+   * If it has ended (done/error/stopped), it resumes the underlying Claude session
+   * (via `resume: sessionId`) so a crash or a finished agent can be picked back up.
+   */
   send(text: string): void {
-    if (this.status === 'done' || this.status === 'error' || this.status === 'stopped') return;
+    this.question = undefined;
+    if (this.isDead()) {
+      this.resumeWith(text);
+      return;
+    }
     this.addLog('input', `you: ${text}`);
     this.setStatus('working');
-    this.question = undefined;
     this.queue.push(text);
+  }
+
+  /** Resume a dead/finished agent and nudge it to continue. */
+  retry(): void {
+    if (!this.isDead()) return;
+    this.resumeWith(
+      'Please continue the task where you left off. If the previous step failed, investigate the error and fix it.',
+    );
+  }
+
+  private isDead(): boolean {
+    return this.status === 'done' || this.status === 'error' || this.status === 'stopped';
+  }
+
+  /** Start a fresh query, resuming the prior Claude session if we have its id. */
+  private resumeWith(text: string): void {
+    this.queue = new InputQueue();
+    this.queue.push(text);
+    this.addLog('input', `you: ${text}`);
+    this.addLog(
+      'system',
+      this.sessionId ? `↻ resuming session ${this.sessionId.slice(0, 8)}` : '↻ restarting session',
+    );
+    this.setStatus('working');
+    this.query = query({ prompt: this.queue, options: this.buildOptions(this.sessionId) });
+    void this.runLoop();
   }
 
   /** Resolve a pending tool-approval request. */
@@ -147,7 +180,7 @@ export class AgentSession extends EventEmitter {
 
   // ---- session options ----------------------------------------------------
 
-  private buildOptions(): Options {
+  private buildOptions(resume?: string): Options {
     const opts: Options = {
       cwd: this.worktree,
       env: {
@@ -187,6 +220,8 @@ export class AgentSession extends EventEmitter {
           this.setStatus('needs_approval');
         });
     }
+
+    if (resume) opts.resume = resume;
 
     if (this.config.maestroMcp) {
       opts.mcpServers = {
