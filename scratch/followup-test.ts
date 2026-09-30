@@ -35,15 +35,16 @@ async function main() {
   sh(repo, 'git', ['commit', '-q', '-m', 'init']);
 
   const config: OrcConfig = {
-    basePort: 8500,
     projects: [
       {
         name: 'P',
+        type: 'orc',
         repo,
         model: 'claude-opus-4-8',
         worktreeDir: '.worktrees',
         permissionMode: 'bypassPermissions',
         settingSources: ['project'],
+        portRange: { start: 8500, end: 8549 },
       },
     ],
   };

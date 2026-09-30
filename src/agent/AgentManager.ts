@@ -12,11 +12,14 @@ const STATE_PATH = join(homedir(), '.orc', 'state.json');
 /** Owns all agent sessions (across projects) plus their worktree/port lifecycle. Emits 'update'. */
 export class AgentManager extends EventEmitter {
   private readonly agents = new Map<string, AgentSession>();
-  private readonly ports: PortAllocator;
+  /** One port allocator per project that defines a range (keyed by project name). */
+  private readonly ports = new Map<string, PortAllocator>();
 
   constructor(private readonly config: OrcConfig) {
     super();
-    this.ports = new PortAllocator(config.basePort);
+    for (const project of config.projects) {
+      if (project.portRange) this.ports.set(project.name, new PortAllocator(project.portRange));
+    }
   }
 
   /** The projects agents can be launched into. */
@@ -55,7 +58,8 @@ export class AgentManager extends EventEmitter {
 
     const id = this.uniqueId(slugify(name));
     const { path, branch } = await createWorktree(project.repo, project.worktreeDir, id);
-    const metroPort = await this.ports.allocate();
+    const allocator = this.ports.get(project.name);
+    const metroPort = allocator ? await allocator.allocate() : undefined;
 
     const session = new AgentSession({
       id,
@@ -82,7 +86,9 @@ export class AgentManager extends EventEmitter {
     if (!session) return;
     await session.stop();
     this.agents.delete(id);
-    this.ports.release(session.metroPort);
+    if (session.metroPort !== undefined) {
+      this.ports.get(session.project)?.release(session.metroPort);
+    }
     try {
       await removeWorktree(session.repo, session.worktree);
     } catch (err) {

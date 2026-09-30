@@ -1,21 +1,25 @@
 import { createServer } from 'node:net';
+import type { PortRange } from './types.js';
 
-/** Allocates unique Metro ports for agents, avoiding ports already in use. */
+/**
+ * Allocates unique ports for agents within a given inclusive range, avoiding ports
+ * already in use or already handed out. One allocator instance owns one range.
+ */
 export class PortAllocator {
   private readonly assigned = new Set<number>();
 
-  constructor(private readonly basePort: number) {}
+  constructor(private readonly range: PortRange) {}
 
-  /** Allocate the next free port at or above basePort that no agent already holds. */
+  /** Allocate the next free port within the range that no agent already holds. */
   async allocate(): Promise<number> {
-    for (let port = this.basePort; port < this.basePort + 1000; port++) {
+    for (let port = this.range.start; port <= this.range.end; port++) {
       if (this.assigned.has(port)) continue;
       if (await isFree(port)) {
         this.assigned.add(port);
         return port;
       }
     }
-    throw new Error(`No free port found in range ${this.basePort}-${this.basePort + 1000}`);
+    throw new Error(`No free port available in range ${this.range.start}-${this.range.end}`);
   }
 
   release(port: number): void {

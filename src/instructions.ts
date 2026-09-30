@@ -34,7 +34,7 @@ You are running inside your own dedicated Git worktree.
 
 ## Dev server
 
-Use a dedicated port. **\`AGENT_PORT\` is provided in your environment by orc — use it for your dev server.** Never assume a default port is free. Start the dev server using the project's existing commands, bound to \`AGENT_PORT\`.
+Use a dedicated port. **\`AGENT_PORT\` is provided in your environment by orc — use it for your dev server.** Never assume a default port is free. Start the dev server using the project's existing commands, bound to \`AGENT_PORT\`. If \`AGENT_PORT\` is not set and your task needs one, stop and ask the human to add a \`portRange\` for this project in the orc config.
 
 ## Authentication
 
@@ -89,7 +89,7 @@ You are running inside your own dedicated Git worktree.
 
 ## Running services
 
-If you need to run a local service, use the dedicated port in the \`AGENT_PORT\` env var. Never assume a default port is free.
+If you need to run a local service, use the dedicated port in the \`AGENT_PORT\` env var. Never assume a default port is free. If \`AGENT_PORT\` is not set and your task needs one, stop and ask the human to add a \`portRange\` for this project in the orc config.
 
 ## Authentication
 

@@ -20,7 +20,7 @@ Each agent is a streaming [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.c
 session (`query()` with a push-able async input queue). For the project you pick, orc:
 
 - creates `git worktree add <repo>/.worktrees/<name> -b agent/<name>` in that project's repo,
-- allocates a free `METRO_PORT` and injects it plus `AGENT_NAME` into the session env,
+- allocates a free port from the project's `portRange` (if set) and injects it as `METRO_PORT`/`AGENT_PORT` plus `AGENT_NAME` into the session env,
 - attaches the Maestro MCP server,
 - appends an orchestration addendum to the worktree's own `CLAUDE.md` (loaded via
   `settingSources`), and streams the agent's output live into the UI.
@@ -71,20 +71,20 @@ Create `~/.orc/config.json` listing your projects (see `examples/config.json`):
 ```json
 {
   "model": "claude-opus-4-8",
-  "basePort": 8100,
   "permissionMode": "bypassPermissions",
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "path": "~/dev/acme-app" },
-    { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5" }
+    { "name": "Acme iOS", "path": "~/dev/acme-app", "portRange": "8000-8099" },
+    { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5", "portRange": "8100-8199" }
   ]
 }
 ```
 
 Top-level keys are global defaults; each project may override `model`, `worktreeDir`,
-`permissionMode`, `settingSources`, and `maestroMcp`. Paths may use `~`. `basePort` is global
-(Metro ports are unique machine-wide).
+`permissionMode`, `settingSources`, `portRange`, and `maestroMcp`. Paths may use `~`. Give each
+project its own `portRange` (e.g. `8000-8099`, `8100-8199`) so parallel agents don't collide;
+projects without a range get no port.
 
 ## Usage
 
@@ -131,7 +131,11 @@ Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
 - `magicLink` (per project, optional): a sign-in deep link. If set, the new-agent form offers a step
   to accept it (Enter) or type a different one for that agent; the link is passed as `MAGIC_LINK` and
   the agent opens it on its simulator to log in. Projects without one skip that step.
-- `basePort`: global only. `maestroMcp`: adjust to however your server launches; omit / `--no-maestro`.
+- `portRange` (per project, optional): a `"start-end"` range like `"8000-8099"`. orc allocates a free
+  port from it per agent and injects `METRO_PORT`/`AGENT_PORT`. Give each project a distinct range.
+  Omit it for projects whose agents don't need a port; if such an agent needs one, it asks you to add
+  a range. Can also be set globally as a fallback.
+- `maestroMcp`: adjust to however your server launches; omit / `--no-maestro`.
 
 Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
 
