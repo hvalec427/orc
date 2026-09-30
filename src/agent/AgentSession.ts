@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { query, type Query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentInfo, AgentStatus, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
 import { InputQueue } from './InputQueue.js';
 import { buildAppendPrompt, NEEDS_INPUT, DONE } from '../agentPrompt.js';
+import { createWorktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
 
@@ -109,8 +111,45 @@ export class AgentSession extends EventEmitter {
     const ref = this.ticket ? ` [${this.ticket}]` : '';
     const portNote = this.metroPort !== undefined ? ` (port ${this.metroPort})` : '';
     this.addLog('system', `▶ launching agent "${this.name}"${ref} on ${this.branch}${portNote}`);
-    this.query = query({ prompt: this.queue, options: this.buildOptions() });
+    void this.launch(this.buildOptions());
+  }
+
+  /**
+   * Ensure the worktree exists, then open the query() stream and run the loop.
+   * Kept async so a missing worktree can be recreated before the SDK spawns its
+   * subprocess (which would otherwise die in a nonexistent cwd).
+   */
+  private async launch(options: Options): Promise<void> {
+    if (!(await this.ensureWorktree())) return;
+    this.query = query({ prompt: this.queue, options });
     void this.runLoop();
+  }
+
+  /**
+   * Make sure the agent's worktree exists before we launch the SDK subprocess in it.
+   * If it's gone (e.g. the agent merged/removed its own worktree, or a human ran `d`),
+   * recreate it on the existing `agent/<slug>` branch — which restores the agent's prior
+   * commits — rather than silently running on the main checkout, where the tools would
+   * mutate master. Returns false (and sets 'error') when recreation fails, so we never
+   * launch in the wrong directory.
+   */
+  private async ensureWorktree(): Promise<boolean> {
+    if (existsSync(this.worktree)) return true;
+    this.addLog('system', `worktree ${this.worktree} is gone — recreating it on ${this.branch}`);
+    try {
+      await createWorktree(this.repo, this.config.worktreeDir, this.id);
+      this.addLog('system', `↻ recreated worktree at ${this.worktree}`);
+      return true;
+    } catch (err) {
+      this.addLog(
+        'error',
+        `could not recreate worktree ${this.worktree}: ${(err as Error).message}. ` +
+          `Fix it manually or remove the agent.`,
+      );
+      this.setStatus('error');
+      this.queue.close();
+      return false;
+    }
   }
 
   /**
@@ -151,8 +190,7 @@ export class AgentSession extends EventEmitter {
       this.sessionId ? `↻ resuming session ${this.sessionId.slice(0, 8)}` : '↻ restarting session',
     );
     this.setStatus('working');
-    this.query = query({ prompt: this.queue, options: this.buildOptions(this.sessionId) });
-    void this.runLoop();
+    void this.launch(this.buildOptions(this.sessionId));
   }
 
   /** Resolve a pending tool-approval request. */
@@ -200,6 +238,8 @@ export class AgentSession extends EventEmitter {
 
   private buildOptions(resume?: string): Options {
     const opts: Options = {
+      // ensureWorktree() runs before every launch and guarantees this exists (recreating
+      // it if needed), so the SDK never spawns its subprocess in a dead cwd.
       cwd: this.worktree,
       env: {
         ...process.env,
