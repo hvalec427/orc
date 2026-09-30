@@ -122,13 +122,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         if (next) setSelectedId(next.id);
         setNotice(`deleting ${id}…`);
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
-      } else if (input === 'm' && selected) {
-        const id = selected.id;
-        setNotice(`merging ${id}…`);
-        void manager
-          .merge(id)
-          .then(() => setNotice(`merged ${id}`))
-          .catch((err) => setNotice(`merge failed: ${(err as Error).message}`));
       }
     },
     { isActive: mode === 'list' && !approvalPending && !confirmingQuit },
@@ -236,7 +229,7 @@ function HelpBar({ notice }: { notice: string }) {
       <Text dimColor>
         <Text bold>global</Text> n:new ↑↓/hjkl:switch w:next waiting J/K:scroll p:pause/resume logs q:quit tui
         {'  ·  '}
-        <Text bold>agent</Text> i:answer r:resume x:stop m:merge d:delete
+        <Text bold>agent</Text> i:answer r:resume selected x:stop d:delete
       </Text>
       {notice ? (
         <Text color="yellow" wrap="truncate">

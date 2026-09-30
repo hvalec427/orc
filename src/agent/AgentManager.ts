@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { PortAllocator } from '../ports.js';
-import { assertGitRepo, createWorktree, mergeAgentBranch, removeWorktree, slugify } from '../worktree.js';
+import { assertGitRepo, createWorktree, removeWorktree, slugify } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
 
 const STATE_PATH = join(homedir(), '.orc', 'state.json');
@@ -114,25 +114,6 @@ export class AgentManager extends EventEmitter {
       }
     }
     this.persist();
-    this.emit('update');
-  }
-
-  /**
-   * Merge an agent's branch into the main repo's current branch.
-   *
-   * This runs from the main repo (never the worktree), so it's safe: it can't
-   * delete the directory the orchestrator is running in. The agent, its worktree,
-   * and its branch are all kept so you can ask follow-ups; remove it with the
-   * usual remove flow when you're done. Throws on conflict (left aborted/clean).
-   */
-  async merge(id: string): Promise<void> {
-    const session = this.agents.get(id);
-    if (!session) return;
-    if (!session.branch) {
-      throw new Error(`${session.name} has no branch to merge (it is a ${session.template} agent).`);
-    }
-    const { into, commit } = await mergeAgentBranch(session.repo, session.branch, session.ticket);
-    this.emit('log', `merged ${session.branch} into ${into} (${commit})`);
     this.emit('update');
   }
 
