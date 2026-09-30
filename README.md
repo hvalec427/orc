@@ -112,7 +112,6 @@ actually do). Steer it afterward with `i`.
 | `i` / `Enter`  | answer the selected agent                       |
 | `r`            | resume a crashed/finished agent (same session)  |
 | `x`            | stop (interrupt) the selected agent             |
-| `m`            | merge the agent's branch into master (safe)     |
 | `d`            | remove the agent + its worktree                 |
 | `q`            | quit (stops all agents)                         |
 
@@ -120,17 +119,18 @@ When an agent is in `default` permission mode and a tool needs approval, press `
 
 ### Merging an agent
 
-When an agent reports `@@DONE@@`, press `m` to merge its `agent/<name>` branch into the base
-repo's current branch (usually `master`). orc runs the merge **from the main repo, never from
-inside the worktree** — so it can't delete the directory it's running in. (An agent asked to merge
-*itself* would `git worktree remove` its own working directory mid-command and permanently break
-its shell; that's why agents are told never to self-merge and merging lives in orc instead.)
+Merging is done by a dedicated **merge agent**, not a keybinding. When an agent reports `@@DONE@@`,
+start a new agent with `n`, pick the **Merge** template, and tell it which branches to merge (e.g.
+`merge agent/foo into master`). The merge agent runs directly in the base repo (no worktree), so it
+can't delete the directory it's running in. (A feature agent asked to merge *itself* would
+`git worktree remove` its own working directory mid-command and permanently break its shell; that's
+why feature agents are told never to self-merge.)
 
-- The merge is `--no-ff`. If it hits a **conflict**, orc runs `git merge --abort` and reports the
-  failure — nothing is left half-merged; resolve it manually in the main repo, then re-merge.
-- On success the agent, its worktree, and its branch are **kept** so you can ask follow-ups. Clean
-  up with `d` when you're done (that removes the worktree; delete the branch yourself if you like).
-- orc refuses to merge if the main repo's working tree is dirty — commit or stash there first.
+- If a merge hits a **conflict** it can't safely resolve, the merge agent runs `git merge --abort`,
+  leaves the repo clean, and asks you how to proceed — nothing is left half-merged.
+- After a branch merges cleanly, the merge agent removes its worktree and deletes the now-merged
+  branch.
+- The merge agent won't push to any remote unless you explicitly ask.
 
 ## Config reference
 
@@ -173,7 +173,7 @@ src/
   index.tsx              CLI entry + Ink render
   config.ts              config load/validate (zod)
   ports.ts               Metro port allocator
-  worktree.ts            git worktree add/remove + safe branch merge
+  worktree.ts            git worktree add/remove
   agentPrompt.ts         orchestration addendum + sentinels
   types.ts               shared domain types
   agent/
