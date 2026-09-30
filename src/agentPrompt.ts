@@ -125,7 +125,7 @@ You are agent "${name}", running under an orchestrator that supervises several a
 
 - Your unique agent name is "${name}". Use it when creating your iOS simulator.${portLine}
 - You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.
-- Do NOT merge your branch into master, delete your own branch, or remove your own worktree. Merging is the orchestrator's job, run from the main repo — doing it yourself would delete the directory you're running in and break your session. Just commit and report ${DONE}; the human merges you with the \`m\` key.${ticketLine}${magicSection}
+- Do NOT merge your branch into master, delete your own branch, or remove your own worktree. Merging is the orchestrator's job, run from the main repo — doing it yourself would delete the directory you're running in and break your session. Just commit and report ${DONE}; the human merges you.${ticketLine}${magicSection}
 
 ### Talking to the human
 
