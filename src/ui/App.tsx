@@ -236,7 +236,11 @@ function HelpBar({ notice }: { notice: string }) {
         {'  ·  '}
         <Text bold>agent</Text> i:answer r:resume selected x:stop m:merge d:remove
       </Text>
-      {notice ? <Text color="yellow">{notice}</Text> : null}
+      {notice ? (
+        <Text color="yellow" wrap="truncate">
+          {notice.replace(/\s+/g, ' ').trim()}
+        </Text>
+      ) : null}
     </Box>
   );
 }

@@ -22,7 +22,7 @@ export function InputBar({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
       {question ? (
-        <Text wrap="wrap" dimColor>
+        <Text wrap="truncate" dimColor>
           {truncate(question, 300)}
         </Text>
       ) : null}
