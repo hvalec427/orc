@@ -106,7 +106,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
 
       if (key.downArrow || input === 'j' || input === 'l' || key.tab) select(selectedIndex + 1);
       else if (key.upArrow || input === 'k' || input === 'h') select(selectedIndex - 1);
-      else if (input >= '1' && input <= '9') select(Number(input) - 1);
       else if (input === 'w') {
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
@@ -232,7 +231,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        <Text bold>global</Text> n:new ↑↓/hjkl:switch 1-9:jump w:next waiting J/K:scroll p:pause/resume logs q:quit tui
+        <Text bold>global</Text> n:new ↑↓/hjkl:switch w:next waiting J/K:scroll p:pause/resume logs q:quit tui
         {'  ·  '}
         <Text bold>agent</Text> i:answer r:resume selected x:stop m:merge d:delete
       </Text>
