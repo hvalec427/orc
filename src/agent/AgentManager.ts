@@ -46,6 +46,7 @@ export class AgentManager extends EventEmitter {
     name: string,
     ticket: string,
     prompt: string,
+    magicLink?: string,
   ): Promise<AgentSession> {
     const project = this.config.projects.find((p) => p.name === projectName);
     if (!project) throw new Error(`Unknown project: ${projectName}`);
@@ -61,6 +62,7 @@ export class AgentManager extends EventEmitter {
       name,
       ticket,
       prompt,
+      magicLink: magicLink ?? project.magicLink,
       branch,
       worktree: path,
       metroPort,

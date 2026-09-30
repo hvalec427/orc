@@ -63,6 +63,8 @@ export interface ProjectConfig {
   settingSources: Array<'user' | 'project' | 'local'>;
   /** Maestro MCP server command, attached to every agent. Omit to disable. */
   maestroMcp?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** Magic sign-in link the agent opens on the simulator to log in. Omit to disable. */
+  magicLink?: string;
 }
 
 /** Global orc config: a list of projects plus the machine-wide Metro port base. */

@@ -88,6 +88,12 @@ When the task is completely finished:
 Use a dedicated Metro port. **`METRO_PORT` is provided in your environment by orc — always use it.**
 Never assume port `8081` is available. Start Metro using the project's existing commands.
 
+## Authentication
+
+If a `MAGIC_LINK` env var is provided, use it to sign in: after the app is installed and launched,
+open the link on your simulator with `xcrun simctl openurl "<SIMULATOR_UDID>" "$MAGIC_LINK"` (or
+Maestro's openLink) before verifying any signed-in screens.
+
 ## Building and Installing
 
 You are responsible for building and installing the app on your assigned simulator. Do NOT ask the

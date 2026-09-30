@@ -28,6 +28,8 @@ export interface AgentSessionInit {
   ticket: string;
   /** The actual task instructions — the agent's first message. */
   prompt: string;
+  /** Optional magic sign-in link (already resolved: per-agent override or project default). */
+  magicLink?: string;
   branch: string;
   worktree: string;
   metroPort: number;
@@ -44,6 +46,7 @@ export class AgentSession extends EventEmitter {
   readonly name: string;
   readonly ticket: string;
   private readonly prompt: string;
+  private readonly magicLink?: string;
   readonly branch: string;
   readonly worktree: string;
   readonly metroPort: number;
@@ -76,6 +79,7 @@ export class AgentSession extends EventEmitter {
     this.name = init.name;
     this.ticket = init.ticket;
     this.prompt = init.prompt;
+    this.magicLink = init.magicLink;
     this.branch = init.branch;
     this.worktree = init.worktree;
     this.metroPort = init.metroPort;
@@ -187,6 +191,7 @@ export class AgentSession extends EventEmitter {
         ...process.env,
         AGENT_NAME: this.name,
         METRO_PORT: String(this.metroPort),
+        ...(this.magicLink ? { MAGIC_LINK: this.magicLink } : {}),
       },
       model: this.config.model,
       includePartialMessages: true,
@@ -195,7 +200,12 @@ export class AgentSession extends EventEmitter {
       systemPrompt: {
         type: 'preset',
         preset: 'claude_code',
-        append: buildAppendPrompt({ name: this.name, metroPort: this.metroPort, ticket: this.ticket }),
+        append: buildAppendPrompt({
+          name: this.name,
+          metroPort: this.metroPort,
+          ticket: this.ticket,
+          magicLink: this.magicLink,
+        }),
       },
       stderr: (data) => {
         const line = data.trim();

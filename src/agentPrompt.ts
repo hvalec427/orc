@@ -7,6 +7,8 @@ export interface PromptParams {
   metroPort: number;
   /** Optional ticket reference to weave into commit messages. */
   ticket?: string;
+  /** Optional magic sign-in link the agent opens on its simulator to log in. */
+  magicLink?: string;
 }
 
 /**
@@ -14,9 +16,22 @@ export interface PromptParams {
  * the mobile/simulator/Maestro instructions). This only injects per-agent identity
  * and the human-in-the-loop protocol the TUI depends on.
  */
-export function buildAppendPrompt({ name, metroPort, ticket }: PromptParams): string {
+export function buildAppendPrompt({ name, metroPort, ticket, magicLink }: PromptParams): string {
   const ticketLine = ticket
     ? `\n- Your ticket reference is "${ticket}". Reference it in your commit message(s).`
+    : '';
+  const magicSection = magicLink
+    ? `
+
+### Signing in
+
+A magic sign-in link is available (also in the MAGIC_LINK env var). After the app is installed and
+launched on your simulator, open this link on that simulator to authenticate before verifying any
+signed-in screens:
+
+  xcrun simctl openurl "<YOUR_SIMULATOR_UDID>" "${magicLink}"
+
+(or use Maestro's openLink). Use your own simulator's UDID.`
     : '';
   return `
 ## Orchestration context (injected by orc)
@@ -25,7 +40,7 @@ You are agent "${name}", running under an orchestrator that supervises several a
 
 - Your unique agent name is "${name}". Use it when creating your iOS simulator.
 - Your dedicated Metro port is ${metroPort} (also available as the METRO_PORT env var). Always use it.
-- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.${ticketLine}
+- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.${ticketLine}${magicSection}
 
 ### Talking to the human
 

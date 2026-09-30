@@ -5,7 +5,7 @@
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "path": "~/dev/acme-app" },
+    { "name": "Acme iOS", "path": "~/dev/acme-app", "magicLink": "acme://login?token=REPLACE_ME" },
     { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5" },
     { "name": "Playground", "path": "~/dev/rn-playground", "permissionMode": "default" }
   ]

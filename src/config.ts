@@ -16,6 +16,7 @@ const OverridableSchema = {
   permissionMode: z.enum(['bypassPermissions', 'default', 'acceptEdits']).optional(),
   settingSources: z.array(z.enum(['user', 'project', 'local'])).optional(),
   maestroMcp: MaestroSchema.optional(),
+  magicLink: z.string().optional(),
 };
 
 const ProjectSchema = z
@@ -100,6 +101,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
     permissionMode: p.permissionMode ?? parsed.permissionMode ?? DEFAULTS.permissionMode,
     settingSources: p.settingSources ?? parsed.settingSources ?? DEFAULTS.settingSources,
     maestroMcp: flags.noMaestro ? undefined : p.maestroMcp ?? globalMaestro,
+    magicLink: p.magicLink ?? parsed.magicLink,
   }));
 
   const names = new Set<string>();

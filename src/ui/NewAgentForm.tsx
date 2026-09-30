@@ -3,7 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { ProjectConfig } from '../types.js';
 
-type Step = 'project' | 'name' | 'ticket' | 'prompt';
+type Step = 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
 
 export function NewAgentForm({
   projects,
@@ -11,15 +11,28 @@ export function NewAgentForm({
   onCancel,
 }: {
   projects: ProjectConfig[];
-  onSubmit: (project: string, name: string, ticket: string, prompt: string) => void;
+  onSubmit: (
+    project: string,
+    name: string,
+    ticket: string,
+    prompt: string,
+    magicLink: string | undefined,
+  ) => void;
   onCancel: () => void;
 }) {
-  const [step, setStep] = useState<Step>(projects.length === 1 ? 'name' : 'project');
-  const [project, setProject] = useState<string>(projects.length === 1 ? projects[0].name : '');
+  const single = projects.length === 1 ? projects[0] : undefined;
+  const [step, setStep] = useState<Step>(
+    single ? (single.magicLink ? 'magiclink' : 'name') : 'project',
+  );
+  const [project, setProject] = useState<string>(single?.name ?? '');
   const [cursor, setCursor] = useState(0);
+  const [magicLink, setMagicLink] = useState<string>(single?.magicLink ?? '');
   const [name, setName] = useState('');
   const [ticket, setTicket] = useState('');
   const [prompt, setPrompt] = useState('');
+
+  const selected = projects.find((p) => p.name === project);
+  const hasMagic = !!selected?.magicLink;
 
   useInput((input, key) => {
     if (key.escape) {
@@ -32,12 +45,15 @@ export function NewAgentForm({
     else if (key.downArrow || input === 'j' || input === 'l')
       setCursor((c) => (c + 1) % projects.length);
     else if (key.return) {
-      setProject(projects[cursor].name);
-      setStep('name');
+      const proj = projects[cursor];
+      setProject(proj.name);
+      setMagicLink(proj.magicLink ?? '');
+      setStep(proj.magicLink ? 'magiclink' : 'name');
     }
   });
 
-  const filled = (v: string) => (v ? v : <Text dimColor>—</Text>);
+  const finish = (finalPrompt: string) =>
+    onSubmit(project, name.trim(), ticket.trim(), finalPrompt.trim(), hasMagic ? magicLink.trim() : undefined);
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
@@ -60,7 +76,23 @@ export function NewAgentForm({
         )}
       </Box>
 
-      {step !== 'project' && (
+      {hasMagic && step !== 'project' && (
+        <Box>
+          <Text>{step === 'magiclink' ? '› ' : '  '}magic  : </Text>
+          {step === 'magiclink' ? (
+            <TextInput
+              value={magicLink}
+              onChange={setMagicLink}
+              onSubmit={() => setStep('name')}
+              placeholder="Enter to use config default · edit to override · clear for none"
+            />
+          ) : (
+            <Text dimColor>{magicLink ? truncate(magicLink, 48) : '(none)'}</Text>
+          )}
+        </Box>
+      )}
+
+      {(step === 'name' || step === 'ticket' || step === 'prompt') && (
         <Box>
           <Text>{step === 'name' ? '› ' : '  '}name   : </Text>
           {step === 'name' ? (
@@ -89,7 +121,7 @@ export function NewAgentForm({
               placeholder="e.g. PROJ-123 (optional — for the commit; Enter to skip)"
             />
           ) : (
-            <Text>{filled(ticket)}</Text>
+            <Text>{ticket ? ticket : <Text dimColor>—</Text>}</Text>
           )}
         </Box>
       )}
@@ -101,7 +133,7 @@ export function NewAgentForm({
             value={prompt}
             onChange={setPrompt}
             onSubmit={(v) => {
-              if (v.trim()) onSubmit(project, name.trim(), ticket.trim(), v.trim());
+              if (v.trim()) finish(v);
             }}
             placeholder="what should this agent do?"
           />
@@ -115,4 +147,8 @@ export function NewAgentForm({
       </Text>
     </Box>
   );
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }

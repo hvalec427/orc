@@ -125,6 +125,9 @@ Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
   `acceptEdits`, or `default` (routes tool approvals to the UI via `y`/`n`). Overridable per project.
 - `settingSources` **must include `project`** for the worktree's `CLAUDE.md` to load. Overridable.
 - `model`, `worktreeDir`, `maestroMcp`: global defaults, overridable per project.
+- `magicLink` (per project, optional): a sign-in deep link. If set, the new-agent form offers a step
+  to accept it (Enter) or type a different one for that agent; the link is passed as `MAGIC_LINK` and
+  the agent opens it on its simulator to log in. Projects without one skip that step.
 - `basePort`: global only. `maestroMcp`: adjust to however your server launches; omit / `--no-maestro`.
 
 Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
