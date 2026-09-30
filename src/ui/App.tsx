@@ -20,6 +20,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const [mode, setMode] = useState<Mode>('list');
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
+  const [confirmingQuit, setConfirmingQuit] = useState(false);
 
   // Re-render whenever any agent updates.
   useEffect(() => {
@@ -62,7 +63,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   useInput(
     (input, key) => {
       if (input === 'q') {
-        void manager.stopAll().finally(exit);
+        setConfirmingQuit(true);
         return;
       }
       if (input === 'n') {
@@ -93,7 +94,19 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         void manager.remove(id).then(() => setNotice(`removed ${id}`));
       }
     },
-    { isActive: mode === 'list' && !approvalPending },
+    { isActive: mode === 'list' && !approvalPending && !confirmingQuit },
+  );
+
+  // Quit confirmation keys — active only while the confirm popup is up.
+  useInput(
+    (input, key) => {
+      if (input === 'y') {
+        void manager.stopAll().finally(exit);
+      } else if (input === 'n' || key.escape) {
+        setConfirmingQuit(false);
+      }
+    },
+    { isActive: confirmingQuit },
   );
 
   if (mode === 'projects') {
@@ -123,7 +136,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // Reserve rows for the header (1), the bottom occupant, and one safety line so the
   // total output stays STRICTLY below the terminal height. Rendering exactly `rows`
   // lines makes the terminal scroll and corrupts Ink's redraw (the top walks off-screen).
-  const overlayRows = approvalPending ? 6 : mode === 'input' ? 5 : 1;
+  const overlayRows = confirmingQuit ? 4 : approvalPending ? 6 : mode === 'input' ? 5 : 1;
   const bodyHeight = Math.max(6, rows - 2 - overlayRows);
 
   return (
@@ -145,7 +158,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         />
       </Box>
 
-      {approvalPending && selected ? (
+      {confirmingQuit ? (
+        <QuitConfirm agentCount={infos.length} />
+      ) : approvalPending && selected ? (
         <ApprovalModal
           agentName={selected.name}
           pending={approvalPending}
@@ -164,6 +179,20 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       ) : (
         <HelpBar notice={notice} />
       )}
+    </Box>
+  );
+}
+
+function QuitConfirm({ agentCount }: { agentCount: number }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
+      <Text bold color="red">Quit orc?</Text>
+      <Text dimColor>
+        This stops {agentCount} agent(s) and exits.
+      </Text>
+      <Text>
+        <Text color="green">y</Text> quit · <Text color="red">n</Text> cancel
+      </Text>
     </Box>
   );
 }
