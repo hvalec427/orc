@@ -21,8 +21,17 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
 
-  // Re-render whenever any agent updates.
+  // Re-render whenever any agent updates — except while the reply box is open.
+  // A busy agent emits ~15fps token-delta updates; letting those re-render the
+  // whole tree (including the mounted TextInput) makes the TUI flicker. Freeze
+  // the live body while typing a reply and resume live-tailing on close.
+  const liveUpdates = mode !== 'input';
   useEffect(() => {
+    if (!liveUpdates) {
+      // Take one snapshot so the frozen body reflects the latest state, then stop.
+      setTick((t) => t + 1);
+      return;
+    }
     const onUpdate = () => setTick((t) => t + 1);
     const onLog = (m: string) => setNotice(m);
     manager.on('update', onUpdate);
@@ -31,7 +40,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       manager.off('update', onUpdate);
       manager.off('log', onLog);
     };
-  }, [manager]);
+  }, [manager, liveUpdates]);
 
   const agents = manager.list();
   const infos = agents.map((a) => a.getInfo());
