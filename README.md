@@ -112,10 +112,25 @@ actually do). Steer it afterward with `i`.
 | `i` / `Enter`  | answer the selected agent                       |
 | `r`            | resume a crashed/finished agent (same session)  |
 | `x`            | stop (interrupt) the selected agent             |
+| `m`            | merge the agent's branch into master (safe)     |
 | `d`            | remove the agent + its worktree                 |
 | `q`            | quit (stops all agents)                         |
 
 When an agent is in `default` permission mode and a tool needs approval, press `y`/`n`.
+
+### Merging an agent
+
+When an agent reports `@@DONE@@`, press `m` to merge its `agent/<name>` branch into the base
+repo's current branch (usually `master`). orc runs the merge **from the main repo, never from
+inside the worktree** — so it can't delete the directory it's running in. (An agent asked to merge
+*itself* would `git worktree remove` its own working directory mid-command and permanently break
+its shell; that's why agents are told never to self-merge and merging lives in orc instead.)
+
+- The merge is `--no-ff`. If it hits a **conflict**, orc runs `git merge --abort` and reports the
+  failure — nothing is left half-merged; resolve it manually in the main repo, then re-merge.
+- On success the agent, its worktree, and its branch are **kept** so you can ask follow-ups. Clean
+  up with `d` when you're done (that removes the worktree; delete the branch yourself if you like).
+- orc refuses to merge if the main repo's working tree is dirty — commit or stash there first.
 
 ## Config reference
 
@@ -158,7 +173,7 @@ src/
   index.tsx              CLI entry + Ink render
   config.ts              config load/validate (zod)
   ports.ts               Metro port allocator
-  worktree.ts            git worktree add/remove
+  worktree.ts            git worktree add/remove + safe branch merge
   agentPrompt.ts         orchestration addendum + sentinels
   types.ts               shared domain types
   agent/
