@@ -1,5 +1,14 @@
 /** Shared domain types for orc. */
 
+/**
+ * The kind of agent to launch, chosen in the new-agent form:
+ * - `feature`  — the default: a task agent in its own git worktree + branch.
+ * - `question` — a read-only agent that answers a question and cannot edit anything;
+ *                it runs in the base repo (no worktree) and is denied all mutating tools.
+ * - `merge`    — an agent (no worktree) whose job is to merge branches in the base repo.
+ */
+export type AgentTemplate = 'feature' | 'question' | 'merge';
+
 export type AgentStatus =
   | 'booting' // session created, first turn not yet complete
   | 'working' // actively processing a turn
@@ -33,11 +42,15 @@ export interface PendingApproval {
 export interface AgentInfo {
   id: string;
   name: string;
+  /** Which template this agent was launched from. */
+  template: AgentTemplate;
   /** Nice name of the project this agent belongs to. */
   project: string;
   ticket: string;
-  branch: string;
-  worktree: string;
+  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  branch?: string;
+  /** Worktree path, or undefined for no-worktree templates (question/merge). */
+  worktree?: string;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
   status: AgentStatus;

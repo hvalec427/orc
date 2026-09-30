@@ -30,6 +30,9 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
                   {s.icon}
                 </Text>
                 <Text bold={selected}> {info.name}</Text>
+                {info.template !== 'feature' ? (
+                  <Text dimColor> [{info.template}]</Text>
+                ) : null}
               </Text>
               <Text dimColor> ⟨{truncate(info.project, 26)}⟩</Text>
               <Text dimColor> {truncate(info.ticket, 28)}</Text>

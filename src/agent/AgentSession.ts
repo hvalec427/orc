@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { query, type Query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentInfo, AgentStatus, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
+import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
 import { InputQueue } from './InputQueue.js';
 import { buildAppendPrompt, NEEDS_INPUT, DONE } from '../agentPrompt.js';
 import { createWorktree } from '../worktree.js';
@@ -38,18 +38,38 @@ type StreamEvent =
 export interface AgentSessionInit {
   id: string;
   name: string;
+  /** Which template the agent was launched from (selects prompt shape + tool policy). */
+  template: AgentTemplate;
   /** Short ticket reference (for commit messages / display). May be empty. */
   ticket: string;
   /** The actual task instructions — the agent's first message. */
   prompt: string;
   /** Optional magic sign-in link (already resolved: per-agent override or project default). */
   magicLink?: string;
-  branch: string;
-  worktree: string;
+  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  branch?: string;
+  /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
+  worktree?: string;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
   config: ProjectConfig;
 }
+
+/**
+ * Tools a read-only "question" agent is never allowed to use. Covers the file-mutating
+ * tools plus Bash (which can run arbitrary state-changing commands). The agent can still
+ * investigate with Read/Grep/Glob/Task and other read-only tools.
+ */
+const READONLY_DENIED_TOOLS = new Set([
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'MultiEdit',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'KillBash',
+]);
 
 /**
  * One Claude Code agent = one streaming query() session.
@@ -59,11 +79,14 @@ export interface AgentSessionInit {
 export class AgentSession extends EventEmitter {
   readonly id: string;
   readonly name: string;
+  readonly template: AgentTemplate;
   readonly ticket: string;
   private readonly prompt: string;
   private readonly magicLink?: string;
-  readonly branch: string;
-  readonly worktree: string;
+  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  readonly branch?: string;
+  /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
+  readonly worktree?: string;
   readonly metroPort?: number;
   /** Nice name of the project this agent belongs to. */
   readonly project: string;
@@ -92,6 +115,7 @@ export class AgentSession extends EventEmitter {
     super();
     this.id = init.id;
     this.name = init.name;
+    this.template = init.template;
     this.ticket = init.ticket;
     this.prompt = init.prompt;
     this.magicLink = init.magicLink;
@@ -110,7 +134,11 @@ export class AgentSession extends EventEmitter {
     this.queue.push(this.prompt);
     const ref = this.ticket ? ` [${this.ticket}]` : '';
     const portNote = this.metroPort !== undefined ? ` (port ${this.metroPort})` : '';
-    this.addLog('system', `▶ launching agent "${this.name}"${ref} on ${this.branch}${portNote}`);
+    const where = this.branch ? ` on ${this.branch}` : ` in ${this.repo}`;
+    this.addLog(
+      'system',
+      `▶ launching ${this.template} agent "${this.name}"${ref}${where}${portNote}`,
+    );
     void this.launch(this.buildOptions());
   }
 
@@ -134,6 +162,8 @@ export class AgentSession extends EventEmitter {
    * launch in the wrong directory.
    */
   private async ensureWorktree(): Promise<boolean> {
+    // No-worktree templates (question/merge) run in the base repo — nothing to ensure.
+    if (!this.worktree) return true;
     if (existsSync(this.worktree)) return true;
     this.addLog('system', `worktree ${this.worktree} is gone — recreating it on ${this.branch}`);
     try {
@@ -218,6 +248,7 @@ export class AgentSession extends EventEmitter {
     return {
       id: this.id,
       name: this.name,
+      template: this.template,
       project: this.project,
       ticket: this.ticket,
       branch: this.branch,
@@ -237,10 +268,12 @@ export class AgentSession extends EventEmitter {
   // ---- session options ----------------------------------------------------
 
   private buildOptions(resume?: string): Options {
+    const readOnly = this.template === 'question';
     const opts: Options = {
-      // ensureWorktree() runs before every launch and guarantees this exists (recreating
-      // it if needed), so the SDK never spawns its subprocess in a dead cwd.
-      cwd: this.worktree,
+      // No-worktree templates (question/merge) run in the project's base repo. For
+      // worktree templates, ensureWorktree() runs before every launch and guarantees the
+      // path exists (recreating it if needed), so the SDK never spawns in a dead cwd.
+      cwd: this.worktree ?? this.repo,
       env: {
         ...process.env,
         // Silence the SDK's 1P telemetry/error-reporting exporter. Its background export
@@ -262,6 +295,7 @@ export class AgentSession extends EventEmitter {
         preset: 'claude_code',
         append: buildAppendPrompt({
           name: this.name,
+          template: this.template,
           metroPort: this.metroPort,
           ticket: this.ticket,
           magicLink: this.magicLink,
@@ -273,7 +307,21 @@ export class AgentSession extends EventEmitter {
       },
     };
 
-    if (this.config.permissionMode === 'bypassPermissions') {
+    if (readOnly) {
+      // A question agent is read-only no matter the project's permission mode: never bypass
+      // permissions, and hard-deny every mutating tool. Read-only tools are auto-allowed so the
+      // agent can still investigate without pestering the human for approval on each read.
+      opts.permissionMode = 'default';
+      opts.canUseTool = (toolName, input) =>
+        Promise.resolve(
+          READONLY_DENIED_TOOLS.has(toolName)
+            ? {
+                behavior: 'deny',
+                message: `"${toolName}" is disabled: this is a read-only question agent that cannot modify anything.`,
+              }
+            : { behavior: 'allow', updatedInput: input },
+        );
+    } else if (this.config.permissionMode === 'bypassPermissions') {
       opts.allowDangerouslySkipPermissions = true;
     } else if (this.config.permissionMode === 'default') {
       opts.canUseTool = (toolName, input, options) =>
