@@ -21,26 +21,50 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
 
-  // Re-render whenever any agent updates — except while the reply box is open.
-  // A busy agent emits ~15fps token-delta updates; letting those re-render the
-  // whole tree (including the mounted TextInput) makes the TUI flicker. Freeze
-  // the live body while typing a reply and resume live-tailing on close.
-  const liveUpdates = mode !== 'input';
+  // Re-render whenever any agent updates. A busy agent emits ~15fps token-delta
+  // updates; while the reply box is open, repainting the whole tree that fast
+  // moves the focused TextInput cursor and makes the TUI flicker. So while
+  // typing a reply we coalesce updates to a few frames per second — the log
+  // stays live (you still see the agent working/finishing), but the repaint is
+  // infrequent enough that the blink is negligible.
+  const replyOpen = mode === 'input';
   useEffect(() => {
-    if (!liveUpdates) {
-      // Take one snapshot so the frozen body reflects the latest state, then stop.
-      setTick((t) => t + 1);
-      return;
+    const bump = () => setTick((t) => t + 1);
+
+    if (!replyOpen) {
+      const onUpdate = () => bump();
+      const onLog = (m: string) => setNotice(m);
+      manager.on('update', onUpdate);
+      manager.on('log', onLog);
+      return () => {
+        manager.off('update', onUpdate);
+        manager.off('log', onLog);
+      };
     }
-    const onUpdate = () => setTick((t) => t + 1);
+
+    // Throttled path while the reply box is open (~4fps).
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      timer = undefined;
+      if (pending) {
+        pending = false;
+        bump();
+      }
+    };
+    const onUpdate = () => {
+      pending = true;
+      if (!timer) timer = setTimeout(flush, 250);
+    };
     const onLog = (m: string) => setNotice(m);
     manager.on('update', onUpdate);
     manager.on('log', onLog);
     return () => {
       manager.off('update', onUpdate);
       manager.off('log', onLog);
+      if (timer) clearTimeout(timer);
     };
-  }, [manager, liveUpdates]);
+  }, [manager, replyOpen]);
 
   const agents = manager.list();
   const infos = agents.map((a) => a.getInfo());
