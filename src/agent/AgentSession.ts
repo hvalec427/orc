@@ -191,6 +191,10 @@ export class AgentSession extends EventEmitter {
       cwd: this.worktree,
       env: {
         ...process.env,
+        // Silence the SDK's 1P telemetry/error-reporting exporter. Its background export
+        // failures ("1P event logging: N events failed to export") otherwise surface as
+        // unhandled rejections. This one switch disables both telemetry and error reporting.
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         AGENT_NAME: this.name,
         ...(this.metroPort !== undefined
           ? { METRO_PORT: String(this.metroPort), AGENT_PORT: String(this.metroPort) }
@@ -261,6 +265,10 @@ export class AgentSession extends EventEmitter {
     } catch (err) {
       this.addLog('error', `session error: ${(err as Error).message}`);
       this.setStatus('error');
+      // The SDK session is gone; close our side so the input queue and its async iterator
+      // are released. A human can still pick the agent back up via retry()/send(), which
+      // starts a fresh query() resuming the prior session id.
+      this.queue.close();
     }
   }
 
