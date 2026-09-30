@@ -38,6 +38,31 @@ function printHelp(): void {
   );
 }
 
+// Alternate screen buffer: the app owns a full-screen viewport (like vim/htop) and the
+// terminal's own scrollback is left untouched and restored on exit.
+const ALT_ON = '\x1b[?1049h';
+const ALT_OFF = '\x1b[?1049l';
+let altActive = false;
+function enterAltScreen(): void {
+  if (altActive || !process.stdout.isTTY) return;
+  altActive = true;
+  process.stdout.write(ALT_ON);
+}
+function leaveAltScreen(): void {
+  if (!altActive) return;
+  altActive = false;
+  process.stdout.write(ALT_OFF);
+}
+// Always restore the normal screen, even on crash/kill. Ctrl+C (SIGINT) is left to Ink so
+// it can unmount and let main() stop agents gracefully before we restore the screen.
+process.on('exit', leaveAltScreen);
+for (const sig of ['SIGTERM', 'SIGHUP'] as const) {
+  process.on(sig, () => {
+    leaveAltScreen();
+    process.exit(0);
+  });
+}
+
 async function main(): Promise<void> {
   let config;
   try {
@@ -47,14 +72,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  enterAltScreen();
   const manager = new AgentManager(config);
   const app = render(createElement(App, { manager, config }));
 
   await app.waitUntilExit();
   await manager.stopAll();
+  leaveAltScreen();
 }
 
 main().catch((err) => {
+  leaveAltScreen();
   process.stderr.write(`${(err as Error).stack ?? err}\n`);
   process.exit(1);
 });

@@ -142,6 +142,8 @@ Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
   continue with full history. The same works to reopen a `done` agent.
 - Live agent sessions run in-process; they don't survive an `orc` restart (the `sessionId` is
   persisted to `~/.orc/state.json`, so resuming across restarts is a small future addition).
+- orc runs in the terminal's alternate screen buffer (like vim/htop): it owns a full-screen
+  viewport and restores your shell (with scrollback intact) on exit.
 - The log pane is a fixed-height viewport (the layout never jumps as text streams). It follows the
   live tail by default; press `K`/`J` to scroll up/down and `G` to jump back to live.
 
