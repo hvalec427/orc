@@ -73,6 +73,20 @@ for (const sig of ['SIGTERM', 'SIGHUP'] as const) {
   });
 }
 
+// The Claude Agent SDK runs work detached from our awaited message loop — notably its
+// telemetry exporter and internal command queue. A failure there (e.g. "1P event logging:
+// N events failed to export", or "only prompt commands are supported in streaming mode")
+// surfaces as an unhandled rejection/exception, which by default would kill the whole
+// orchestrator and take every other agent down with it. Keep orc alive: a single session's
+// SDK crash is already reflected as that agent's 'error' status via AgentSession.runLoop.
+process.on('unhandledRejection', (reason) => {
+  const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  process.stderr.write(`[orc] ignored unhandled rejection: ${detail.split('\n')[0]}\n`);
+});
+process.on('uncaughtException', (err) => {
+  process.stderr.write(`[orc] ignored uncaught exception: ${err.stack ?? err.message}\n`);
+});
+
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv.slice(2));
 
