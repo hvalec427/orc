@@ -105,8 +105,8 @@ export function AgentView({
     ? 'live'
     : paused
       ? behind > 0
-        ? `⏸ paused ↑${behind} (p:resume)`
-        : '⏸ paused (p:resume)'
+        ? `⏸ scroll paused ↑${behind} (p:resume)`
+        : '⏸ scroll paused (p:resume)'
       : maxTop === 0
         ? 'live'
         : `↑${behind} (G:bottom)`;
