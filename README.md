@@ -104,7 +104,8 @@ actually do). Steer it afterward with `i`.
 | -------------- | ----------------------------------------------- |
 | `n`            | new agent (pick project, then name + ticket)    |
 | `p`            | projects: install mobile CLAUDE.md into a repo   |
-| `↑`/`↓`, `Tab` | switch selected agent                           |
+| `↑`/`↓`, `Tab`, `hjkl` | switch selected agent                   |
+| `J` / `K`      | scroll the log down / up · `G` jumps back to live |
 | `1`–`9`        | jump to the nth agent                           |
 | `w`            | jump to the next agent waiting on you           |
 | `i` / `Enter`  | answer the selected agent                       |
@@ -131,8 +132,8 @@ Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
 
 - Live agent sessions run in-process; they don't survive an `orc` restart (a stored `sessionId`
   makes future re-attach via `resume` possible — not yet wired into the UI).
-- The log pane shows a bounded tail; very long assistant messages are truncated in view (the full
-  text still reaches the model).
+- The log pane is a fixed-height viewport (the layout never jumps as text streams). It follows the
+  live tail by default; press `K`/`J` to scroll up/down and `G` to jump back to live.
 
 ## Project layout
 

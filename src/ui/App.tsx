@@ -118,7 +118,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     );
   }
 
-  const bodyHeight = rows - 2; // leave a row for header + help
+  // Reserve rows for the header (1) plus whatever occupies the bottom, so the
+  // total never exceeds the terminal height (which would shift the layout).
+  const overlayRows = approvalPending ? 6 : mode === 'input' ? 5 : 1;
+  const bodyHeight = Math.max(6, rows - 1 - overlayRows);
 
   return (
     <Box flexDirection="column">
@@ -131,7 +134,12 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
 
       <Box>
         <Sidebar infos={infos} selectedIndex={selectedIndex} />
-        <AgentView session={selected} height={bodyHeight} width={(stdout?.columns ?? 100) - 36} />
+        <AgentView
+          session={selected}
+          height={bodyHeight}
+          width={(stdout?.columns ?? 100) - 36}
+          active={mode === 'list' && !approvalPending}
+        />
       </Box>
 
       {approvalPending && selected ? (
@@ -161,7 +169,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new p:projects ↑↓/hjkl/tab:switch 1-9:jump w:next-waiting i/⏎:answer x:stop d:remove q:quit
+        n:new p:projects ↑↓/hjkl:switch J/K:scroll G:live 1-9:jump w:waiting i:answer x:stop d:remove q:quit
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>

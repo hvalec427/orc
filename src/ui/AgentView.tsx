@@ -1,6 +1,7 @@
-import { Box, Text } from 'ink';
+import { useState, useEffect, useRef } from 'react';
+import { Box, Text, useInput } from 'ink';
 import type { AgentSession } from '../agent/AgentSession.js';
-import type { LogEntry, LogKind } from '../types.js';
+import type { LogKind } from '../types.js';
 
 const COLOR: Record<LogKind, { color?: string; dim?: boolean }> = {
   text: {},
@@ -12,40 +13,103 @@ const COLOR: Record<LogKind, { color?: string; dim?: boolean }> = {
   input: { color: 'yellow' },
 };
 
+interface DLine {
+  kind: LogKind;
+  text: string;
+}
+
 export function AgentView({
   session,
   height,
   width,
+  active,
 }: {
   session: AgentSession | undefined;
   height: number;
   width: number;
+  active: boolean;
 }) {
-  if (!session) {
-    return (
-      <Box flexGrow={1} borderStyle="round" borderColor="gray" paddingX={1}>
-        <Text dimColor>No agent selected. Press n to start one.</Text>
-      </Box>
-    );
-  }
+  const [follow, setFollow] = useState(true);
+  const [scrollTop, setScrollTop] = useState(0);
+  const maxTopRef = useRef(0);
 
-  const info = session.getInfo();
+  // Reset scroll to live-tail when the selected agent changes.
+  const sessionId = session?.id;
+  useEffect(() => {
+    setFollow(true);
+    setScrollTop(0);
+  }, [sessionId]);
+
   const bodyRows = Math.max(3, height - 3);
   const contentWidth = Math.max(20, width - 4);
-  const visible = tailEntries(session.getEvents(), contentWidth, bodyRows);
+
+  // Flatten log entries into wrapped display lines.
+  const lines: DLine[] = [];
+  if (session) {
+    for (const e of session.getEvents()) {
+      const wrapped = wrapText(e.text, contentWidth);
+      if (wrapped.length === 0) {
+        if (!e.done) lines.push({ kind: e.kind, text: '…' });
+        continue;
+      }
+      for (const t of wrapped) lines.push({ kind: e.kind, text: t });
+    }
+  }
+  const maxTop = Math.max(0, lines.length - bodyRows);
+  maxTopRef.current = maxTop;
+  const top = follow ? maxTop : Math.min(scrollTop, maxTop);
+
+  useInput(
+    (input) => {
+      const mt = maxTopRef.current;
+      const cur = follow ? mt : Math.min(scrollTop, mt);
+      if (input === 'K') {
+        setScrollTop(Math.max(0, cur - 1));
+        setFollow(false);
+      } else if (input === 'J') {
+        const nt = Math.min(mt, cur + 1);
+        setScrollTop(nt);
+        setFollow(nt >= mt);
+      } else if (input === 'G') {
+        setScrollTop(mt);
+        setFollow(true);
+      }
+    },
+    { isActive: active && !!session },
+  );
+
+  const windowLines = lines.slice(top, top + bodyRows);
+  while (windowLines.length < bodyRows) windowLines.push({ kind: 'text', text: '' });
+
+  const scrollLabel = follow || maxTop === 0 ? 'live' : `↑${maxTop - top} (G:bottom)`;
 
   return (
-    <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray" paddingX={1}>
-      <Text>
-        <Text bold>{info.name}</Text>
-        <Text dimColor> · {info.status} · {info.branch} · :{info.metroPort}</Text>
-      </Text>
-      <Box flexDirection="column" marginTop={1}>
-        {visible.map((e) => {
-          const c = COLOR[e.kind];
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      height={height}
+      borderStyle="round"
+      borderColor="gray"
+      paddingX={1}
+    >
+      {session ? (
+        <Text>
+          <Text bold>{session.getInfo().name}</Text>
+          <Text dimColor>
+            {' '}
+            · {session.getInfo().status} · {session.getInfo().branch} · :{session.getInfo().metroPort} ·{' '}
+          </Text>
+          <Text color={follow ? 'green' : 'yellow'}>{scrollLabel}</Text>
+        </Text>
+      ) : (
+        <Text dimColor>No agent selected. Press n to start one.</Text>
+      )}
+      <Box flexDirection="column" height={bodyRows}>
+        {windowLines.map((l, i) => {
+          const c = COLOR[l.kind];
           return (
-            <Text key={e.id} color={c.color} dimColor={c.dim} wrap="wrap">
-              {e.text || (e.done ? '' : '…')}
+            <Text key={i} color={c.color} dimColor={c.dim} wrap="truncate">
+              {l.text || ' '}
             </Text>
           );
         })}
@@ -54,25 +118,16 @@ export function AgentView({
   );
 }
 
-/**
- * Return the entries that fit in `maxRows`, newest at the bottom.
- * Long text blocks are tail-truncated so a single big message can't blow the viewport.
- */
-function tailEntries(entries: readonly LogEntry[], width: number, maxRows: number): LogEntry[] {
-  const capped = entries.map((e) => {
-    if ((e.kind === 'text' || e.kind === 'thinking') && e.text.length > width * 4) {
-      return { ...e, text: '…' + e.text.slice(-width * 4) };
+/** Split text on newlines and hard-wrap each segment to `width` (predictable line count). */
+function wrapText(s: string, width: number): string[] {
+  if (!s) return [];
+  const out: string[] = [];
+  for (const seg of s.split('\n')) {
+    if (seg.length === 0) {
+      out.push('');
+      continue;
     }
-    return e;
-  });
-  // Estimate rows per entry to avoid overflowing the terminal frame.
-  const out: LogEntry[] = [];
-  let used = 0;
-  for (let i = capped.length - 1; i >= 0 && used < maxRows; i--) {
-    const e = capped[i];
-    const lines = Math.max(1, Math.ceil((e.text.length || 1) / width));
-    out.unshift(e);
-    used += lines;
+    for (let i = 0; i < seg.length; i += width) out.push(seg.slice(i, i + width));
   }
   return out;
 }
