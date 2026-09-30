@@ -32,7 +32,12 @@ The agent talks back to you with two sentinels (defined in the appended prompt):
 - `@@DONE@@ <commit>` — the task is finished.
 
 Put the mobile agent instructions (simulator/Metro/Maestro/completion rules) in the base repo's
-`CLAUDE.md`; orc only injects per-agent identity and the human-in-the-loop protocol on top.
+`CLAUDE.md`; orc only injects per-agent identity and the human-in-the-loop protocol on top. You can
+install that `CLAUDE.md` into a project from inside the TUI — press `p`, pick the project, press `c`
+(it asks before overwriting an existing one).
+
+orc **never writes your config** (`~/.orc/config.json`) — you create and edit it yourself. The only
+file orc writes under `~/.orc` is `state.json` (runtime agent state).
 
 ## Install
 
@@ -96,6 +101,7 @@ Press `n` to start an agent: pick a **project**, then enter a **name** and **tic
 | Key            | Action                                          |
 | -------------- | ----------------------------------------------- |
 | `n`            | new agent (pick project, then name + ticket)    |
+| `p`            | projects: install mobile CLAUDE.md into a repo   |
 | `↑`/`↓`, `Tab` | switch selected agent                           |
 | `1`–`9`        | jump to the nth agent                           |
 | `w`            | jump to the next agent waiting on you           |

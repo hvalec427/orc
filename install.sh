@@ -55,19 +55,17 @@ case ":$PATH:" in
     ;;
 esac
 
-# 5. Scaffold the global config if missing.
-if [ ! -f "$CONFIG_DIR/config.json" ]; then
-  mkdir -p "$CONFIG_DIR"
-  cp "$REPO_DIR/examples/config.json" "$CONFIG_DIR/config.json"
-  echo "Created $CONFIG_DIR/config.json from example — edit it with your project paths."
+# 5. Report config status — the installer NEVER writes the config; you create/edit it yourself.
+if [ -f "$CONFIG_DIR/config.json" ]; then
+  echo "Config found: $CONFIG_DIR/config.json (left untouched)."
 else
-  echo "Config already exists: $CONFIG_DIR/config.json (left unchanged)."
+  echo "No config yet: create $CONFIG_DIR/config.json yourself (see examples/config.json)."
 fi
 
 echo ""
-echo "Done. Next steps:"
-echo "  1) Edit ~/.orc/config.json  (set projects[].path to your repos)"
-echo "  2) Copy examples/mobile-CLAUDE.md into each project's CLAUDE.md"
+echo "Done. Next steps (all manual):"
+echo "  1) Create/edit ~/.orc/config.json yourself  (see $REPO_DIR/examples/config.json)"
+echo "  2) In orc, press 'p' to install the mobile CLAUDE.md into a project (optional)"
 if [ "${PATH_OK:-1}" -eq 0 ]; then
   echo "  3) Open a NEW terminal (PATH was updated), then run:  orc"
 else
