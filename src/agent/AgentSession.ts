@@ -6,6 +6,18 @@ import { buildAppendPrompt, NEEDS_INPUT, DONE } from '../agentPrompt.js';
 
 const MAX_EVENTS = 800;
 
+/**
+ * Collapse arbitrary (possibly multi-line) text into a single, length-capped line.
+ * Diagnostic strings from the SDK — a subprocess crash, a stderr chunk — can be full
+ * multi-line stack traces. Logged verbatim they inject vertical whitespace into the TUI,
+ * which pushes total output past the terminal height and corrupts Ink's redraw. Error and
+ * stderr entries are short one-liners anyway, so we flatten and cap them here.
+ */
+function oneLine(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+}
+
 /** Loose shape of the raw Anthropic stream events we care about. */
 type StreamEvent =
   | {
@@ -216,8 +228,8 @@ export class AgentSession extends EventEmitter {
         }),
       },
       stderr: (data) => {
-        const line = data.trim();
-        if (line) this.addLog('system', `stderr: ${line.slice(0, 200)}`);
+        const line = oneLine(data);
+        if (line) this.addLog('system', `stderr: ${line}`);
       },
     };
 
@@ -263,7 +275,7 @@ export class AgentSession extends EventEmitter {
         this.handle(msg);
       }
     } catch (err) {
-      this.addLog('error', `session error: ${(err as Error).message}`);
+      this.addLog('error', oneLine(`session error: ${(err as Error).message}`));
       this.setStatus('error');
       // The SDK session is gone; close our side so the input queue and its async iterator
       // are released. A human can still pick the agent back up via retry()/send(), which
@@ -357,7 +369,7 @@ export class AgentSession extends EventEmitter {
 
     if (msg.subtype !== 'success') {
       const detail = msg.errors.join('; ');
-      this.addLog('error', `turn ended: ${msg.subtype} — ${detail}`);
+      this.addLog('error', oneLine(`turn ended: ${msg.subtype} — ${detail}`));
       this.setStatus('error');
       return;
     }
