@@ -118,6 +118,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         selected?.retry();
       } else if (input === 'd' && selected) {
         const id = selected.id;
+        // Move selection to the next agent (or previous if deleting the last).
+        const next = infos[selectedIndex + 1] ?? infos[selectedIndex - 1];
+        if (next) setSelectedId(next.id);
         setNotice(`deleting ${id}…`);
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
       } else if (input === 'm' && selected) {
