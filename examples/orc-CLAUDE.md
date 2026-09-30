@@ -23,6 +23,7 @@ You are running inside your own dedicated Git worktree.
 - Never switch branches.
 - Never modify another agent's worktree.
 - Commit your changes when the task is complete.
+- Do NOT merge your branch into master, delete your branch, or remove your worktree — that's the orchestrator's job, run from the main repo. Doing it yourself deletes the directory you run in and breaks your session.
 
 ## Running services
 

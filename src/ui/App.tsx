@@ -120,6 +120,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         const id = selected.id;
         setNotice(`removing ${id}…`);
         void manager.remove(id).then(() => setNotice(`removed ${id}`));
+      } else if (input === 'm' && selected) {
+        const id = selected.id;
+        setNotice(`merging ${id}…`);
+        void manager
+          .merge(id)
+          .then(() => setNotice(`merged ${id}`))
+          .catch((err) => setNotice(`merge failed: ${(err as Error).message}`));
       }
     },
     { isActive: mode === 'list' && !approvalPending && !confirmingQuit },
@@ -225,7 +232,7 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        n:new ↑↓/hjkl:switch J/K:scroll p:pause/resume logs 1-9:jump w:waiting i:answer r:resume x:stop d:remove agent q:quit tui
+        n:new ↑↓/hjkl:switch J/K:scroll p:pause/resume logs 1-9:jump w:waiting i:answer r:resume x:stop m:merge d:remove agent q:quit tui
       </Text>
       {notice ? <Text color="yellow">{notice}</Text> : null}
     </Box>
