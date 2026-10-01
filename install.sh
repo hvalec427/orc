@@ -41,11 +41,11 @@ else
   npm install $NPM_NET_OPTS
 fi
 
-# Build explicitly (do not rely on the install-time prepare script).
-if [ ! -f dist/index.js ]; then
-  echo "Building..."
-  npm run build
-fi
+# Build explicitly (do not rely on the install-time prepare script). Always rebuild so a
+# re-run after pulling/merging new code actually recompiles — a stale dist/ must never be
+# reused, or the launcher keeps running the previously built sources.
+echo "Building..."
+npm run build
 
 # 3. Install the launcher.
 mkdir -p "$BIN_DIR"
