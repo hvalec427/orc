@@ -101,16 +101,17 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
 
   // Global keys — active in list mode when no approval modal is up. Quit
   // confirmation is handled inline here (rather than a second useInput) so a
-  // single keypress is never seen by two active handlers: when the popup was up,
-  // a separate quit-confirm hook and this one could both fire on the same `n`,
-  // leaving the popup open and then opening the new-agent form on the next press.
+  // single keypress is never seen by two active handlers.
   useInput(
     (input, key) => {
-      // While the quit popup is up, only y/n/esc are meaningful; swallow the rest.
+      // While the quit popup is up, only y confirms and Esc cancels; swallow the rest.
+      // Cancel is Esc-only (not `n`): `n` is also the "new agent" key, so letting it
+      // dismiss the popup meant a second `n` — out of habit or because the dismiss gave
+      // no feedback — immediately opened the new-agent form right after cancelling.
       if (confirmingQuit) {
         if (input === 'y') {
           void manager.stopAll().finally(exit);
-        } else if (input === 'n' || key.escape) {
+        } else if (key.escape) {
           setConfirmingQuit(false);
         }
         return;
@@ -332,7 +333,7 @@ function QuitConfirm({ agentCount }: { agentCount: number }) {
         This stops {agentCount} agent(s) and exits.
       </Text>
       <Text>
-        <Text color="green">y</Text> quit · <Text color="red">n</Text> cancel
+        <Text color="green">y</Text> quit · <Text color="red">Esc</Text> cancel
       </Text>
     </Box>
   );
