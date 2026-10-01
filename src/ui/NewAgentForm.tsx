@@ -14,7 +14,7 @@ interface TemplateChoice {
 }
 
 const TEMPLATES: TemplateChoice[] = [
-  { value: 'feature', label: 'Feature', hint: 'new git worktree + branch; builds a feature' },
+  { value: 'feature', label: 'Feature', hint: 'builds a feature end-to-end' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
   { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
@@ -22,10 +22,10 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'architect', label: 'Architect', hint: 'read-only; owns high-level technical direction' },
   { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase' },
   { value: 'planner', label: 'Planner', hint: 'read-only; turns understanding into a plan' },
-  { value: 'implementer', label: 'Implementer', hint: 'worktree; writes code to execute the plan' },
-  { value: 'tester', label: 'Tester', hint: 'worktree; writes/runs unit, integration & E2E tests' },
+  { value: 'implementer', label: 'Implementer', hint: 'writes code to execute the plan' },
+  { value: 'tester', label: 'Tester', hint: 'writes/runs unit, integration & E2E tests' },
   { value: 'reviewer', label: 'Reviewer', hint: 'read-only; reviews completed changes' },
-  { value: 'refactorer', label: 'Refactorer', hint: 'worktree; cleans up the reviewed code' },
+  { value: 'refactorer', label: 'Refactorer', hint: 'cleans up the reviewed code' },
 ];
 
 /**
