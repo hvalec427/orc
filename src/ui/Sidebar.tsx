@@ -33,7 +33,7 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
               {showProjectHeader ? (
                 <Text bold color="blue">{truncate(info.project, 30)}</Text>
               ) : null}
-              <Text>
+              <Text wrap="truncate">
                 <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
                 {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{i + 1} </Text>}
                 <Text bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
