@@ -215,9 +215,9 @@ export function NewAgentForm({
       )}
 
       {step === 'prompt' && (
-        <Box flexDirection="column">
-          <Text>› prompt :</Text>
-          <Box marginLeft={2}>
+        <Box>
+          <Text>› prompt : </Text>
+          <Box flexGrow={1}>
             <MultilineInput
               value={prompt}
               onChange={setPrompt}
