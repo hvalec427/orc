@@ -142,7 +142,8 @@ export interface AgentInfo {
   question?: string;
   /** SDK session id, captured from the init/result messages. */
   sessionId?: string;
-  totalCostUsd: number;
+  /** Accumulated USD cost, or undefined until the SDK has reported a cost. */
+  totalCostUsd?: number;
 }
 
 /** Project kind — selects which CLAUDE.md template the `p` action installs. */

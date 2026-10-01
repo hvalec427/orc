@@ -53,7 +53,7 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
                 {isChild ? '    ' : '  '}
                 {info.template}
                 {' · '}
-                {info.totalCostUsd > 0 ? `$${info.totalCostUsd.toFixed(2)}` : '$0.00'}
+                {info.totalCostUsd === undefined ? '$NaN' : `$${info.totalCostUsd.toFixed(2)}`}
               </Text>
             </Box>
           );

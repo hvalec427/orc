@@ -206,7 +206,8 @@ export class AgentSession extends EventEmitter {
   private status: AgentStatus = 'booting';
   private question?: string;
   private sessionId?: string;
-  private totalCostUsd = 0;
+  /** Accumulated USD cost, or undefined until the first SDK result reports one. */
+  private totalCostUsd: number | undefined;
   /**
    * The agent's most recent final turn text: its hand-off summary when it finished (DONE), or its
    * question when it paused (NEEDS_INPUT / sentinel-less turn end). A pipeline reads this (via
@@ -848,7 +849,7 @@ export class AgentSession extends EventEmitter {
 
   private handleResult(msg: Extract<SDKMessage, { type: 'result' }>): void {
     this.sessionId = msg.session_id;
-    this.totalCostUsd += msg.total_cost_usd ?? 0;
+    this.totalCostUsd = (this.totalCostUsd ?? 0) + (msg.total_cost_usd ?? 0);
 
     if (msg.subtype !== 'success') {
       const detail = msg.errors.join('; ');
