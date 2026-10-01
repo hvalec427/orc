@@ -2,13 +2,13 @@ import { Box, Text } from 'ink';
 import type { AgentInfo, AgentStatus } from '../types.js';
 
 const STATUS: Record<AgentStatus, { icon: string; color: string; label: string }> = {
-  booting: { icon: '◌', color: 'gray', label: 'booting' },
-  working: { icon: '●', color: 'cyan', label: 'working' },
-  needs_input: { icon: '?', color: 'yellow', label: 'needs you' },
-  needs_approval: { icon: '!', color: 'magenta', label: 'approve?' },
-  done: { icon: '✓', color: 'green', label: 'done' },
-  error: { icon: '✗', color: 'red', label: 'error' },
-  stopped: { icon: '■', color: 'gray', label: 'stopped' },
+  booting: { icon: '⏳', color: 'gray', label: 'booting' },
+  working: { icon: '⚙️', color: 'cyan', label: 'working' },
+  needs_input: { icon: '💬', color: 'yellow', label: 'needs you' },
+  needs_approval: { icon: '🔔', color: 'magenta', label: 'approve?' },
+  done: { icon: '✅', color: 'green', label: 'done' },
+  error: { icon: '❌', color: 'red', label: 'error' },
+  stopped: { icon: '🛑', color: 'gray', label: 'stopped' },
 };
 
 export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selectedIndex: number }) {
@@ -24,7 +24,6 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
           // A child session (e.g. a merge agent spawned from a feature agent) renders indented
           // beneath its parent with a `└` connector instead of a list number.
           const isChild = info.parentId !== undefined;
-          const pad = isChild ? '   ' : ' ';
           // Agents are grouped by project (see AgentManager.list), so a distinct project header is
           // rendered whenever a top-level agent's project differs from the previous top-level one.
           const prevTopLevel = lastTopLevelProjectBefore(infos, i);
@@ -37,20 +36,14 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
               <Text>
                 <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
                 {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{i + 1} </Text>}
-                <Text color={s.color} bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
+                <Text bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
                   {s.icon}
                 </Text>
-                <Text bold={selected}> {info.name}</Text>
-                {info.template !== 'feature' ? (
-                  <Text dimColor> [{info.template}]</Text>
-                ) : null}
-              </Text>
-              {isChild ? null : <Text dimColor>{pad}{truncate(info.ticket, 28)}</Text>}
-              <Text dimColor>
-                {pad}
-                <Text color={s.color}>{s.label}</Text>
-                {info.metroPort !== undefined ? ` · :${info.metroPort}` : ''}
-                {info.totalCostUsd > 0 ? ` · $${info.totalCostUsd.toFixed(2)}` : ''}
+                <Text color={s.color}> {s.label}</Text>
+                <Text dimColor> - </Text>
+                <Text bold={selected}>{truncate(info.name, isChild ? 16 : 20)}</Text>
+                <Text dimColor> - {info.template}</Text>
+                <Text dimColor> - {info.totalCostUsd > 0 ? `$${info.totalCostUsd.toFixed(2)}` : '$0.00'}</Text>
               </Text>
             </Box>
           );
