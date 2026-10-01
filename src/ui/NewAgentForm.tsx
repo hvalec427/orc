@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { MultilineInput } from './MultilineInput.js';
 import type { AgentTemplate, ProjectConfig } from '../types.js';
+import { needsWorktree } from '../types.js';
 
 type Step = 'template' | 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
 
@@ -17,12 +18,39 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
   { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
+  { value: 'pipeline', label: 'Pipeline', hint: 'runs architect→…→tester as a sequential pipeline' },
+  { value: 'architect', label: 'Architect', hint: 'read-only; owns high-level technical direction' },
+  { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase' },
+  { value: 'planner', label: 'Planner', hint: 'read-only; turns understanding into a plan' },
+  { value: 'implementer', label: 'Implementer', hint: 'worktree; writes code to execute the plan' },
+  { value: 'tester', label: 'Tester', hint: 'worktree; writes/runs unit, integration & E2E tests' },
+  { value: 'reviewer', label: 'Reviewer', hint: 'read-only; reviews completed changes' },
+  { value: 'refactorer', label: 'Refactorer', hint: 'worktree; cleans up the reviewed code' },
 ];
 
-/** Does this template need a worktree/branch (and therefore the feature-only fields)? */
+/**
+ * Does this template get the feature-only fields (magiclink + ticket) and a worktree? True for the
+ * full-access templates (feature + implementer/tester/refactorer). Everything else — question,
+ * merge, launcher, pipeline and the read-only roles — just needs a name + prompt.
+ */
 function isFeature(t: AgentTemplate): boolean {
-  return t === 'feature';
+  return needsWorktree(t);
 }
+
+/** Per-template placeholder for the prompt field. Templates not listed fall back to a generic hint. */
+const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
+  question: 'what do you want to ask about this repo?',
+  merge: 'which branches should be merged? (e.g. merge agent/foo into master)',
+  launcher: 'list everything you want done; it will split the work into feature agents',
+  pipeline: 'describe the feature; it will run the full architect→…→tester pipeline',
+  architect: 'what should the architect decide the technical direction for?',
+  explorer: 'what part of the codebase should the explorer investigate and explain?',
+  planner: 'what feature should the planner produce an implementation plan for?',
+  implementer: 'what plan should the implementer execute (code + build + checks)?',
+  tester: 'what should the tester write/run tests for (unit, integration, E2E)?',
+  reviewer: 'what completed changes should the reviewer review?',
+  refactorer: 'what reviewed code should the refactorer clean up (preserving behavior)?',
+};
 
 export function NewAgentForm({
   projects,
@@ -137,14 +165,7 @@ export function NewAgentForm({
     );
 
   const currentTemplate = TEMPLATES.find((t) => t.value === template)!;
-  const promptPlaceholder =
-    template === 'question'
-      ? 'what do you want to ask about this repo?'
-      : template === 'merge'
-        ? 'which branches should be merged? (e.g. merge agent/foo into master)'
-        : template === 'launcher'
-          ? 'list everything you want done; it will split the work into feature agents'
-          : 'what should this agent do?';
+  const promptPlaceholder = PROMPT_PLACEHOLDERS[template] ?? 'what should this agent do?';
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>

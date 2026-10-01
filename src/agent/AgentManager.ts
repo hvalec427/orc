@@ -3,9 +3,11 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
+import { needsWorktree } from '../types.js';
 import { PortAllocator } from '../ports.js';
-import { assertGitRepo, createWorktree, removeWorktree, slugify } from '../worktree.js';
+import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
+import type { RunPipelineStep } from './launcherTools.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
 
 const STATE_PATH = join(homedir(), '.orc', 'state.json');
@@ -73,9 +75,17 @@ export class AgentManager extends EventEmitter {
   /**
    * Create and launch an agent in the named project.
    *
-   * `feature` agents get their own git worktree + branch and an allocated port. `question`
-   * and `merge` agents run directly in the project's base repo with no worktree, branch, or
-   * port (a question agent is additionally locked to read-only tools inside AgentSession).
+   * Worktree templates (feature + the full-access roles implementer/tester/refactorer — see
+   * {@link needsWorktree}) get their own isolated git worktree + branch and an allocated port.
+   * Read-only templates (question/launcher/pipeline + architect/explorer/planner/reviewer) and
+   * merge agents run without their own worktree/branch/port and are locked to read-only tools
+   * inside AgentSession (merge excepted — it runs git in the base repo).
+   *
+   * `sharedWorktree` overrides worktree creation: when supplied (pipeline role steps), the agent is
+   * pointed at that existing worktree/branch instead of cutting a new one, so every role in a
+   * pipeline operates on the SAME branch. A read-only role spawned with a shared worktree still runs
+   * there (cwd = the shared worktree) so it can see the in-progress work, but gets no port and does
+   * not own the worktree's cleanup (the pipeline that created it does).
    */
   async create(
     projectName: string,
@@ -85,6 +95,7 @@ export class AgentManager extends EventEmitter {
     prompt: string,
     magicLink?: string,
     parentId?: string,
+    sharedWorktree?: Worktree,
   ): Promise<AgentSession> {
     const project = this.config.projects.find((p) => p.name === projectName);
     if (!project) throw new Error(`Unknown project: ${projectName}`);
@@ -97,14 +108,23 @@ export class AgentManager extends EventEmitter {
 
     const id = this.uniqueId(slugify(name));
 
-    // Only feature agents get an isolated worktree/branch/port; question & merge agents
-    // operate on the base repo itself.
-    const isFeature = template === 'feature';
-    const worktree = isFeature
-      ? await createWorktree(project.repo, project.worktreeDir, id)
-      : undefined;
-    const allocator = isFeature ? this.ports.get(project.name) : undefined;
-    const metroPort = allocator ? await allocator.allocate() : undefined;
+    // Decide this agent's worktree/branch/port. A pipeline role step reuses the pipeline's shared
+    // worktree (and does not own its cleanup). Otherwise, worktree templates cut a fresh isolated
+    // worktree + branch and allocate a port; everything else runs in the base repo with none.
+    let worktree: Worktree | undefined;
+    let ownsWorktree = false;
+    let metroPort: number | undefined;
+    if (sharedWorktree) {
+      // Pipeline role step: point this agent at the pipeline's existing worktree/branch. Only
+      // full-access roles actually write there; read-only roles just read the in-progress work.
+      worktree = sharedWorktree;
+      ownsWorktree = false;
+    } else if (needsWorktree(template)) {
+      worktree = await createWorktree(project.repo, project.worktreeDir, id);
+      ownsWorktree = true;
+      const allocator = this.ports.get(project.name);
+      metroPort = allocator ? await allocator.allocate() : undefined;
+    }
 
     // A launcher agent is handed a callback its in-process spawn tool uses to create feature agents.
     // Each spawned agent is nested beneath this launcher (parentId = id) so it shows up indented
@@ -125,6 +145,36 @@ export class AgentManager extends EventEmitter {
           }
         : undefined;
 
+    // A pipeline agent owns ONE shared worktree/branch up front (cut here, keyed off the pipeline's
+    // id) and is handed a callback its run-step tool uses to spawn role agents on it. Each role is
+    // nested beneath the pipeline (parentId = id) and reuses `pipelineWorktree`, so Tester's tests,
+    // Implementer's code and Refactorer's cleanup all land on the same branch. The pipeline session
+    // owns the worktree's cleanup; the role children do not (ownsWorktree=false via sharedWorktree).
+    let pipelineWorktree: Worktree | undefined;
+    let runStep: RunPipelineStep | undefined;
+    if (template === 'pipeline') {
+      pipelineWorktree = await createWorktree(project.repo, project.worktreeDir, id);
+      worktree = pipelineWorktree;
+      ownsWorktree = true;
+      runStep = async (args) => {
+        const child = await this.create(
+          projectName,
+          args.role,
+          `${args.role} ${name}`,
+          args.ticket,
+          args.prompt,
+          undefined,
+          id,
+          pipelineWorktree,
+        );
+        // Block the pipeline's run-step tool call until the role reaches a terminal state, so the
+        // sequence is genuinely sequential and the tool can hand the role's summary back for the
+        // pipeline to review before deciding the next step (or going back).
+        const outcome = await child.waitUntilFinished();
+        return { id: child.id, name: child.name, status: outcome.status, summary: outcome.text };
+      };
+    }
+
     const session = new AgentSession({
       id,
       name,
@@ -135,9 +185,11 @@ export class AgentManager extends EventEmitter {
       magicLink: magicLink ?? project.magicLink,
       branch: worktree?.branch,
       worktree: worktree?.path,
+      ownsWorktree,
       metroPort,
       config: project,
       launchFeature,
+      runStep,
     });
     session.on('update', () => this.emit('update'));
     this.agents.set(id, session);
@@ -209,8 +261,11 @@ export class AgentManager extends EventEmitter {
     if (session.metroPort !== undefined) {
       this.ports.get(session.project)?.release(session.metroPort);
     }
-    // Question/merge agents have no worktree to clean up.
-    if (session.worktree) {
+    // Clean up the worktree only if this agent owns it. Pipeline role children share their
+    // pipeline's worktree (ownsWorktree=false), so they must NOT remove it — the pipeline parent
+    // does, after its children are gone (children are removed first, above). Question/merge and
+    // read-only-role agents have no worktree at all.
+    if (session.worktree && session.ownsWorktree) {
       try {
         await removeWorktree(session.repo, session.worktree);
       } catch (err) {

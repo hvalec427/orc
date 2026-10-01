@@ -8,8 +8,84 @@
  * - `merge`    — an agent whose job is to merge branches in the base repo.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
  *                together vs. apart, and spawns a feature agent per group (nested beneath it).
+ * - `pipeline` — a read-only orchestrator that runs the seven role agents below SEQUENTIALLY
+ *                on one shared worktree (architect → explorer → planner → tester → implementer
+ *                → reviewer → refactorer → tester), handing each role's summary to the next and
+ *                able to "go back" to an earlier role when something is missing.
+ *
+ * The seven ROLE templates are the focused specialists a pipeline chains together (and which a
+ * human can also launch standalone). They split into read-only investigators and full-access
+ * workers; see {@link READ_ONLY_TEMPLATES} and {@link WORKTREE_TEMPLATES}.
+ * - `architect`   — owns high-level technical direction/decisions (READ-ONLY).
+ * - `explorer`    — investigates the codebase: finds files, traces flows/deps (READ-ONLY).
+ * - `planner`     — turns understanding into a concrete implementation plan (READ-ONLY).
+ * - `implementer` — executes the plan: writes code, builds, runs checks (FULL ACCESS).
+ * - `tester`      — writes/runs unit, integration and Maestro E2E tests (FULL ACCESS).
+ * - `reviewer`    — reviews completed changes; does not blindly rewrite (READ-ONLY).
+ * - `refactorer`  — cleans up the reviewed implementation, preserving behavior (FULL ACCESS).
  */
-export type AgentTemplate = 'feature' | 'question' | 'merge' | 'launcher';
+export type AgentTemplate =
+  | 'feature'
+  | 'question'
+  | 'merge'
+  | 'launcher'
+  | 'pipeline'
+  | 'architect'
+  | 'explorer'
+  | 'planner'
+  | 'implementer'
+  | 'tester'
+  | 'reviewer'
+  | 'refactorer';
+
+/** The seven role templates a pipeline chains, in the canonical order the pipeline runs them. */
+export type RoleTemplate =
+  | 'architect'
+  | 'explorer'
+  | 'planner'
+  | 'implementer'
+  | 'tester'
+  | 'reviewer'
+  | 'refactorer';
+
+/**
+ * Templates whose agents run read-only: they investigate with read tools but are denied all
+ * mutating tools (Edit/Write/Bash/…) by the orchestrator. `launcher`/`pipeline` are read-only too
+ * but each additionally get their own spawn/run-step MCP tool allowed through explicitly.
+ */
+export const READ_ONLY_TEMPLATES: ReadonlySet<AgentTemplate> = new Set<AgentTemplate>([
+  'question',
+  'launcher',
+  'pipeline',
+  'architect',
+  'explorer',
+  'planner',
+  'reviewer',
+]);
+
+/**
+ * Templates whose agents need their own git worktree + branch + port (full file/Bash access):
+ * the original `feature` agent plus the three full-access roles. Centralized here so worktree,
+ * port allocation and the "ensure worktree" paths all agree on exactly which templates get one.
+ * (Pipeline role agents reuse their pipeline's SHARED worktree rather than cutting a new one —
+ * see AgentManager.create's `sharedWorktree` param — so this set drives standalone creation.)
+ */
+export const WORKTREE_TEMPLATES: ReadonlySet<AgentTemplate> = new Set<AgentTemplate>([
+  'feature',
+  'implementer',
+  'tester',
+  'refactorer',
+]);
+
+/** Whether a template's agent runs read-only (no mutating tools). */
+export function isReadOnlyTemplate(template: AgentTemplate): boolean {
+  return READ_ONLY_TEMPLATES.has(template);
+}
+
+/** Whether a template's agent needs its own worktree/branch/port when created standalone. */
+export function needsWorktree(template: AgentTemplate): boolean {
+  return WORKTREE_TEMPLATES.has(template);
+}
 
 export type AgentStatus =
   | 'booting' // session created, first turn not yet complete
@@ -51,9 +127,9 @@ export interface AgentInfo {
   /** Nice name of the project this agent belongs to. */
   project: string;
   ticket: string;
-  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  /** Git branch, or undefined for no-worktree templates (question/merge/read-only roles). */
   branch?: string;
-  /** Worktree path, or undefined for no-worktree templates (question/merge). */
+  /** Worktree path, or undefined for no-worktree templates (question/merge/read-only roles). */
   worktree?: string;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;

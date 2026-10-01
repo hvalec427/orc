@@ -1,4 +1,5 @@
-import type { AgentTemplate } from './types.js';
+import type { AgentTemplate, RoleTemplate } from './types.js';
+import { needsWorktree } from './types.js';
 
 /** Sentinels the orchestrator parses out of an agent's final turn text. */
 export const NEEDS_INPUT = '@@NEEDS_INPUT@@';
@@ -6,6 +7,54 @@ export const DONE = '@@DONE@@';
 
 /** The in-process MCP tool the launcher agent uses to spawn feature agents. */
 export const LAUNCH_TOOL = 'mcp__orc__launch_feature_agents';
+
+/** The in-process MCP tool the pipeline agent uses to run ONE role step at a time. */
+export const RUN_STEP_TOOL = 'mcp__orc__run_pipeline_step';
+
+/**
+ * Human-facing, one-line responsibility for each role. Reused verbatim in the standalone role
+ * prompt (so the agent knows its identity) and summarized into the pipeline prompt (so the
+ * pipeline agent knows what each step produces). Kept here as the single source of truth.
+ */
+export const ROLE_RESPONSIBILITIES: Record<RoleTemplate, string> = {
+  architect:
+    'own the high-level technical direction: understand the requirements, the existing architecture ' +
+    'and the constraints, then make and record the architectural decisions the rest of the work follows',
+  explorer:
+    'investigate the existing codebase: find the relevant files, trace the flows and dependencies, and ' +
+    'explain how the current implementation actually works',
+  planner:
+    'turn the architectural understanding into a concrete implementation plan: the files to touch, the ' +
+    'changes to make, new dependencies, the tests to add, and the risks to watch',
+  implementer:
+    'execute the plan: write the code, build the app, run the relevant checks, and fix implementation ' +
+    'issues until it works',
+  tester:
+    'verify the implementation: write and run unit, integration and Maestro E2E tests, and report any ' +
+    'failures or missing coverage',
+  reviewer:
+    'review the completed changes for correctness, bugs, architecture, edge cases, security, ' +
+    'maintainability and project conventions — without blindly rewriting them',
+  refactorer:
+    'take the reviewed implementation and clean it up: remove duplication, simplify, and improve ' +
+    'structure and readability while preserving behavior',
+};
+
+/**
+ * The canonical pipeline order (the product spec). Note `tester` appears twice: once up front to
+ * write the tests BEFORE the implementation exists (red), and once at the end to run the full suite
+ * again after the refactor. Encoded in the pipeline prompt so the pipeline agent runs steps in order.
+ */
+export const PIPELINE_ORDER: readonly RoleTemplate[] = [
+  'architect',
+  'explorer',
+  'planner',
+  'tester',
+  'implementer',
+  'reviewer',
+  'refactorer',
+  'tester',
+];
 
 export interface PromptParams {
   name: string;
@@ -30,6 +79,18 @@ export function buildAppendPrompt(params: PromptParams): string {
       return buildMergePrompt(params);
     case 'launcher':
       return buildLauncherPrompt(params);
+    case 'pipeline':
+      return buildPipelinePrompt(params);
+    // The seven role templates all share one parameterized builder; it switches between the
+    // read-only and full-access guidance based on needsWorktree(role).
+    case 'architect':
+    case 'explorer':
+    case 'planner':
+    case 'implementer':
+    case 'tester':
+    case 'reviewer':
+    case 'refactorer':
+      return buildRolePrompt(params.template, params);
     default:
       return buildFeaturePrompt(params);
   }
@@ -152,20 +213,23 @@ ${HUMAN_PROTOCOL}
 `.trim();
 }
 
-/**
- * Default "feature" agent: the original orchestration addendum appended to the worktree's own
- * CLAUDE.md (which carries the mobile/simulator/Maestro instructions). Injects per-agent identity
- * and the human-in-the-loop protocol the TUI depends on.
- */
-function buildFeaturePrompt({ name, metroPort, ticket, magicLink }: PromptParams): string {
-  const ticketLine = ticket
+/** The "- Your dedicated port is …" identity line shared by every full-access (worktree) agent. */
+function portLine(metroPort?: number): string {
+  return metroPort !== undefined
+    ? `\n- Your dedicated port is ${metroPort} (env: METRO_PORT and AGENT_PORT). Use it for Metro / your dev server / any local service.`
+    : `\n- No port was allocated for you. If your task genuinely needs a local port (dev server, Metro, etc.), stop and ask the human to add a \`portRange\` for this project in the orc config, using the ${NEEDS_INPUT} sentinel.`;
+}
+
+/** The "- Your ticket reference is …" line, or empty when no ticket was supplied. */
+function ticketLine(ticket?: string): string {
+  return ticket
     ? `\n- Your ticket reference is "${ticket}". Reference it in your commit message(s).`
     : '';
-  const portLine =
-    metroPort !== undefined
-      ? `\n- Your dedicated port is ${metroPort} (env: METRO_PORT and AGENT_PORT). Use it for Metro / your dev server / any local service.`
-      : `\n- No port was allocated for you. If your task genuinely needs a local port (dev server, Metro, etc.), stop and ask the human to add a \`portRange\` for this project in the orc config, using the ${NEEDS_INPUT} sentinel.`;
-  const magicSection = magicLink
+}
+
+/** The optional "### Signing in" section, present only when a magic link is available. */
+function magicSection(magicLink?: string): string {
+  return magicLink
     ? `
 
 ### Signing in
@@ -174,16 +238,14 @@ A magic sign-in link is available in the MAGIC_LINK env var. Use it to authentic
 any signed-in views. See your project's CLAUDE.md for how to open a link on your target (e.g.
 \`xcrun simctl openurl\` on iOS, or opening it in the browser).`
     : '';
-  return `
-## Orchestration context (injected by orc)
+}
 
-You are agent "${name}", running under an orchestrator that supervises several agents in parallel.
-
-- Your unique agent name is "${name}". Use it when creating your iOS simulator.${portLine}
-- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.
-- Do NOT merge your branch into master, delete your own branch, or remove your own worktree. Merging is the orchestrator's job, run from the main repo — doing it yourself would delete the directory you're running in and break your session. Just commit and report ${DONE}; the human merges you.${ticketLine}${magicSection}
-
-### Talking to the human
+/**
+ * The full-access human protocol: same NEEDS_INPUT contract as HUMAN_PROTOCOL, but the DONE line
+ * carries the commit hash (full-access agents commit their work). Shared by the feature agent and
+ * the three full-access roles (implementer/tester/refactorer) so the DONE contract stays identical.
+ */
+const FEATURE_HUMAN_PROTOCOL = `### Talking to the human
 
 The human supervises you through a terminal UI and can reply to you between turns.
 
@@ -202,6 +264,175 @@ The human supervises you through a terminal UI and can reply to you between turn
   ${DONE} <commit-hash>
 
 Do not emit these sentinels in any other situation. Follow your existing instructions
-for autonomy: investigate and fix problems yourself before asking anything.
+for autonomy: investigate and fix problems yourself before asking anything.`;
+
+/**
+ * The shared worktree-identity bullets every full-access agent needs: its name/simulator identity,
+ * its port, the "stay inside your worktree" rule and the "don't merge/delete your own branch" rule.
+ * Factored out so the feature agent and the full-access roles don't copy-paste the whole block.
+ */
+function featureIdentityBullets({ name, metroPort, ticket }: PromptParams): string {
+  return `- Your unique agent name is "${name}". Use it when creating your iOS simulator.${portLine(metroPort)}
+- You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.
+- Do NOT merge your branch into master, delete your own branch, or remove your own worktree. Merging is the orchestrator's job, run from the main repo — doing it yourself would delete the directory you're running in and break your session. Just commit and report ${DONE}; the human merges you.${ticketLine(ticket)}`;
+}
+
+/**
+ * Default "feature" agent: the original orchestration addendum appended to the worktree's own
+ * CLAUDE.md (which carries the mobile/simulator/Maestro instructions). Injects per-agent identity
+ * and the human-in-the-loop protocol the TUI depends on.
+ */
+function buildFeaturePrompt(params: PromptParams): string {
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${params.name}", running under an orchestrator that supervises several agents in parallel.
+
+${featureIdentityBullets(params)}${magicSection(params.magicLink)}
+
+${FEATURE_HUMAN_PROTOCOL}
+`.trim();
+}
+
+/**
+ * The structured hand-off summary every role ends its final turn with (just before its DONE/pause).
+ * The pipeline agent cannot read a child's transcript, so each role must restate — in plain text —
+ * what it produced and what the next role should build on. This keeps the hand-off purely
+ * prompt-driven (no IPC/event bus) while giving the pipeline agent something concrete to read.
+ */
+function roleHandoffSection(role: RoleTemplate): string {
+  return `### Hand-off summary (required)
+
+Before you finish, end your final turn with a concise, structured summary titled
+"## ${role} summary" so the next role (and the pipeline that supervises you) can build on your work
+without reading your transcript. Cover:
+- What you produced (decisions, findings, the plan, the code/tests you wrote, the review notes, etc.).
+- Anything the next role must know, assumptions you made, and open questions or risks.
+- If something you needed from an earlier role was missing or wrong, say so explicitly so the
+  pipeline can decide to go back and re-run that earlier role.`;
+}
+
+/**
+ * Parameterized builder for all seven role templates. Read-only roles
+ * (architect/explorer/planner/reviewer) get the question-style "you MUST NOT modify anything"
+ * guardrail; full-access roles (implementer/tester/refactorer) get the feature-style worktree
+ * identity + DONE <hash> protocol. Both end with the required hand-off summary so they slot into a
+ * pipeline. Driven off {@link needsWorktree} and {@link ROLE_RESPONSIBILITIES} so adding/moving a
+ * role here stays in one place.
+ */
+function buildRolePrompt(role: RoleTemplate, params: PromptParams): string {
+  const { name } = params;
+  const responsibility = ROLE_RESPONSIBILITIES[role];
+  const handoff = roleHandoffSection(role);
+
+  if (needsWorktree(role)) {
+    // Full-access role: same powers and protocol as a feature agent, scoped to its one responsibility.
+    return `
+## Orchestration context (injected by orc)
+
+You are agent "${name}", a ${role.toUpperCase()} role agent running under an orchestrator that
+supervises several agents in parallel. Your single responsibility is to ${responsibility}.
+
+- Stay focused on the ${role} role: do that job well and do not drift into the other roles' work.
+${featureIdentityBullets(params)}
+- If you are part of a pipeline, you share a worktree/branch with the other role agents — build on
+  the work already there (do not reset it or start a fresh branch).${magicSection(params.magicLink)}
+
+${handoff}
+
+${FEATURE_HUMAN_PROTOCOL}
+`.trim();
+  }
+
+  // Read-only role: reuse the question agent's hard guardrail language verbatim so the "orchestrator
+  // denies mutating tools" contract is identical across every read-only template.
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${name}", a READ-ONLY ${role.toUpperCase()} role agent running under an orchestrator.
+Your single responsibility is to ${responsibility}.
+
+- You MUST NOT modify anything: do not edit, create, or delete files; do not run commands that change
+  state (no writes, installs, migrations, git commits, checkouts, or pushes). Even if asked to make a
+  change, decline and explain that this is a read-only ${role} agent — a full-access role (implementer/
+  tester/refactorer) should do the editing. The orchestrator also denies file-mutating tools, so edits
+  will fail.
+- Investigate with read-only tools (read files, search, inspect git history) and deliver your ${role}
+  output clearly and concisely. If you are part of a pipeline you are pointed at the shared worktree,
+  so you can see the in-progress work of the other roles.
+
+${handoff}
+
+${HUMAN_PROTOCOL}
+`.trim();
+}
+
+/**
+ * "Pipeline" agent: a read-only orchestrator that runs the seven role agents SEQUENTIALLY on ONE
+ * shared worktree/branch, handing each role's summary to the next and able to GO BACK and re-run an
+ * earlier role when something is missing. Modeled on the launcher: it is read-only except for its
+ * single ${RUN_STEP_TOOL} power, which spawns one role agent (nested beneath it) per step. It cannot
+ * read a child's transcript, so it relies on each role's required hand-off summary (which each role
+ * prompt emits) to decide what the next role should build on.
+ */
+function buildPipelinePrompt({ name, project }: PromptParams): string {
+  const projectLine = project
+    ? `You run the pipeline inside the project "${project}" (every role you spawn lands there).`
+    : 'You run the pipeline inside this project.';
+  // Render the canonical order as a numbered list, annotating the two tester passes so the model
+  // understands why tester appears twice (tests-first, then full-suite rerun).
+  const orderList = PIPELINE_ORDER.map((role, i) => {
+    const note =
+      role === 'tester' && i < PIPELINE_ORDER.length - 1
+        ? ' (write the tests FIRST, before any implementation exists — they should fail)'
+        : role === 'tester'
+          ? ' (run the FULL suite again and confirm everything passes after the refactor)'
+          : role === 'implementer'
+            ? ' (make the tester\u2019s failing tests pass)'
+            : '';
+    return `  ${i + 1}. ${role}${note}`;
+  }).join('\n');
+
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${name}", a read-only PIPELINE orchestrator running under a higher-level orchestrator.
+${projectLine}
+
+You drive a fixed sequence of specialist ROLE agents, one at a time, each on the SAME shared
+worktree/branch so the tester's tests, the implementer's code and the refactorer's cleanup all build
+on each other. You run exactly one role per \`${RUN_STEP_TOOL}\` call and wait for it to finish before
+deciding the next step.
+
+Required order (run strictly in this order unless you deliberately go back):
+${orderList}
+
+How to run each step:
+1. Call \`${RUN_STEP_TOOL}\` with:
+   - \`role\`: the role to run (one of architect, explorer, planner, implementer, tester, reviewer,
+     refactorer).
+   - \`prompt\`: COMPLETE, self-contained instructions for that role. The role agent does NOT see the
+     human's original message or any previous role's transcript, so fold in everything it needs —
+     especially the hand-off summary text from the previous role(s). Tell it exactly what to build on.
+   - \`ticket\`: the ticket reference IF the human gave one; otherwise leave it empty.
+2. When the step finishes, read the role's hand-off summary (each role ends its turn with a
+   "## <role> summary"). Briefly summarize that hand-off yourself before moving on.
+3. Decide the next step:
+   - If the result is sufficient, proceed to the next role in the order above.
+   - If a role reveals that an earlier role's output was missing, wrong, or insufficient, GO BACK:
+     re-run that earlier role with corrected instructions (explain what was missing), then resume the
+     sequence from there. Do not plough ahead on a broken foundation.
+
+Rules:
+- You are READ-ONLY. The ONLY action you take is calling \`${RUN_STEP_TOOL}\`; you never edit code,
+  run builds, or touch git yourself — the role agents do that on the shared worktree.
+- Run ONE role per call and wait; never fan out multiple roles in parallel (this is a sequence, not a
+  launcher).
+- All role agents you spawn share the pipeline's single worktree/branch — do not try to create new
+  branches or worktrees per role.
+- After the final step passes, summarize the whole run (what each role produced and any go-backs you
+  made), then finish. The shared branch is left for the human to merge.
+
+${HUMAN_PROTOCOL}
 `.trim();
 }

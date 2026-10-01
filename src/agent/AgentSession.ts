@@ -10,9 +10,15 @@ import {
   type HookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
+import { isReadOnlyTemplate } from '../types.js';
 import { InputQueue } from './InputQueue.js';
-import { buildAppendPrompt, LAUNCH_TOOL, NEEDS_INPUT, DONE } from '../agentPrompt.js';
-import { buildLauncherMcpServer, type LaunchFeature } from './launcherTools.js';
+import { buildAppendPrompt, LAUNCH_TOOL, RUN_STEP_TOOL, NEEDS_INPUT, DONE } from '../agentPrompt.js';
+import {
+  buildLauncherMcpServer,
+  buildPipelineMcpServer,
+  type LaunchFeature,
+  type RunPipelineStep,
+} from './launcherTools.js';
 import { createWorktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
@@ -74,6 +80,12 @@ export interface AgentSessionInit {
   branch?: string;
   /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
   worktree?: string;
+  /**
+   * Whether this agent OWNS its worktree (and is therefore responsible for recreating/removing it).
+   * False for a pipeline role child that merely shares its pipeline's worktree — it must never
+   * recreate or delete it. Defaults to true when a worktree is present.
+   */
+  ownsWorktree?: boolean;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
   config: ProjectConfig;
@@ -82,6 +94,12 @@ export interface AgentSessionInit {
    * The manager supplies this so the tool can create feature agents nested under the launcher.
    */
   launchFeature?: LaunchFeature;
+  /**
+   * For `pipeline` agents only: the callback the run-step tool uses to spawn ONE role agent on the
+   * pipeline's shared worktree. The manager supplies this so the tool can create role agents nested
+   * under the pipeline.
+   */
+  runStep?: RunPipelineStep;
 }
 
 /**
@@ -118,6 +136,11 @@ export class AgentSession extends EventEmitter {
   readonly branch?: string;
   /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
   readonly worktree?: string;
+  /**
+   * Whether this agent owns its worktree's lifecycle (recreate on launch, remove on delete). False
+   * for pipeline role children sharing their pipeline's worktree, so they never clobber or delete it.
+   */
+  readonly ownsWorktree: boolean;
   readonly metroPort?: number;
   /** Nice name of the project this agent belongs to. */
   readonly project: string;
@@ -127,6 +150,8 @@ export class AgentSession extends EventEmitter {
   private readonly config: ProjectConfig;
   /** Launcher-only: spawns a feature agent (set by the manager). Undefined for other templates. */
   private readonly launchFeature?: LaunchFeature;
+  /** Pipeline-only: runs ONE role step on the shared worktree (set by the manager). */
+  private readonly runStep?: RunPipelineStep;
   private queue = new InputQueue();
   private query: Query | null = null;
   /** Aborts the current SDK subprocess. Recreated on every launch. */
@@ -136,6 +161,12 @@ export class AgentSession extends EventEmitter {
   private question?: string;
   private sessionId?: string;
   private totalCostUsd = 0;
+  /**
+   * The agent's most recent final turn text: its hand-off summary when it finished (DONE), or its
+   * question when it paused (NEEDS_INPUT / sentinel-less turn end). A pipeline reads this (via
+   * {@link waitUntilFinished}) to learn what a role step produced without the child's transcript.
+   */
+  private lastResultText = '';
 
   private events: LogEntry[] = [];
   private nextEventId = 1;
@@ -157,9 +188,12 @@ export class AgentSession extends EventEmitter {
     this.magicLink = init.magicLink;
     this.branch = init.branch;
     this.worktree = init.worktree;
+    // An agent with a worktree owns it unless told otherwise (pipeline role children share one).
+    this.ownsWorktree = init.ownsWorktree ?? init.worktree !== undefined;
     this.metroPort = init.metroPort;
     this.config = init.config;
     this.launchFeature = init.launchFeature;
+    this.runStep = init.runStep;
     this.project = init.config.name;
     this.repo = init.config.repo;
   }
@@ -202,6 +236,19 @@ export class AgentSession extends EventEmitter {
     // No-worktree templates (question/merge) run in the base repo — nothing to ensure.
     if (!this.worktree) return true;
     if (existsSync(this.worktree)) return true;
+    // A shared worktree we don't own (a pipeline role child) must not be recreated here: its path
+    // and branch belong to the pipeline, and createWorktree() would cut one keyed off THIS agent's
+    // id instead. If the pipeline's worktree is gone, surface it rather than diverging.
+    if (!this.ownsWorktree) {
+      this.addLog(
+        'error',
+        `shared worktree ${this.worktree} is gone — it belongs to this agent's pipeline. ` +
+          `Retry or restart the pipeline rather than this role agent.`,
+      );
+      this.setStatus('error');
+      this.queue.close();
+      return false;
+    }
     this.addLog('system', `worktree ${this.worktree} is gone — recreating it on ${this.branch}`);
     try {
       await createWorktree(this.repo, this.config.worktreeDir, this.id);
@@ -374,13 +421,37 @@ export class AgentSession extends EventEmitter {
     return this.events;
   }
 
+  /**
+   * Resolve once this session reaches a terminal state — finished (done), paused for the human
+   * (needs_input), or dead (error/stopped) — returning that status and the agent's final turn text.
+   * A pipeline awaits this so its run-step tool call only returns after the role actually finished,
+   * giving it the role's hand-off summary to decide the next step. If the session is already terminal
+   * it resolves immediately. ('needs_approval' is NOT terminal: the human is mid-turn, so we keep
+   * waiting until the approval resolves and the turn ends one way or the other.)
+   */
+  waitUntilFinished(): Promise<{ status: AgentStatus; text: string }> {
+    const isTerminal = (s: AgentStatus) =>
+      s === 'done' || s === 'error' || s === 'stopped' || s === 'needs_input';
+    if (isTerminal(this.status)) {
+      return Promise.resolve({ status: this.status, text: this.lastResultText });
+    }
+    return new Promise((resolve) => {
+      const onUpdate = () => {
+        if (!isTerminal(this.status)) return;
+        this.off('update', onUpdate);
+        resolve({ status: this.status, text: this.lastResultText });
+      };
+      this.on('update', onUpdate);
+    });
+  }
+
   // ---- session options ----------------------------------------------------
 
   private buildOptions(resume?: string): Options {
-    // Question and launcher agents are both read-only investigators — they never edit code. The
-    // launcher additionally gets exactly one write-ish power: the launch tool that spawns feature
-    // agents (allowed explicitly below).
-    const readOnly = this.template === 'question' || this.template === 'launcher';
+    // Read-only templates (question, launcher, pipeline and the read-only roles) never edit code.
+    // The launcher and pipeline each additionally get exactly one write-ish power: their own MCP
+    // tool (spawn feature agents / run one role step), allowed explicitly below.
+    const readOnly = isReadOnlyTemplate(this.template);
     // A fresh controller per launch. stop() aborts it to tear down the SDK subprocess;
     // a later retry()/send() builds new options with a new controller.
     this.abortController = new AbortController();
@@ -431,15 +502,21 @@ export class AgentSession extends EventEmitter {
     };
 
     if (readOnly) {
-      // A question/launcher agent is read-only no matter the project's permission mode: never bypass
+      // A read-only agent is read-only no matter the project's permission mode: never bypass
       // permissions, and hard-deny every mutating tool. Read-only tools are auto-allowed so the
       // agent can still investigate without pestering the human for approval on each read. The
-      // launcher is additionally allowed its own spawn tool so it can actually create feature agents.
-      const allowLaunch = this.template === 'launcher';
+      // launcher and pipeline are each additionally allowed exactly their own orchestration tool
+      // (spawn feature agents / run one role step) so they can actually drive their sub-agents.
+      const ownTool =
+        this.template === 'launcher'
+          ? LAUNCH_TOOL
+          : this.template === 'pipeline'
+            ? RUN_STEP_TOOL
+            : undefined;
       opts.permissionMode = 'default';
       opts.canUseTool = (toolName, input) =>
         Promise.resolve(
-          allowLaunch && toolName === LAUNCH_TOOL
+          ownTool && toolName === ownTool
             ? { behavior: 'allow', updatedInput: input }
             : READONLY_DENIED_TOOLS.has(toolName)
               ? {
@@ -477,10 +554,13 @@ export class AgentSession extends EventEmitter {
         env: this.config.maestroMcp.env,
       };
     }
-    // Launcher agents get an in-process MCP server exposing the single tool that spawns feature
-    // agents. Its server name is "orc", so the tool is exposed as LAUNCH_TOOL to the model.
+    // Launcher and pipeline agents each get an in-process MCP server (server name "orc") exposing
+    // their single orchestration tool: the launcher's spawns feature agents (LAUNCH_TOOL); the
+    // pipeline's runs one role step at a time (RUN_STEP_TOOL). Only one applies per agent.
     if (this.template === 'launcher' && this.launchFeature) {
       mcpServers.orc = buildLauncherMcpServer(this.launchFeature);
+    } else if (this.template === 'pipeline' && this.runStep) {
+      mcpServers.orc = buildPipelineMcpServer(this.runStep);
     }
     if (Object.keys(mcpServers).length > 0) opts.mcpServers = mcpServers;
 
@@ -645,6 +725,8 @@ export class AgentSession extends EventEmitter {
 
     const text = (msg.result ?? '').trim();
     if (text.includes(DONE)) {
+      // Keep the whole final message (sans the DONE sentinel) as the hand-off text a pipeline reads.
+      this.lastResultText = text.slice(0, text.indexOf(DONE)).trim();
       const commit = text.slice(text.indexOf(DONE) + DONE.length).trim().split(/\s+/)[0] ?? '';
       this.addLog('result', `✓ done${commit ? ` · ${commit}` : ''}`);
       this.setStatus('done');
@@ -655,6 +737,7 @@ export class AgentSession extends EventEmitter {
     // Either an explicit NEEDS_INPUT, or a turn that ended without a sentinel.
     // In streaming mode the session is now idle and waiting for the human either way.
     this.question = text.replace(NEEDS_INPUT, '').trim();
+    this.lastResultText = this.question;
     this.addLog('result', '⏸ waiting for your input');
     this.setStatus('needs_input');
   }
