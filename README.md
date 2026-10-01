@@ -148,7 +148,8 @@ merge agent does it from the base repo instead.)
 
 ## Config reference
 
-Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
+For a full field-by-field reference see [CONFIG.md](CONFIG.md). Quick summary — config lives in
+`~/.orc/config.json` (or `--config <path>`). Fields:
 
 - `projects` (required): `[{ name, path, type, ...overrides }]` — the projects you launch agents into.
 - `type` (per project): `react-native` (default), `web`, or `orc`. Only used to pick which CLAUDE.md
