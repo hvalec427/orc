@@ -192,10 +192,10 @@ export function NewAgentForm({
         )}
       </Box>
 
-      {step !== 'template' && (
-        <Box flexDirection="column" marginTop={step === 'project' ? 1 : 0}>
-          <Text>{step === 'project' ? '› ' : '  '}project:</Text>
-          {step === 'project' ? (
+      {step !== 'template' &&
+        (step === 'project' ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text>› project:</Text>
             <Box flexDirection="column" marginLeft={2}>
               {projects.map((p, i) => (
                 <Text key={p.name} color={i === cursor ? 'cyan' : undefined}>
@@ -204,11 +204,12 @@ export function NewAgentForm({
                 </Text>
               ))}
             </Box>
-          ) : (
-            <Text>  {project}</Text>
-          )}
-        </Box>
-      )}
+          </Box>
+        ) : (
+          <Box>
+            <Text>  project: {project}</Text>
+          </Box>
+        ))}
 
       {hasMagic && step !== 'template' && step !== 'project' && (
         <Box>
@@ -230,7 +231,7 @@ export function NewAgentForm({
         </Box>
       )}
 
-      {(step === 'name' || step === 'ticket' || step === 'prompt') && (
+      {template !== 'merge' && (step === 'name' || step === 'ticket' || step === 'prompt') && (
         <Box>
           <Text>{step === 'name' ? '› ' : '  '}name   : </Text>
           {step === 'name' ? (
