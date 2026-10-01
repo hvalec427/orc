@@ -25,6 +25,7 @@ import {
 
 const ALL_TEMPLATES: AgentTemplate[] = [
   'feature',
+  'fix',
   'question',
   'merge',
   'launcher',
@@ -41,8 +42,8 @@ const ALL_TEMPLATES: AgentTemplate[] = [
 const READ_ONLY_ROLES: RoleTemplate[] = ['architect', 'explorer', 'planner', 'reviewer'];
 const FULL_ACCESS_ROLES: RoleTemplate[] = ['implementer', 'tester', 'refactorer'];
 
-test('needsWorktree is true only for feature + the three full-access roles', () => {
-  const expected = new Set<AgentTemplate>(['feature', 'implementer', 'tester', 'refactorer']);
+test('needsWorktree is true only for feature + fix + the three full-access roles', () => {
+  const expected = new Set<AgentTemplate>(['feature', 'fix', 'implementer', 'tester', 'refactorer']);
   for (const t of ALL_TEMPLATES) {
     assert.equal(needsWorktree(t), expected.has(t), `needsWorktree(${t})`);
   }
@@ -99,6 +100,19 @@ test('full-access roles carry the feature worktree identity + DONE <hash> protoc
     assert.ok(prompt.includes(`${DONE} <commit-hash>`), `${role} missing commit protocol`);
     assert.match(prompt, /port is 4100/, `${role} missing port line`);
   }
+});
+
+test('fix prompt is full-access (worktree identity + DONE <hash>) with a surgical workflow', () => {
+  const prompt = buildAppendPrompt({ name: 'bugfix', template: 'fix', metroPort: 4100 });
+  // Full-access worktree identity + commit protocol, like a feature agent.
+  assert.match(prompt, /BUG-FIX agent/, 'fix prompt missing identity');
+  assert.match(prompt, /your own git worktree/, 'fix prompt missing worktree language');
+  assert.ok(prompt.includes(`${DONE} <commit-hash>`), 'fix prompt missing commit protocol');
+  assert.match(prompt, /port is 4100/, 'fix prompt missing port line');
+  // Opinionated bug-fix workflow: reproduce, root-cause, minimal change, verify.
+  assert.match(prompt, /REPRODUCE/, 'fix prompt missing reproduce step');
+  assert.match(prompt, /root cause/i, 'fix prompt missing root-cause step');
+  assert.match(prompt, /smallest change/, 'fix prompt missing minimal-change guidance');
 });
 
 test('every role prompt requires a hand-off summary', () => {
