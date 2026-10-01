@@ -104,9 +104,19 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       }
       if (manager.list().length === 0) return;
 
-      if (key.downArrow || input === 'j' || input === 'l' || key.tab) select(selectedIndex + 1);
-      else if (key.upArrow || input === 'k' || input === 'h') select(selectedIndex - 1);
-      else if (input === 'w') {
+      if (key.downArrow || input === 'j' || key.tab) select(selectedIndex + 1);
+      else if (key.upArrow || input === 'k') select(selectedIndex - 1);
+      else if (input === 'l') {
+        // Descend into the selected agent's child (e.g. its merge agent), if any.
+        if (selected) {
+          const child = manager.mergeChildOf(selected.id);
+          if (child) setSelectedId(child.id);
+        }
+      } else if (input === 'h') {
+        // Jump from a child session back up to its parent.
+        const parentId = selected?.getInfo().parentId;
+        if (parentId) setSelectedId(parentId);
+      } else if (input === 'w') {
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
       } else if (input === 'i' || key.return) {
@@ -115,6 +125,22 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         void selected?.stop();
       } else if (input === 'r') {
         selected?.retry();
+      } else if (input === 'm' && selected) {
+        const id = selected.id;
+        const branch = selected.getInfo().branch;
+        if (!branch) {
+          setNotice(`"${selected.name}" has no branch to merge`);
+          return;
+        }
+        const existing = manager.mergeChildOf(id);
+        setNotice(existing ? `merge agent for ${branch} already running` : `merging ${branch}…`);
+        manager
+          .mergeAgent(id)
+          .then((s) => {
+            setSelectedId(s.id);
+            if (!existing) setNotice(`merging ${branch}`);
+          })
+          .catch((err) => setNotice(`merge failed: ${(err as Error).message}`));
       } else if (input === 'd' && selected) {
         const id = selected.id;
         // Move selection to the next agent (or previous if deleting the last).
@@ -227,9 +253,9 @@ function HelpBar({ notice }: { notice: string }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        <Text bold>global</Text> n:new ↑↓/hjkl:switch w:next waiting J/K:scroll p:pause/resume scroll q:quit tui
+        <Text bold>global</Text> n:new ↑↓/jk:switch h/l:parent/child w:next waiting J/K:scroll p:pause/resume scroll q:quit tui
         {'  ·  '}
-        <Text bold>agent</Text> i:answer r:resume x:stop d:delete
+        <Text bold>agent</Text> i:answer r:resume m:merge x:stop d:delete
       </Text>
       {notice ? (
         <Text color="yellow" wrap="truncate">

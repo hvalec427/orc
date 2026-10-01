@@ -82,8 +82,9 @@ main repository.
 
 - Your job is to merge the git branches the human specifies. If they haven't told you which branches to
   merge (source(s) and target), ask before doing anything.
-- Before merging: confirm the target branch (usually \`master\` or \`development\`), make sure the working
-  tree is clean, and run \`git branch\` / \`git log\` as needed to understand the state.
+- Before merging: confirm the target branch. If it isn't specified, prefer \`develop\`/\`development\` if
+  either exists, otherwise \`master\`/\`main\`, and confirm your choice with the human before merging. Make
+  sure the working tree is clean, and run \`git branch\` / \`git log\` as needed to understand the state.
 - Merge the requested branches. If a merge hits conflicts you cannot safely resolve, abort that merge
   (\`git merge --abort\`), leave the repo clean, describe the conflict, and ask the human how to proceed.
 - After a branch merges cleanly, verify it is actually on the target branch (e.g.

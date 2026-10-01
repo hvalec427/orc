@@ -105,12 +105,14 @@ actually do). Steer it afterward with `i`.
 | -------------- | ----------------------------------------------- |
 | `n`            | new agent (pick project, then name + ticket)    |
 | `p`            | projects: install mobile CLAUDE.md into a repo   |
-| `↑`/`↓`, `Tab`, `hjkl` | switch selected agent                   |
+| `↑`/`↓`, `Tab`, `j`/`k` | switch selected agent                  |
+| `h` / `l`      | jump to parent / descend into its merge agent   |
 | `J` / `K`      | scroll the log down / up · `G` jumps back to live |
 | `1`–`9`        | jump to the nth agent                           |
 | `w`            | jump to the next agent waiting on you           |
 | `i` / `Enter`  | answer the selected agent                       |
 | `r`            | resume a crashed/finished agent (same session)  |
+| `m`            | merge the selected agent (spawns a nested merge agent) |
 | `x`            | stop (interrupt) the selected agent             |
 | `d`            | remove the agent + its worktree                 |
 | `q`            | quit (stops all agents)                         |
@@ -119,20 +121,30 @@ When an agent is in `default` permission mode and a tool needs approval, press `
 
 ### Merging an agent
 
-Merging is done by a dedicated **merge agent**, not a keybinding. When an agent reports `@@DONE@@`,
-start a new agent with `n`, pick the **Merge** template, and tell it which branches to merge (e.g.
-`merge agent/foo into master`). The merge agent runs directly in the base repo, so it can't delete
-the directory it's running in. (A feature agent asked to merge *itself* would `git worktree remove`
-its own working directory mid-command and permanently break its shell; that's why feature agents are
-told never to self-merge.)
+When a feature agent reports `@@DONE@@`, press `m` on it to merge its branch. This spawns a dedicated
+**merge agent** nested under that feature agent in the sidebar (shown indented with a `└` connector).
+Press `l` to descend from the feature agent into its merge agent and `h` to jump back to the parent.
+The merge agent is pre-prompted with the parent's branch, so it starts merging straight away — you
+don't have to name the branch yourself.
 
-- Before merging, the merge agent confirms the target branch (usually `master` or `development`) and
-  makes sure the working tree is clean.
+You can also start a merge agent manually with `n` → **Merge** template if you want to merge arbitrary
+branches; in that case tell it which branches to merge (e.g. `merge agent/foo into master`).
+
+Either way, the merge agent runs directly in the base repo, **not** in the feature agent's worktree,
+so it can't delete the directory it's running in and it *can* clean up the parent's worktree. (A
+feature agent asked to merge *itself* would `git worktree remove` its own working directory
+mid-command and permanently break its shell; that's why feature agents never self-merge — the nested
+merge agent does it from the base repo instead.)
+
+- The target is the project's configured `baseBranch`. If none is configured, the merge agent detects
+  it (preferring `develop`/`development`, then `master`/`main`) and confirms with you before merging.
+- Before merging, the merge agent makes sure the working tree is clean.
 - If a merge hits a **conflict** it can't safely resolve, the merge agent runs `git merge --abort`,
   leaves the repo clean, and asks you how to proceed — nothing is left half-merged.
 - After a branch merges cleanly, the merge agent verifies it actually landed on the target branch,
   then deletes the now-merged branch and removes its worktree.
 - The merge agent won't push to any remote unless you explicitly ask.
+- Removing a feature agent with `d` also removes its nested merge agent.
 
 ## Config reference
 
@@ -145,6 +157,10 @@ Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
   `acceptEdits`, or `default` (routes tool approvals to the UI via `y`/`n`). Overridable per project.
 - `settingSources` **must include `project`** for the worktree's `CLAUDE.md` to load. Overridable.
 - `model`, `worktreeDir`, `maestroMcp`: global defaults, overridable per project.
+- `baseBranch` (per project, optional): the branch merge agents integrate into (e.g. `master`, `main`,
+  `develop`). If set, pressing `m` merges straight into it. If omitted, the merge agent detects the
+  target (preferring `develop`/`development`, then `master`/`main`) and **confirms with you before
+  merging**. Can also be set globally as a fallback.
 - `magicLink` (per project, optional): a sign-in deep link. If set, the new-agent form offers a step
   to accept it (Enter) or type a different one for that agent; the link is passed as `MAGIC_LINK` and
   the agent opens it on its simulator to log in. Projects without one skip that step.
