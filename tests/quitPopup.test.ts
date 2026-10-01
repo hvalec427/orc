@@ -31,6 +31,8 @@ function makeManager(withAgent = false) {
   const m = new EventEmitter() as any;
   const sessions = withAgent ? [makeSession()] : [];
   m.list = () => sessions;
+  m.active = () => sessions.filter((s: any) => !s.getInfo().archived);
+  m.archived = () => sessions.filter((s: any) => s.getInfo().archived);
   m.projects = () => [{ name: 'proj', repoPath: '/tmp' }];
   m.get = (id: string) => sessions.find((s: any) => s.id === id);
   m.stopAll = async () => {};

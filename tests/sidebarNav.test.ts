@@ -48,6 +48,8 @@ function makeManager() {
 
   const m = new EventEmitter() as any;
   m.list = () => ordered;
+  m.active = () => ordered.filter((s: any) => !s.getInfo().archived);
+  m.archived = () => ordered.filter((s: any) => s.getInfo().archived);
   m.projects = () => [{ name: 'proj', repoPath: '/tmp' }];
   m.get = (id: string) => byId.get(id);
   m.stopAll = async () => {};

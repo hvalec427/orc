@@ -81,9 +81,19 @@ export class AgentManager extends EventEmitter {
     return this.agents.get(id);
   }
 
-  /** First agent currently asking for input/approval, if any. */
+  /** Non-archived agents, in sidebar order. The active list the human navigates by default. */
+  active(): AgentSession[] {
+    return this.list().filter((a) => !a.getInfo().archived);
+  }
+
+  /** Archived agents, in sidebar order. Shown collapsed in the sidebar's "Done" section. */
+  archived(): AgentSession[] {
+    return this.list().filter((a) => a.getInfo().archived);
+  }
+
+  /** First active agent currently asking for input/approval, if any (archived agents are skipped). */
   firstWaiting(): AgentSession | undefined {
-    return this.list().find((a) => {
+    return this.active().find((a) => {
       const s = a.getInfo().status;
       return s === 'needs_input' || s === 'needs_approval';
     });
@@ -242,7 +252,7 @@ export class AgentManager extends EventEmitter {
    * the row of "main" agents j/k steps through while the selection is on a parent.
    */
   topLevel(): AgentSession[] {
-    return this.list().filter((a) => !a.parentId);
+    return this.list().filter((a) => !a.parentId && !a.getInfo().archived);
   }
 
   /**
@@ -499,6 +509,30 @@ export class AgentManager extends EventEmitter {
     return this.create(source.project, 'merge', `merge ${branch}`, '', prompt, undefined, id);
   }
 
+  /**
+   * Archive an agent: hide it in the sidebar's "Done" section and exclude it from integrate. This is
+   * non-destructive — it does NOT stop the session, nor touch/move/remove the worktree or branch, nor
+   * release the port. The session keeps running and can still be resumed and read. Archiving a parent
+   * cascades to its nested children (mirrors {@link remove}), so a whole group collapses together.
+   */
+  async archive(id: string): Promise<void> {
+    const session = this.agents.get(id);
+    if (!session) return;
+    session.setArchived(true);
+    for (const child of this.childrenOf(id)) child.setArchived(true);
+    this.persist();
+    this.emit('update');
+  }
+
+  /** Unarchive an agent, returning it to the active list. Does not touch its children. */
+  async unarchive(id: string): Promise<void> {
+    const session = this.agents.get(id);
+    if (!session) return;
+    session.setArchived(false);
+    this.persist();
+    this.emit('update');
+  }
+
   /** Stop and remove an agent, cleaning up its worktree and releasing its port. */
   async remove(id: string): Promise<void> {
     const session = this.agents.get(id);
@@ -571,6 +605,7 @@ export class AgentManager extends EventEmitter {
           metroPort: info.metroPort,
           sessionId: info.sessionId,
           status: info.status,
+          archived: info.archived,
         };
       });
       writeFileSync(STATE_PATH, JSON.stringify({ agents: state }, null, 2));

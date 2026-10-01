@@ -144,6 +144,8 @@ export interface AgentInfo {
   sessionId?: string;
   /** Accumulated USD cost, or undefined until the SDK has reported a cost. */
   totalCostUsd?: number;
+  /** When true, the agent is hidden in the sidebar's "Done" section and excluded from integrate. */
+  archived?: boolean;
 }
 
 /** Project kind — selects which CLAUDE.md template the `p` action installs. */

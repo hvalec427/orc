@@ -29,6 +29,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // for exactly as many lines as the user has typed — keeping the whole frame
   // below the terminal height and avoiding the scroll/redraw flicker.
   const [replyValue, setReplyValue] = useState('');
+  // Whether the sidebar's collapsible "Done" section is expanded. When collapsed, archived agents
+  // are hidden (only a "Done (N)" header shows) and are not part of the navigable list.
+  const [showDone, setShowDone] = useState(false);
 
   // Re-render whenever any agent updates. A busy agent emits ~15fps token-delta
   // updates; while the reply box is open, repainting the whole tree that fast
@@ -75,8 +78,15 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     };
   }, [manager, replyOpen]);
 
-  const agents = manager.list();
+  // The ONE flat navigable list: active agents, plus archived ones only while the Done section is
+  // expanded. selectedIndex indexes into this list, and the Sidebar renders from the same split, so
+  // selection stays aligned across the active rows and the (optional) Done rows.
+  const activeAgents = manager.active();
+  const archivedAgents = manager.archived();
+  const agents = activeAgents.concat(showDone ? archivedAgents : []);
   const infos = agents.map((a) => a.getInfo());
+  const activeInfos = activeAgents.map((a) => a.getInfo());
+  const archivedInfos = archivedAgents.map((a) => a.getInfo());
 
   // Keep selection valid.
   const selectedIndex = Math.max(0, infos.findIndex((i) => i.id === selectedId));
@@ -171,11 +181,15 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           void selected.stop();
         }
       } else if (input === 'r') {
-        selected?.retry();
+        // Resuming a now-running agent shouldn't leave it hidden in Done, so unarchive it too.
+        if (selected) {
+          selected.retry();
+          if (selected.getInfo().archived) void manager.unarchive(selected.id);
+        }
       } else if (input === 'm' && selected) {
         const id = selected.id;
-        const { branch, status } = selected.getInfo();
-        if (!branch) {
+        const { branch, status, archived } = selected.getInfo();
+        if (!branch || archived) {
           return;
         }
         // Don't integrate a branch the agent is still actively editing. Only allow
@@ -196,12 +210,36 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         // Show orc's generated "how to run/test this branch" instructions inside the agent window.
         setMode('preview');
       } else if (input === 'd' && selected) {
+        // Archive (non-destructive): move the agent into the collapsible Done section. The session
+        // keeps running and the worktree/branch/port are untouched. Move selection to a neighbour in
+        // the ACTIVE list, since the archived agent leaves it.
         const id = selected.id;
-        // Move selection to the next agent (or previous if deleting the last).
+        const activeIdx = activeInfos.findIndex((i) => i.id === id);
+        const next =
+          activeIdx === -1
+            ? undefined
+            : activeInfos[activeIdx + 1] ?? activeInfos[activeIdx - 1];
+        if (next) setSelectedId(next.id);
+        setNotice(`archived ${id}`);
+        void manager.archive(id);
+      } else if (input === 'D' && selected) {
+        // Destructive delete (old `d` behavior): stop the session, remove the worktree, release the
+        // port. Move selection to the next agent in the current navigable list (or previous).
+        const id = selected.id;
         const next = infos[selectedIndex + 1] ?? infos[selectedIndex - 1];
         if (next) setSelectedId(next.id);
         setNotice(`deleting ${id}…`);
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
+      } else if (input === 'u' && selected) {
+        // Unarchive: return the selected (archived) agent to the active list. Inert otherwise.
+        if (selected.getInfo().archived) {
+          const id = selected.id;
+          setNotice(`unarchived ${id}`);
+          void manager.unarchive(id);
+        }
+      } else if (input === 't') {
+        // Toggle the collapsible Done section.
+        setShowDone((v) => !v);
       }
     },
     { isActive: (mode === 'list' || mode === 'preview') && !approvalPending },
@@ -294,12 +332,17 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       <Box paddingX={1}>
         <Text>
           <Text bold color="cyan">orc</Text>
-          <Text dimColor> · {infos.length} agent(s) · {config.projects.length} project(s)</Text>
+          <Text dimColor> · {activeInfos.length + archivedInfos.length} agent(s) · {config.projects.length} project(s)</Text>
         </Text>
       </Box>
 
       <Box>
-        <Sidebar infos={infos} selectedIndex={selectedIndex} />
+        <Sidebar
+          active={activeInfos}
+          archived={archivedInfos}
+          showDone={showDone}
+          selectedIndex={selectedIndex}
+        />
         <AgentView
           session={selected}
           height={bodyHeight}
@@ -347,9 +390,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           hasChild={!!selected && !!manager.firstChildOf(selected.id)}
           hasWaiting={!!manager.firstWaiting()}
           selectedStatus={selected?.getInfo().status}
+          selectedArchived={!!selected?.getInfo().archived}
+          hasArchived={archivedInfos.length > 0}
+          showDone={showDone}
           previewing={mode === 'preview'}
           canMerge={
             !!selected?.getInfo().branch &&
+            !selected.getInfo().archived &&
             selected.getInfo().status !== 'working' &&
             selected.getInfo().status !== 'booting'
           }
@@ -382,6 +429,9 @@ function HelpBar({
   hasChild,
   hasWaiting,
   selectedStatus,
+  selectedArchived,
+  hasArchived,
+  showDone,
   previewing,
   canMerge,
 }: {
@@ -392,6 +442,9 @@ function HelpBar({
   hasChild: boolean;
   hasWaiting: boolean;
   selectedStatus: AgentStatus | undefined;
+  selectedArchived: boolean;
+  hasArchived: boolean;
+  showDone: boolean;
   previewing: boolean;
   canMerge: boolean;
 }) {
@@ -407,6 +460,8 @@ function HelpBar({
   if (hasParent) global.push('h:back');
   if (hasChild) global.push('l:subagents');
   if (hasWaiting) global.push('w:next waiting');
+  // t toggles the collapsible Done section; only useful once something has been archived.
+  if (hasArchived) global.push(showDone ? 't:hide done' : 't:done');
   if (hasSession) global.push('J/K:scroll', 'p:pause/resume scroll');
   global.push('q:quit tui');
 
@@ -418,7 +473,10 @@ function HelpBar({
   if (hasSession && !isDead) agent.push('x:stop');
   // P shows orc's generated "how to run/test this branch" instructions inside the agent window.
   if (hasSession) agent.push(previewing ? 'P:close preview' : 'P:preview');
-  if (hasSession) agent.push('d:delete');
+  // d archives (non-destructive, into Done); Shift+D is the old destructive delete. An archived
+  // agent instead offers u to bring it back.
+  if (hasSession) agent.push(selectedArchived ? 'u:unarchive' : 'd:archive');
+  if (hasSession) agent.push('D:delete');
 
   return (
     <Box paddingX={1} justifyContent="space-between">

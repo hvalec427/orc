@@ -167,6 +167,8 @@ export class AgentSession extends EventEmitter {
   private _worktree?: string;
   private _ownsWorktree: boolean;
   private _metroPort?: number;
+  /** Whether the human archived this agent (hidden in the Done section; excluded from integrate). */
+  private _archived = false;
 
   /** Git branch, or undefined for no-worktree templates (question/merge). */
   get branch(): string | undefined {
@@ -185,6 +187,16 @@ export class AgentSession extends EventEmitter {
   }
   get metroPort(): number | undefined {
     return this._metroPort;
+  }
+  /** Whether the human archived this agent (hidden in the Done section; excluded from integrate). */
+  get archived(): boolean {
+    return this._archived;
+  }
+  /** Set the archived flag and notify listeners so the sidebar re-renders. */
+  setArchived(v: boolean): void {
+    if (this._archived === v) return;
+    this._archived = v;
+    this.emitNow();
   }
   /** Nice name of the project this agent belongs to. */
   readonly project: string;
@@ -478,6 +490,7 @@ export class AgentSession extends EventEmitter {
       question: this.question,
       sessionId: this.sessionId,
       totalCostUsd: this.totalCostUsd,
+      archived: this._archived,
     };
   }
 
