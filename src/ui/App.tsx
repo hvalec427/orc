@@ -7,6 +7,7 @@ import { AgentView } from './AgentView.js';
 import { InputBar } from './InputBar.js';
 import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
+import { visualRows } from './layout.js';
 
 type Mode = 'list' | 'new' | 'input';
 
@@ -227,15 +228,21 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // lines makes the terminal scroll and corrupts Ink's redraw (the top walks off-screen).
   //
   // The reply box is the one occupant whose height varies: its chrome (border ×2,
-  // the "reply to" label, and the optional question line) plus one row per line of
-  // typed text. We reserve rows for the actual number of typed lines so the frame
-  // never overflows — but cap the input area so a very long reply shrinks the log
-  // body instead of pushing the frame past the terminal (the real flicker cause).
+  // the "reply to" label, and the optional question line) plus one row per VISUAL
+  // line of typed text. The input renders with wrap="wrap", so a logical line wider
+  // than the box soft-wraps onto extra rows — we must count those wrapped rows, not
+  // just the newline count, or a long/pasted line overflows the frame and the
+  // terminal scrolls (the real flicker cause). We cap the input area so a very long
+  // reply shrinks the log body instead of pushing the frame past the terminal.
   const inputQuestion = selected?.getInfo().question;
   const inputChrome = 2 + 1 + (inputQuestion ? 1 : 0); // borders + label + optional question
+  // Width available to the typed text inside the InputBar: full terminal width minus
+  // the box border (2) + its paddingX (2) + the input's marginLeft (2). Mirror
+  // InputBar.tsx / MultilineInput.tsx; keep in sync if that chrome changes.
+  const inputWidth = Math.max(1, (stdout?.columns ?? 80) - 6);
   // Keep the log body usable; whatever rows remain can host the input text.
   const maxInputLines = Math.max(1, rows - 2 - 1 - inputChrome - 6);
-  const inputLines = Math.min(maxInputLines, replyValue.split('\n').length);
+  const inputLines = Math.min(maxInputLines, visualRows(replyValue, inputWidth));
 
   const overlayRows =
     confirmingQuit ? 4
@@ -284,6 +291,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           value={replyValue}
           onChange={setReplyValue}
           maxLines={maxInputLines}
+          inputWidth={inputWidth}
           onCancel={() => setMode('list')}
           onSubmit={(text) => {
             selected.send(text);
