@@ -24,10 +24,28 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
 fi
 echo "  node: $NODE_BIN ($(node -v))"
 
-# 2. Install deps + build (the package's prepare script builds automatically).
-echo "Installing dependencies and building..."
-( cd "$REPO_DIR" && npm install )
-[ -f "$REPO_DIR/dist/index.js" ] || ( cd "$REPO_DIR" && npm run build )
+# 2. Install deps + build.
+# Bound the registry wait so a stalled network fails fast with an error instead of
+# hanging silently for npm's default ~15 min. Prefer the fast, deterministic `npm ci`
+# when a lockfile exists; fall back to `npm install`. Skip entirely if deps are already
+# present so re-runs don't touch the network.
+NPM_NET_OPTS="--no-audit --no-fund --fetch-timeout=60000 --fetch-retries=2"
+cd "$REPO_DIR"
+if [ -d node_modules ] && [ -f node_modules/.package-lock.json ]; then
+  echo "Dependencies already installed; skipping npm install."
+elif [ -f package-lock.json ]; then
+  echo "Installing dependencies with npm ci..."
+  npm ci $NPM_NET_OPTS
+else
+  echo "Installing dependencies with npm install..."
+  npm install $NPM_NET_OPTS
+fi
+
+# Build explicitly (do not rely on the install-time prepare script).
+if [ ! -f dist/index.js ]; then
+  echo "Building..."
+  npm run build
+fi
 
 # 3. Install the launcher.
 mkdir -p "$BIN_DIR"
