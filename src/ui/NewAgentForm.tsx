@@ -57,12 +57,15 @@ const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
 export function NewAgentForm({
   projects,
   parentName,
+  parentTicket,
   onSubmit,
   onCancel,
 }: {
   projects: ProjectConfig[];
   /** When set, this form creates a subagent nested under the named parent (opened via `c`). */
   parentName?: string;
+  /** The parent's ticket, inherited by subagents so they skip the ticket prompt when set. */
+  parentTicket?: string;
   onSubmit: (
     template: AgentTemplate,
     project: string,
@@ -87,6 +90,12 @@ export function NewAgentForm({
   const selected = projects.find((p) => p.name === project);
   const feature = isFeature(template);
   const hasMagic = feature && !!selected?.magicLink;
+  // Subagents may leave the name blank to inherit the parent's name, and skip the ticket
+  // prompt entirely when the parent already carries one (they share the group's commit).
+  const isSubagent = !!parentName;
+  const inheritTicket = isSubagent && !!parentTicket?.trim();
+  // Whether this form shows a ticket step at all (feature templates, unless inherited).
+  const asksTicket = feature && !inheritTicket;
 
   // The first field to fill in for a template once a project is chosen. Integrate agents are
   // auto-named ("integrator N"), so they skip the name step and go straight to the prompt.
@@ -116,7 +125,7 @@ export function NewAgentForm({
         return 'name';
       case 'prompt':
         // Reverse of firstStep/field order for the current template.
-        if (feature) return 'ticket';
+        if (asksTicket) return 'ticket';
         return template === 'merge' ? beforeFields : 'name';
     }
   };
@@ -175,9 +184,11 @@ export function NewAgentForm({
     onSubmit(
       template,
       project,
-      name.trim(),
+      // Subagents may leave the name blank to reuse the parent's name.
+      name.trim() || (isSubagent ? parentName!.trim() : ''),
       // Ticket only applies to feature agents (they commit); others send empty.
-      feature ? ticket.trim() : '',
+      // Subagents inherit the parent's ticket instead of prompting for one.
+      feature ? (inheritTicket ? parentTicket!.trim() : ticket.trim()) : '',
       finalPrompt.trim(),
       hasMagic ? magicLink.trim() || selected?.magicLink : undefined,
     );
@@ -259,17 +270,18 @@ export function NewAgentForm({
               value={name}
               onChange={(v) => setName(stripBreaks(v))}
               onSubmit={(v) => {
-                if (v.trim()) setStep(feature ? 'ticket' : 'prompt');
+                // Subagents may leave the name blank to inherit the parent's name.
+                if (v.trim() || isSubagent) setStep(asksTicket ? 'ticket' : 'prompt');
               }}
-              placeholder="e.g. login-flow"
+              placeholder={isSubagent ? `Enter to reuse "${parentName}"` : 'e.g. login-flow'}
             />
           ) : (
-            <Text>{name}</Text>
+            <Text>{name.trim() || parentName}</Text>
           )}
         </Box>
       )}
 
-      {feature && (step === 'ticket' || step === 'prompt') && (
+      {asksTicket && (step === 'ticket' || step === 'prompt') && (
         <Box>
           <Text>{step === 'ticket' ? '› ' : '  '}ticket : </Text>
           {step === 'ticket' ? (

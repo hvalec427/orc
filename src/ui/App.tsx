@@ -203,6 +203,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       <NewAgentForm
         projects={manager.projects()}
         parentName={subagentParent?.name}
+        parentTicket={subagentParent?.ticket}
         onCancel={() => {
           setSubagentParentId(undefined);
           setMode('list');
