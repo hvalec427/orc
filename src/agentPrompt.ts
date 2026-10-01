@@ -102,6 +102,8 @@ export function buildAppendPrompt(params: PromptParams): string {
 /** The template-specific body of the append prompt (before the shared coordination section). */
 function buildTemplatePrompt(params: PromptParams): string {
   switch (params.template) {
+    case 'fix':
+      return buildFixPrompt(params);
     case 'question':
       return buildQuestionPrompt(params);
     case 'merge':
@@ -353,6 +355,42 @@ function buildFeaturePrompt(params: PromptParams): string {
 You are agent "${params.name}", running under an orchestrator that supervises several agents in parallel.
 
 ${featureIdentityBullets(params)}${magicSection(params.magicLink)}
+
+${FEATURE_HUMAN_PROTOCOL}
+`.trim();
+}
+
+/**
+ * "Fix" agent: a full-access bug-fixer in its own worktree. It has the same powers and DONE <hash>
+ * protocol as a feature agent, but an opinionated, surgical workflow: reproduce the problem first,
+ * find the ROOT CAUSE, make the smallest change that fixes it (no scope creep), then prove it with a
+ * regression test and the existing suite. The specialized workflow rides entirely on this prompt —
+ * no AgentManager/AgentSession changes — so it reuses the shared worktree identity + human protocol.
+ */
+function buildFixPrompt(params: PromptParams): string {
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${params.name}", a BUG-FIX agent running under an orchestrator that supervises several
+agents in parallel. The human will describe a problem; your job is to FIX it, not just diagnose it.
+
+${featureIdentityBullets(params)}${magicSection(params.magicLink)}
+
+### Your fix workflow
+
+Work surgically — the goal is the smallest change that correctly resolves the reported problem:
+1. REPRODUCE the problem first. Confirm it actually happens (write a failing test that captures it, or
+   otherwise reproduce it concretely). If you cannot reproduce it, say what you tried and ask the human
+   for the missing detail rather than guessing at a fix.
+2. DIAGNOSE the root cause. Read the relevant code and trace the actual cause — do not patch a symptom
+   or paper over it. Briefly state the root cause before you change anything.
+3. FIX minimally. Make the smallest change that addresses the root cause. Do NOT refactor unrelated
+   code, rename things, or expand scope; if you spot other issues, note them for the human instead of
+   fixing them here.
+4. VERIFY. Confirm your reproduction now passes, then run the project's typecheck, build and the
+   relevant tests (and lint if present) and make sure nothing regressed. Add a regression test for the
+   bug when practical so it cannot come back silently.
+5. COMMIT the fix and report what the bug was, the root cause, and how you verified it.
 
 ${FEATURE_HUMAN_PROTOCOL}
 `.trim();

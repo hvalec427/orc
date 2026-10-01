@@ -5,6 +5,8 @@
  * - `feature`  — the default: a task agent in its own git worktree + branch.
  * - `question` — a read-only agent that answers a question and cannot edit anything;
  *                it runs in the base repo (no worktree) and is denied all mutating tools.
+ * - `fix`      — a full-access bug-fix agent in its own worktree + branch: given a problem, it
+ *                reproduces it, finds the root cause, lands a minimal surgical fix, and proves it.
  * - `merge`    — an agent whose job is to merge branches in the base repo.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
  *                together vs. apart, and spawns a feature agent per group (nested beneath it).
@@ -26,6 +28,7 @@
  */
 export type AgentTemplate =
   | 'feature'
+  | 'fix'
   | 'question'
   | 'merge'
   | 'launcher'
@@ -72,6 +75,7 @@ export const READ_ONLY_TEMPLATES: ReadonlySet<AgentTemplate> = new Set<AgentTemp
  */
 export const WORKTREE_TEMPLATES: ReadonlySet<AgentTemplate> = new Set<AgentTemplate>([
   'feature',
+  'fix',
   'implementer',
   'tester',
   'refactorer',

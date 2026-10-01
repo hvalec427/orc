@@ -15,6 +15,7 @@ interface TemplateChoice {
 
 const TEMPLATES: TemplateChoice[] = [
   { value: 'feature', label: 'Feature', hint: 'builds one task end-to-end itself, in its own worktree' },
+  { value: 'fix', label: 'Fix', hint: 'reproduces, root-causes & lands a minimal fix for a bug' },
   { value: 'pipeline', label: 'Pipeline', hint: 'orchestrates architect→…→tester roles on a shared worktree' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
@@ -39,6 +40,7 @@ function isFeature(t: AgentTemplate): boolean {
 
 /** Per-template placeholder for the prompt field. Templates not listed fall back to a generic hint. */
 const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
+  fix: 'describe the bug/problem to fix (symptoms, repro steps, expected behavior)',
   question: 'what do you want to ask about this repo?',
   merge: 'which branches should be merged? (e.g. merge agent/foo into master)',
   launcher: 'list everything you want done; it will split the work into feature agents',
