@@ -166,8 +166,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         selected?.retry();
       } else if (input === 'm' && selected) {
         const id = selected.id;
-        const branch = selected.getInfo().branch;
+        const { branch, status } = selected.getInfo();
         if (!branch) {
+          return;
+        }
+        // Don't merge a branch the agent is still actively editing. Only allow
+        // merging once its turn has ended (mirrors HelpBar's canMerge gate).
+        if (status === 'working' || status === 'booting') {
           return;
         }
         const existing = manager.mergeChildOf(id);
@@ -308,7 +313,11 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           hasChild={!!selected && !!manager.firstChildOf(selected.id)}
           hasWaiting={!!manager.firstWaiting()}
           selectedStatus={selected?.getInfo().status}
-          canMerge={!!selected?.getInfo().branch}
+          canMerge={
+            !!selected?.getInfo().branch &&
+            selected.getInfo().status !== 'working' &&
+            selected.getInfo().status !== 'booting'
+          }
         />
       )}
     </Box>
