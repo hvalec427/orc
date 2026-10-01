@@ -14,11 +14,11 @@ interface TemplateChoice {
 }
 
 const TEMPLATES: TemplateChoice[] = [
-  { value: 'feature', label: 'Feature', hint: 'builds a feature end-to-end' },
+  { value: 'feature', label: 'Feature', hint: 'builds one task end-to-end itself, in its own worktree' },
+  { value: 'pipeline', label: 'Pipeline', hint: 'orchestrates architect→…→tester roles on a shared worktree' },
+  { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
   { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
-  { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
-  { value: 'pipeline', label: 'Pipeline', hint: 'runs architect→…→tester as a sequential pipeline' },
   { value: 'architect', label: 'Architect', hint: 'read-only; owns high-level technical direction' },
   { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase' },
   { value: 'planner', label: 'Planner', hint: 'read-only; turns understanding into a plan' },
