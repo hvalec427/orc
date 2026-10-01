@@ -20,6 +20,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
   const [confirmingQuit, setConfirmingQuit] = useState(false);
+  // When the new-agent form is opened via `c`, this holds the group-root id the new agent should be
+  // nested under as a subagent. Undefined means the form creates a top-level agent (opened via `n`).
+  const [subagentParentId, setSubagentParentId] = useState<string | undefined>(undefined);
   // Reply text is held here (not inside InputBar) so the layout can reserve rows
   // for exactly as many lines as the user has typed — keeping the whole frame
   // below the terminal height and avoiding the scroll/redraw flicker.
@@ -103,6 +106,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         return;
       }
       if (input === 'n') {
+        setSubagentParentId(undefined);
         setMode('new');
         return;
       }
@@ -125,11 +129,19 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
       } else if (input === 'i' || key.return) {
-        // Answering only makes sense when the agent is waiting on the human.
-        if (selected && selected.getInfo().status === 'needs_input') {
+        // Ask/reply works for ANY selected agent: send() routes a live agent's text into its
+        // current turn and resumes a finished/dead one, so the human can follow up or redirect
+        // at any point — not only when the agent explicitly paused for input.
+        if (selected) {
           setReplyValue('');
           setMode('input');
         }
+      } else if (input === 'c' && selected) {
+        // Launch a subagent of the selected agent's group (see createSubagent): the new agent
+        // joins the group root as a sibling so every subagent is one flat level under one
+        // orchestrator parent.
+        setSubagentParentId(manager.groupRootOf(selected.id).id);
+        setMode('new');
       } else if (input === 'x') {
         // stop() no-ops once the agent is dead, so only act while it's alive.
         const status = selected?.getInfo().status;
@@ -178,15 +190,28 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   );
 
   if (mode === 'new') {
+    const subagentParent = subagentParentId ? manager.get(subagentParentId) : undefined;
     return (
       <NewAgentForm
         projects={manager.projects()}
-        onCancel={() => setMode('list')}
+        parentName={subagentParent?.name}
+        onCancel={() => {
+          setSubagentParentId(undefined);
+          setMode('list');
+        }}
         onSubmit={(template, project, name, ticket, prompt, magicLink) => {
           setMode('list');
-          setNotice(`creating ${template} "${name}" in ${project}…`);
-          manager
-            .create(project, template, name, ticket, prompt, magicLink)
+          const parentId = subagentParentId;
+          setSubagentParentId(undefined);
+          setNotice(
+            parentId
+              ? `creating ${template} "${name}" under "${subagentParent?.name ?? parentId}"…`
+              : `creating ${template} "${name}" in ${project}…`,
+          );
+          const launched = parentId
+            ? manager.createSubagent(parentId, template, name, ticket, prompt, magicLink)
+            : manager.create(project, template, name, ticket, prompt, magicLink);
+          launched
             .then((s) => {
               setSelectedId(s.id);
               setNotice(`launched "${name}"`);
@@ -245,6 +270,12 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           agentName={selected.name}
           pending={approvalPending}
           onDecide={(ok) => selected.resolveApproval(ok)}
+          onRedirect={() => {
+            // Deny the pending tool so the agent unblocks, then open the reply box to redirect it.
+            selected.resolveApproval(false);
+            setReplyValue('');
+            setMode('input');
+          }}
         />
       ) : mode === 'input' && selected ? (
         <InputBar
@@ -268,7 +299,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           hasChild={!!selected && !!manager.firstChildOf(selected.id)}
           hasWaiting={!!manager.firstWaiting()}
           selectedStatus={selected?.getInfo().status}
-          canAnswer={selected?.getInfo().status === 'needs_input'}
           canMerge={!!selected?.getInfo().branch}
         />
       )}
@@ -298,7 +328,6 @@ function HelpBar({
   hasChild,
   hasWaiting,
   selectedStatus,
-  canAnswer,
   canMerge,
 }: {
   notice: string;
@@ -308,7 +337,6 @@ function HelpBar({
   hasChild: boolean;
   hasWaiting: boolean;
   selectedStatus: AgentStatus | undefined;
-  canAnswer: boolean;
   canMerge: boolean;
 }) {
   // An agent is "dead" (retryable) when its last turn ended; stop() only does
@@ -326,7 +354,8 @@ function HelpBar({
   global.push('q:quit tui');
 
   const agent: string[] = [];
-  if (canAnswer) agent.push('i:answer');
+  // i (ask/reply) and c (launch a subagent) work for any selected agent regardless of state.
+  if (hasSession) agent.push('i:ask', 'c:subagent');
   if (isDead) agent.push('r:resume');
   if (canMerge) agent.push('m:merge');
   if (hasSession && !isDead) agent.push('x:stop');

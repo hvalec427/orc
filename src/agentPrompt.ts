@@ -11,6 +11,24 @@ export const LAUNCH_TOOL = 'mcp__orc__launch_feature_agents';
 /** The in-process MCP tool the pipeline agent uses to run ONE role step at a time. */
 export const RUN_STEP_TOOL = 'mcp__orc__run_pipeline_step';
 
+/** The group coordination MCP tools every agent gets (orchestrator-side + subagent-side). */
+export const LIST_SUBAGENTS_TOOL = 'mcp__orc__list_subagents';
+export const ASK_SUBAGENT_TOOL = 'mcp__orc__ask_subagent';
+export const ANSWER_SUBAGENT_TOOL = 'mcp__orc__answer_subagent';
+export const ASK_ORCHESTRATOR_TOOL = 'mcp__orc__ask_orchestrator';
+
+/**
+ * The full set of group coordination tool names. They only pass messages between agents in the same
+ * group (never touch the codebase), so AgentSession auto-allows them in every permission mode — a
+ * read-only agent may still coordinate, and a full-access agent isn't prompted for approval on them.
+ */
+export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set<string>([
+  LIST_SUBAGENTS_TOOL,
+  ASK_SUBAGENT_TOOL,
+  ANSWER_SUBAGENT_TOOL,
+  ASK_ORCHESTRATOR_TOOL,
+]);
+
 /**
  * Human-facing, one-line responsibility for each role. Reused verbatim in the standalone role
  * prompt (so the agent knows its identity) and summarized into the pipeline prompt (so the
@@ -70,8 +88,19 @@ export interface PromptParams {
   project?: string;
 }
 
-/** Pick the right orchestration addendum for the agent's template. */
+/**
+ * Pick the right orchestration addendum for the agent's template, then append the group-coordination
+ * section every agent shares. The coordination tools (ask/answer/list subagent, ask orchestrator) are
+ * available to EVERY agent — a top-level agent orchestrates the subagents the human attaches to it
+ * with `c`, and any subagent can ask its orchestrator — so the guidance is appended uniformly rather
+ * than duplicated into each template builder.
+ */
 export function buildAppendPrompt(params: PromptParams): string {
+  return `${buildTemplatePrompt(params)}\n\n${COORDINATION_SECTION}`;
+}
+
+/** The template-specific body of the append prompt (before the shared coordination section). */
+function buildTemplatePrompt(params: PromptParams): string {
   switch (params.template) {
     case 'question':
       return buildQuestionPrompt(params);
@@ -95,6 +124,41 @@ export function buildAppendPrompt(params: PromptParams): string {
       return buildFeaturePrompt(params);
   }
 }
+
+/**
+ * The group-coordination section appended to EVERY agent's prompt. It explains the two directions of
+ * the in-process coordination channel so a group works together without the human relaying messages:
+ *   - As an ORCHESTRATOR (you may have subagents attached to you): list them, ask one for its result
+ *     (blocks until it finishes its turn), and answer one that is waiting on you.
+ *   - As a SUBAGENT (you may have been launched under an orchestrator): ask your orchestrator for a
+ *     decision/context and block until it answers.
+ * Deliberately phrased so it reads correctly whether or not the agent currently has subagents/parent
+ * (the tools are inert no-ops otherwise), since attachment happens dynamically via the TUI's `c`.
+ */
+const COORDINATION_SECTION = `### Coordinating with your group
+
+You belong to a group: one top-level orchestrator plus the subagents attached to it (the human can
+attach a subagent to any agent with \`c\`; subagents share the group's one worktree/branch). You have
+in-process tools to coordinate directly, so the group works together without the human relaying every
+message. Use them instead of ending your turn when another agent in your group can unblock you.
+
+As an ORCHESTRATOR (when you have subagents):
+- \`${LIST_SUBAGENTS_TOOL}\` — list your subagents with their status and latest hand-off summary.
+- \`${ASK_SUBAGENT_TOOL}\` — ask ONE subagent (by id) a question or give it an instruction and WAIT for
+  its result. Use this to coordinate siblings, gather what another agent produced, or sequence
+  editing work (only one agent should edit the shared worktree at a time; read-only agents can run in
+  parallel).
+- \`${ANSWER_SUBAGENT_TOOL}\` — answer a subagent that is waiting on you (it used ${ASK_ORCHESTRATOR_TOOL});
+  provide its id and your answer so it can continue. If a subagent's question needs a human decision,
+  ask the human (end your turn with ${NEEDS_INPUT}) and relay their answer back via this tool.
+
+As a SUBAGENT (when you were launched under an orchestrator):
+- \`${ASK_ORCHESTRATOR_TOOL}\` — ask your orchestrator a question and WAIT for its answer. Use this when
+  you need a decision, context, or data your orchestrator or a sibling has, rather than guessing or
+  stopping for the human. If you have no orchestrator, it tells you so and you decide yourself.
+
+These coordination tools only pass messages within your group; they never modify the codebase, so you
+may use them even when you are a read-only agent.`;
 
 /** How the human ends their turn with a no-sentinel template so the TUI keeps waiting. */
 const HUMAN_PROTOCOL = `### Talking to the human

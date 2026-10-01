@@ -5,14 +5,18 @@ export function ApprovalModal({
   agentName,
   pending,
   onDecide,
+  onRedirect,
 }: {
   agentName: string;
   pending: PendingApproval;
   onDecide: (approved: boolean) => void;
+  /** Deny the pending tool and open a reply box so the human can redirect the agent. */
+  onRedirect: () => void;
 }) {
   useInput((input) => {
     if (input === 'y') onDecide(true);
     else if (input === 'n') onDecide(false);
+    else if (input === 'i') onRedirect();
   });
 
   const summary = JSON.stringify(pending.input).slice(0, 300);
@@ -34,7 +38,8 @@ export function ApprovalModal({
         {summary}
       </Text>
       <Text>
-        <Text color="green">y</Text> approve · <Text color="red">n</Text> deny
+        <Text color="green">y</Text> approve · <Text color="red">n</Text> deny ·{' '}
+        <Text color="cyan">i</Text> deny &amp; reply
       </Text>
     </Box>
   );

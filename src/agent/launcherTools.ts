@@ -65,8 +65,14 @@ export function buildLauncherMcpServer(launch: LaunchFeature) {
   return createSdkMcpServer({
     name: 'orc',
     version: '0.1.0',
-    tools: [
-      tool(
+    tools: buildLauncherTools(launch),
+  });
+}
+
+/** The launcher's spawn tool(s), as a composable array for sharing one "orc" server with other tools. */
+export function buildLauncherTools(launch: LaunchFeature) {
+  return [
+    tool(
         'launch_feature_agents',
         'Spawn ONE feature agent to carry out a group of tasks. Call this once per feature agent ' +
           'you want to create. Each agent gets its own git worktree + branch and runs independently. ' +
@@ -122,8 +128,7 @@ export function buildLauncherMcpServer(launch: LaunchFeature) {
           }
         },
       ),
-    ],
-  });
+  ];
 }
 
 /**
@@ -139,8 +144,14 @@ export function buildPipelineMcpServer(runStep: RunPipelineStep) {
   return createSdkMcpServer({
     name: 'orc',
     version: '0.1.0',
-    tools: [
-      tool(
+    tools: buildPipelineTools(runStep),
+  });
+}
+
+/** The pipeline's run-step tool(s), as a composable array for sharing one "orc" server with other tools. */
+export function buildPipelineTools(runStep: RunPipelineStep) {
+  return [
+    tool(
         'run_pipeline_step',
         'Run ONE role agent as the next step of the pipeline, on the pipeline\u2019s shared ' +
           'worktree/branch. Call this once per step and wait for it to finish before deciding the ' +
@@ -207,6 +218,5 @@ export function buildPipelineMcpServer(runStep: RunPipelineStep) {
           }
         },
       ),
-    ],
-  });
+  ];
 }

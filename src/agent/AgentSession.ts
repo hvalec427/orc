@@ -12,14 +12,30 @@ import {
 import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
 import { isReadOnlyTemplate } from '../types.js';
 import { InputQueue } from './InputQueue.js';
-import { buildAppendPrompt, LAUNCH_TOOL, RUN_STEP_TOOL, NEEDS_INPUT, DONE } from '../agentPrompt.js';
 import {
-  buildLauncherMcpServer,
-  buildPipelineMcpServer,
+  buildAppendPrompt,
+  LAUNCH_TOOL,
+  RUN_STEP_TOOL,
+  ORCHESTRATION_TOOLS,
+  NEEDS_INPUT,
+  DONE,
+} from '../agentPrompt.js';
+import {
+  buildLauncherTools,
+  buildPipelineTools,
   type LaunchFeature,
   type RunPipelineStep,
 } from './launcherTools.js';
-import { createWorktree } from '../worktree.js';
+import {
+  buildOrchestratorTools,
+  buildSubagentTools,
+  buildOrcServer,
+  type AskOrchestrator,
+  type AskSubagent,
+  type AnswerSubagent,
+  type ListSubagents,
+} from './orchestratorTools.js';
+import { createWorktree, type Worktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
 
@@ -100,6 +116,18 @@ export interface AgentSessionInit {
    * under the pipeline.
    */
   runStep?: RunPipelineStep;
+  /**
+   * The group orchestration callbacks (supplied by the manager, scoped to this agent's id) that back
+   * the in-process `mcp__orc__*` coordination tools: as a parent, list/ask/answer this agent's
+   * subagents; as a child, ask this agent's orchestrator. Every agent gets these — they're inert for
+   * an agent with no subagents and no parent.
+   */
+  orchestration?: {
+    listSubagents: ListSubagents;
+    askSubagent: AskSubagent;
+    answerSubagent: AnswerSubagent;
+    askOrchestrator: AskOrchestrator;
+  };
 }
 
 /**
@@ -132,16 +160,32 @@ export class AgentSession extends EventEmitter {
   readonly ticket: string;
   private readonly prompt: string;
   private readonly magicLink?: string;
+  // Git branch / worktree / port / ownership. Mutable behind getters: a worktree-less orchestrator
+  // parent can ADOPT a worktree the first time it gains a subagent (adoptWorktree), so the whole
+  // group works on one branch.
+  private _branch?: string;
+  private _worktree?: string;
+  private _ownsWorktree: boolean;
+  private _metroPort?: number;
+
   /** Git branch, or undefined for no-worktree templates (question/merge). */
-  readonly branch?: string;
+  get branch(): string | undefined {
+    return this._branch;
+  }
   /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
-  readonly worktree?: string;
+  get worktree(): string | undefined {
+    return this._worktree;
+  }
   /**
    * Whether this agent owns its worktree's lifecycle (recreate on launch, remove on delete). False
-   * for pipeline role children sharing their pipeline's worktree, so they never clobber or delete it.
+   * for a child sharing its group's worktree, so it never clobbers or deletes it.
    */
-  readonly ownsWorktree: boolean;
-  readonly metroPort?: number;
+  get ownsWorktree(): boolean {
+    return this._ownsWorktree;
+  }
+  get metroPort(): number | undefined {
+    return this._metroPort;
+  }
   /** Nice name of the project this agent belongs to. */
   readonly project: string;
   /** Absolute path to the project's base repo (for worktree cleanup). */
@@ -152,6 +196,8 @@ export class AgentSession extends EventEmitter {
   private readonly launchFeature?: LaunchFeature;
   /** Pipeline-only: runs ONE role step on the shared worktree (set by the manager). */
   private readonly runStep?: RunPipelineStep;
+  /** Group orchestration callbacks backing the in-process `mcp__orc__*` coordination tools. */
+  private readonly orchestration?: AgentSessionInit['orchestration'];
   private queue = new InputQueue();
   private query: Query | null = null;
   /** Aborts the current SDK subprocess. Recreated on every launch. */
@@ -186,19 +232,36 @@ export class AgentSession extends EventEmitter {
     this.ticket = init.ticket;
     this.prompt = init.prompt;
     this.magicLink = init.magicLink;
-    this.branch = init.branch;
-    this.worktree = init.worktree;
-    // An agent with a worktree owns it unless told otherwise (pipeline role children share one).
-    this.ownsWorktree = init.ownsWorktree ?? init.worktree !== undefined;
-    this.metroPort = init.metroPort;
+    this._branch = init.branch;
+    this._worktree = init.worktree;
+    // An agent with a worktree owns it unless told otherwise (a child shares its group's one).
+    this._ownsWorktree = init.ownsWorktree ?? init.worktree !== undefined;
+    this._metroPort = init.metroPort;
     this.config = init.config;
     this.launchFeature = init.launchFeature;
     this.runStep = init.runStep;
+    this.orchestration = init.orchestration;
     this.project = init.config.name;
     this.repo = init.config.repo;
   }
 
   // ---- public API ---------------------------------------------------------
+
+  /**
+   * Adopt a worktree the manager created for this agent's group. Called on a worktree-less
+   * orchestrator parent the first time it gains a subagent: the parent becomes the OWNER of the
+   * shared worktree/branch (its children share it without owning it). The change takes effect on the
+   * parent's NEXT launch (its cwd becomes the worktree); the current turn keeps running where it is.
+   * No-op if this agent already has a worktree.
+   */
+  adoptWorktree(wt: Worktree): void {
+    if (this._worktree) return;
+    this._branch = wt.branch;
+    this._worktree = wt.path;
+    this._ownsWorktree = true;
+    this.addLog('system', `adopted shared worktree on ${wt.branch} for its subagents`);
+    this.emitNow();
+  }
 
   /** Start the session with the prompt as the first user message. */
   start(): void {
@@ -445,6 +508,40 @@ export class AgentSession extends EventEmitter {
     });
   }
 
+  /**
+   * This agent's most recent final-turn text: its hand-off summary (DONE) or its last question
+   * (NEEDS_INPUT / sentinel-less turn end). Exposed so a parent's `list_subagents` tool can show each
+   * subagent's latest hand-off without reading its transcript. Empty until the first turn ends.
+   */
+  lastSummary(): string {
+    return this.lastResultText;
+  }
+
+  /**
+   * A subagent asked this (orchestrator) agent a question via `ask_orchestrator` and is blocked on
+   * the answer. Surface it so the orchestrator's next turn sees it and can call `answer_subagent`,
+   * and so the human watching the TUI knows a child is waiting. The subagent's id is included so the
+   * orchestrator knows exactly which `answer_subagent` call to make. This does NOT pause the parent —
+   * it is informational; the child blocks until answered (by the parent's tool or the human).
+   */
+  receiveSubagentQuestion(childName: string, childId: string, question: string): void {
+    const q = oneLine(question, 400);
+    this.addLog(
+      'system',
+      `✉ subagent "${childName}" (id: ${childId}) is asking you: ${q} — answer it with ` +
+        `answer_subagent(childId: "${childId}", answer: …).`,
+    );
+    // If this orchestrator is live, inject the question into its stream so its next turn acts on it.
+    // If it's finished/idle, send() resumes it so it can respond. Either way the child stays blocked
+    // until the orchestrator (or the human) answers.
+    this.send(
+      `A subagent you launched, "${childName}" (id: ${childId}), is waiting on you and asked:\n` +
+        `${question}\n\n` +
+        `Answer it by calling answer_subagent(childId: "${childId}", answer: …). If you need the ` +
+        `human to decide, ask them (ending your turn with ${NEEDS_INPUT}) and relay their answer.`,
+    );
+  }
+
   // ---- session options ----------------------------------------------------
 
   private buildOptions(resume?: string): Options {
@@ -506,7 +603,9 @@ export class AgentSession extends EventEmitter {
       // permissions, and hard-deny every mutating tool. Read-only tools are auto-allowed so the
       // agent can still investigate without pestering the human for approval on each read. The
       // launcher and pipeline are each additionally allowed exactly their own orchestration tool
-      // (spawn feature agents / run one role step) so they can actually drive their sub-agents.
+      // (spawn feature agents / run one role step) so they can actually drive their sub-agents. The
+      // group coordination tools (mcp__orc__list/ask/answer_subagent, mcp__orc__ask_orchestrator) are
+      // always allowed — they only pass messages between agents, never touch the codebase.
       const ownTool =
         this.template === 'launcher'
           ? LAUNCH_TOOL
@@ -516,7 +615,7 @@ export class AgentSession extends EventEmitter {
       opts.permissionMode = 'default';
       opts.canUseTool = (toolName, input) =>
         Promise.resolve(
-          ownTool && toolName === ownTool
+          (ownTool && toolName === ownTool) || ORCHESTRATION_TOOLS.has(toolName)
             ? { behavior: 'allow', updatedInput: input }
             : READONLY_DENIED_TOOLS.has(toolName)
               ? {
@@ -528,8 +627,13 @@ export class AgentSession extends EventEmitter {
     } else if (this.config.permissionMode === 'bypassPermissions') {
       opts.allowDangerouslySkipPermissions = true;
     } else if (this.config.permissionMode === 'default') {
-      opts.canUseTool = (toolName, input, options) =>
-        new Promise((resolve) => {
+      opts.canUseTool = (toolName, input, options) => {
+        // The group coordination tools only pass messages between agents in the same group — they
+        // never touch the codebase — so auto-allow them instead of prompting the human for each one.
+        if (ORCHESTRATION_TOOLS.has(toolName)) {
+          return Promise.resolve({ behavior: 'allow', updatedInput: input });
+        }
+        return new Promise((resolve) => {
           this.pendingApproval = {
             toolName,
             input,
@@ -541,6 +645,7 @@ export class AgentSession extends EventEmitter {
           };
           this.setStatus('needs_approval');
         });
+      };
     }
 
     if (resume) opts.resume = resume;
@@ -554,13 +659,32 @@ export class AgentSession extends EventEmitter {
         env: this.config.maestroMcp.env,
       };
     }
-    // Launcher and pipeline agents each get an in-process MCP server (server name "orc") exposing
-    // their single orchestration tool: the launcher's spawns feature agents (LAUNCH_TOOL); the
-    // pipeline's runs one role step at a time (RUN_STEP_TOOL). Only one applies per agent.
-    if (this.template === 'launcher' && this.launchFeature) {
-      mcpServers.orc = buildLauncherMcpServer(this.launchFeature);
-    } else if (this.template === 'pipeline' && this.runStep) {
-      mcpServers.orc = buildPipelineMcpServer(this.runStep);
+    // Every agent gets the in-process "orc" MCP server. It always carries the group coordination
+    // tools (list/ask/answer_subagent as the orchestrator, ask_orchestrator as a subagent) so any
+    // agent can work with the rest of its group. Launcher and pipeline agents ADD their one
+    // spawn/run-step tool onto the same server: the launcher spawns feature agents (LAUNCH_TOOL);
+    // the pipeline runs one role step at a time (RUN_STEP_TOOL). All live on server "orc", so the
+    // fully-qualified names stay `mcp__orc__*`.
+    if (this.orchestration) {
+      // Build the tool list as a SINGLE array literal: a mixed-shape literal is inferred as the
+      // union of all element types, which is assignable to buildOrcServer's SdkMcpToolDefinition<any>[]
+      // param. Using Array.push instead would fail — push is invariant in the element type, so the
+      // launcher/pipeline tool's distinct schema shape isn't accepted into the inferred union.
+      const orcTools = [
+        ...buildOrchestratorTools({
+          listSubagents: this.orchestration.listSubagents,
+          askSubagent: this.orchestration.askSubagent,
+          answerSubagent: this.orchestration.answerSubagent,
+        }),
+        ...buildSubagentTools(this.orchestration.askOrchestrator),
+        ...(this.template === 'launcher' && this.launchFeature
+          ? buildLauncherTools(this.launchFeature)
+          : []),
+        ...(this.template === 'pipeline' && this.runStep
+          ? buildPipelineTools(this.runStep)
+          : []),
+      ];
+      mcpServers.orc = buildOrcServer(orcTools);
     }
     if (Object.keys(mcpServers).length > 0) opts.mcpServers = mcpServers;
 

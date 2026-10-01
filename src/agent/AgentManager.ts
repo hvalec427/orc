@@ -8,7 +8,17 @@ import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
 import type { RunPipelineStep } from './launcherTools.js';
+import type {
+  AskOrchestrator,
+  AskSubagent,
+  AnswerSubagent,
+  ListSubagents,
+  SubagentInfo,
+} from './orchestratorTools.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
+
+/** How long a cross-agent orchestration request waits before giving up (ms). */
+const ORCHESTRATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const STATE_PATH = join(homedir(), '.orc', 'state.json');
 
@@ -17,6 +27,13 @@ export class AgentManager extends EventEmitter {
   private readonly agents = new Map<string, AgentSession>();
   /** One port allocator per project that defines a range (keyed by project name). */
   private readonly ports = new Map<string, PortAllocator>();
+  /**
+   * Subagents currently blocked in `ask_orchestrator`, keyed by the asking child's id. The value
+   * resolves the child's pending promise with the orchestrator's (or human's) answer text. A child
+   * can only have one question outstanding at a time; a new ask supersedes the old (resolved with a
+   * note) so the bus never leaks a dangling waiter.
+   */
+  private readonly pendingParentAsks = new Map<string, (answer: string) => void>();
 
   constructor(private readonly config: OrcConfig) {
     super();
@@ -175,6 +192,11 @@ export class AgentManager extends EventEmitter {
       };
     }
 
+    // Every agent gets the group orchestration callbacks (scoped to its own id): as a parent it can
+    // list/ask/answer its subagents; as a child it can ask its orchestrator. They are harmless no-ops
+    // for an agent with no subagents and no parent, so they're wired unconditionally.
+    const orchestration = this.orchestrationCallbacks(id);
+
     const session = new AgentSession({
       id,
       name,
@@ -190,6 +212,7 @@ export class AgentManager extends EventEmitter {
       config: project,
       launchFeature,
       runStep,
+      orchestration,
     });
     session.on('update', () => this.emit('update'));
     this.agents.set(id, session);
@@ -207,6 +230,197 @@ export class AgentManager extends EventEmitter {
   /** A given agent's first child session (e.g. a launcher's first spawned feature agent), if any. */
   firstChildOf(id: string): AgentSession | undefined {
     return [...this.agents.values()].find((a) => a.parentId === id);
+  }
+
+  /** All of a given agent's direct child sessions, oldest-first. */
+  childrenOf(id: string): AgentSession[] {
+    return [...this.agents.values()].filter((a) => a.parentId === id);
+  }
+
+  /**
+   * The group root (top-level orchestrator) for an agent: walk up parentId links to the agent with
+   * no parent. The hierarchy is at most two levels deep — a top-level agent and its direct children —
+   * so this resolves a child to its parent and a parent to itself.
+   */
+  groupRootOf(id: string): AgentSession {
+    const agent = this.agents.get(id);
+    if (!agent) throw new Error(`Unknown agent: ${id}`);
+    if (!agent.parentId) return agent;
+    return this.agents.get(agent.parentId) ?? agent;
+  }
+
+  /**
+   * Launch a subagent under an agent's group. The new agent is nested directly beneath the group ROOT
+   * (so every subagent is one flat level under a single orchestrator parent — children never have
+   * children of their own), and shares the group's ONE worktree/branch:
+   *   - If the group root already has a worktree, the subagent reuses it (ownsWorktree=false).
+   *   - If the group root has none (e.g. a question/launcher parent running in the base repo), a
+   *     worktree is created now and the ROOT adopts it, so the parent and all its subagents operate
+   *     on the same branch from then on.
+   * Read-only subagents can safely run in parallel with an editing sibling (they are denied mutating
+   * tools); editing subagents should be sequenced by the orchestrator to avoid clobbering the tree.
+   */
+  async createSubagent(
+    parentId: string,
+    template: AgentTemplate,
+    name: string,
+    ticket: string,
+    prompt: string,
+    magicLink?: string,
+  ): Promise<AgentSession> {
+    const root = this.groupRootOf(parentId);
+    const project = this.config.projects.find((p) => p.name === root.project);
+    if (!project) throw new Error(`Unknown project: ${root.project}`);
+
+    // Resolve the shared worktree: reuse the root's, or create one and have the root adopt it.
+    let shared: Worktree;
+    if (root.worktree && root.branch) {
+      shared = { path: root.worktree, branch: root.branch };
+    } else {
+      shared = await createWorktree(project.repo, project.worktreeDir, root.id);
+      root.adoptWorktree(shared);
+    }
+
+    return this.create(root.project, template, name, ticket, prompt, magicLink, root.id, shared);
+  }
+
+  // ---- orchestration message bus ------------------------------------------
+  //
+  // A group (one top-level orchestrator + its direct subagents) coordinates through three callbacks
+  // the AgentSession exposes as in-process MCP tools, so agents work together without the human
+  // relaying every message:
+  //   - listSubagentsOf  → the orchestrator's `list_subagents`
+  //   - askChild         → the orchestrator's `ask_subagent`   (parent → child, blocks for a result)
+  //   - answerChild      → the orchestrator's `answer_subagent`(parent → a child waiting on it)
+  //   - askParent        → a subagent's `ask_orchestrator`     (child → parent, blocks for an answer)
+  // Each is built per-agent in {@link create} and scoped to that agent's place in its group.
+
+  /** The hand-off view of one agent (its latest final-turn text) for a parent's `list_subagents`. */
+  private subagentInfo(a: AgentSession): SubagentInfo {
+    const info = a.getInfo();
+    return {
+      id: info.id,
+      name: info.name,
+      template: info.template,
+      status: info.status,
+      summary: a.lastSummary(),
+    };
+  }
+
+  /** The direct subagents of `parentId`, as the parent sees them (for `list_subagents`). */
+  private listSubagentsOf(parentId: string): SubagentInfo[] {
+    return this.childrenOf(parentId).map((a) => this.subagentInfo(a));
+  }
+
+  /**
+   * Parent → child: deliver `question` into the subagent's session and WAIT for it to finish its
+   * turn, returning its final hand-off text. Rejects when the child isn't a direct subagent of the
+   * asking parent (scoping), resolves immediately with the child's last summary if it's already
+   * finished. Times out rather than hanging forever.
+   */
+  private async askChild(parentId: string, childId: string, question: string): Promise<{ status: string; answer: string }> {
+    const child = this.agents.get(childId);
+    if (!child || child.parentId !== parentId) {
+      throw new Error(`"${childId}" is not one of your subagents.`);
+    }
+    // Deliver the question (continues a live turn or resumes a finished child), then wait for the
+    // turn to reach a terminal state so we can hand its summary back to the asking parent.
+    child.send(question);
+    const outcome = await this.withTimeout(
+      child.waitUntilFinished(),
+      `subagent "${child.name}" did not respond in time`,
+    );
+    return { status: outcome.status, answer: outcome.text };
+  }
+
+  /**
+   * Parent → child: answer a subagent that is blocked in `ask_orchestrator`. If the child is waiting,
+   * resolve its pending promise so it continues; otherwise deliver the answer as an ordinary message.
+   * Rejects when the child isn't a direct subagent of the answering parent (scoping).
+   */
+  private answerChild(parentId: string, childId: string, answer: string): { delivered: boolean } {
+    const child = this.agents.get(childId);
+    if (!child || child.parentId !== parentId) {
+      throw new Error(`"${childId}" is not one of your subagents.`);
+    }
+    const waiter = this.pendingParentAsks.get(childId);
+    if (waiter) {
+      this.pendingParentAsks.delete(childId);
+      waiter(answer);
+      return { delivered: true };
+    }
+    // Not currently waiting — treat the answer as a normal reply into its session.
+    child.send(answer);
+    return { delivered: false };
+  }
+
+  /**
+   * Child → parent: block until the orchestrator (or the human on its behalf) answers. The question
+   * is surfaced on the parent via {@link AgentSession.receiveSubagentQuestion} so the orchestrator's
+   * next turn sees it and can call `answer_subagent`; the human can also answer directly. Falls back
+   * to a "no response" answer on timeout or a missing/dead parent so the child never hangs forever.
+   */
+  private askParent(childId: string, question: string): Promise<{ answer: string }> {
+    const child = this.agents.get(childId);
+    const parent = child?.parentId ? this.agents.get(child.parentId) : undefined;
+    if (!parent) {
+      // A top-level agent (or an orphaned child) has no orchestrator to ask.
+      return Promise.resolve({
+        answer:
+          'You have no orchestrator to ask — you are a top-level agent. Decide yourself, or end your ' +
+          `turn with ${NEEDS_INPUT} to ask the human directly.`,
+      });
+    }
+    // Supersede any previous outstanding ask from this child so we never leak a waiter.
+    const prior = this.pendingParentAsks.get(childId);
+    if (prior) {
+      this.pendingParentAsks.delete(childId);
+      prior('(superseded by a newer question)');
+    }
+    const answer = new Promise<string>((resolve) => {
+      this.pendingParentAsks.set(childId, resolve);
+    });
+    // Let the parent's session (and the TUI) know a subagent is waiting on it.
+    parent.receiveSubagentQuestion(child!.name, child!.id, question);
+    return this.withTimeout(
+      answer.then((text) => ({ answer: text })),
+      `orchestrator "${parent.name}" did not answer in time`,
+    ).catch((err) => {
+      this.pendingParentAsks.delete(childId);
+      return { answer: `(no response: ${(err as Error).message})` };
+    });
+  }
+
+  /** Reject a promise if it doesn't settle within the orchestration timeout. */
+  private withTimeout<T>(p: Promise<T>, message: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(message)), ORCHESTRATION_TIMEOUT_MS);
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
+  }
+
+  /** Build the orchestration callbacks a session at `id` exposes as its in-process MCP tools. */
+  private orchestrationCallbacks(id: string): {
+    listSubagents: ListSubagents;
+    askSubagent: AskSubagent;
+    answerSubagent: AnswerSubagent;
+    askOrchestrator: AskOrchestrator;
+  } {
+    return {
+      listSubagents: () => this.listSubagentsOf(id),
+      askSubagent: (args) => this.askChild(id, args.childId, args.question),
+      answerSubagent: (args) => Promise.resolve(this.answerChild(id, args.childId, args.answer)),
+      askOrchestrator: (args) => this.askParent(id, args.question),
+    };
   }
 
   /**
@@ -258,6 +472,12 @@ export class AgentManager extends EventEmitter {
 
     await session.stop();
     this.agents.delete(id);
+    // If this child was blocked on its orchestrator, release the waiter so nothing dangles.
+    const waiter = this.pendingParentAsks.get(id);
+    if (waiter) {
+      this.pendingParentAsks.delete(id);
+      waiter('(the subagent was removed)');
+    }
     if (session.metroPort !== undefined) {
       this.ports.get(session.project)?.release(session.metroPort);
     }
