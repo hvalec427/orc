@@ -23,6 +23,7 @@ export function MultilineInput({
   placeholder,
   isActive = true,
   focusColor = 'cyan',
+  maxLines,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -30,6 +31,14 @@ export function MultilineInput({
   placeholder?: string;
   isActive?: boolean;
   focusColor?: string;
+  /**
+   * Maximum number of text rows to render at once. When the value has more
+   * lines than this, the view scrolls to keep the cursor's line visible. This
+   * caps the component's rendered height so the surrounding layout can reserve a
+   * fixed number of rows — critical in a TUI, where an output taller than the
+   * terminal scrolls the screen and corrupts Ink's in-place redraw (flicker).
+   */
+  maxLines?: number;
 }) {
   // Cursor offset into `value` (0..value.length).
   const [cursor, setCursor] = useState(value.length);
@@ -129,15 +138,23 @@ export function MultilineInput({
   return (
     <Box flexDirection="column">
       {showPlaceholder ? (
-        <Text dimColor>{renderWithCursor('', 0, isActive, focusColor, placeholder)}</Text>
+        <Text dimColor wrap="truncate">
+          {renderWithCursor('', 0, isActive, focusColor, placeholder)}
+        </Text>
       ) : (
-        renderLines(value, cursor, isActive, focusColor)
+        renderLines(value, cursor, isActive, focusColor, maxLines)
       )}
     </Box>
   );
 }
 
-function renderLines(value: string, cursor: number, active: boolean, focusColor: string) {
+function renderLines(
+  value: string,
+  cursor: number,
+  active: boolean,
+  focusColor: string,
+  maxLines?: number,
+) {
   const lines = value.split('\n');
   // Locate the (line, column) of the cursor.
   let remaining = cursor;
@@ -153,13 +170,29 @@ function renderLines(value: string, cursor: number, active: boolean, focusColor:
     remaining -= len + 1; // account for the '\n'
   }
 
-  return lines.map((line, i) => (
-    <Text key={i}>
-      {i === cursorLine
-        ? renderWithCursor(line, cursorCol, active, focusColor)
-        : line || ' '}
-    </Text>
-  ));
+  // When the value has more lines than we're allowed to render, scroll a window
+  // of `maxLines` rows so the cursor's line stays visible. This keeps the
+  // component's height fixed and prevents the TUI from overflowing the terminal.
+  let start = 0;
+  let windowed = lines;
+  if (maxLines !== undefined && lines.length > maxLines) {
+    start = Math.min(Math.max(0, cursorLine - (maxLines - 1)), lines.length - maxLines);
+    windowed = lines.slice(start, start + maxLines);
+  }
+
+  // `wrap="truncate"` keeps each logical line on exactly one terminal row. A line
+  // that soft-wrapped would add rows the parent layout didn't budget for, pushing
+  // the frame past the terminal height and reintroducing the redraw flicker.
+  return windowed.map((line, i) => {
+    const lineIndex = start + i;
+    return (
+      <Text key={lineIndex} wrap="truncate">
+        {lineIndex === cursorLine
+          ? renderWithCursor(line, cursorCol, active, focusColor)
+          : line || ' '}
+      </Text>
+    );
+  });
 }
 
 function renderWithCursor(

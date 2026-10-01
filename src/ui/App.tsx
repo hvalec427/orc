@@ -20,6 +20,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
   const [confirmingQuit, setConfirmingQuit] = useState(false);
+  // Reply text is held here (not inside InputBar) so the layout can reserve rows
+  // for exactly as many lines as the user has typed — keeping the whole frame
+  // below the terminal height and avoiding the scroll/redraw flicker.
+  const [replyValue, setReplyValue] = useState('');
 
   // Re-render whenever any agent updates. A busy agent emits ~15fps token-delta
   // updates; while the reply box is open, repainting the whole tree that fast
@@ -120,7 +124,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
       } else if (input === 'i' || key.return) {
-        if (selected) setMode('input');
+        if (selected) {
+          setReplyValue('');
+          setMode('input');
+        }
       } else if (input === 'x') {
         void selected?.stop();
       } else if (input === 'r') {
@@ -188,7 +195,23 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // Reserve rows for the header (1), the bottom occupant, and one safety line so the
   // total output stays STRICTLY below the terminal height. Rendering exactly `rows`
   // lines makes the terminal scroll and corrupts Ink's redraw (the top walks off-screen).
-  const overlayRows = confirmingQuit ? 4 : approvalPending ? 6 : mode === 'input' ? 5 : 1;
+  //
+  // The reply box is the one occupant whose height varies: its chrome (border ×2,
+  // the "reply to" label, and the optional question line) plus one row per line of
+  // typed text. We reserve rows for the actual number of typed lines so the frame
+  // never overflows — but cap the input area so a very long reply shrinks the log
+  // body instead of pushing the frame past the terminal (the real flicker cause).
+  const inputQuestion = selected?.getInfo().question;
+  const inputChrome = 2 + 1 + (inputQuestion ? 1 : 0); // borders + label + optional question
+  // Keep the log body usable; whatever rows remain can host the input text.
+  const maxInputLines = Math.max(1, rows - 2 - 1 - inputChrome - 6);
+  const inputLines = Math.min(maxInputLines, replyValue.split('\n').length);
+
+  const overlayRows =
+    confirmingQuit ? 4
+    : approvalPending ? 6
+    : mode === 'input' ? inputChrome + inputLines
+    : 1;
   const bodyHeight = Math.max(6, rows - 2 - overlayRows);
 
   return (
@@ -221,7 +244,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       ) : mode === 'input' && selected ? (
         <InputBar
           agentName={selected.name}
-          question={selected.getInfo().question}
+          question={inputQuestion}
+          value={replyValue}
+          onChange={setReplyValue}
+          maxLines={maxInputLines}
           onCancel={() => setMode('list')}
           onSubmit={(text) => {
             selected.send(text);

@@ -1,20 +1,23 @@
-import { useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { MultilineInput } from './MultilineInput.js';
 
 export function InputBar({
   agentName,
   question,
+  value,
+  onChange,
   onSubmit,
   onCancel,
+  maxLines,
 }: {
   agentName: string;
   question?: string;
+  value: string;
+  onChange: (value: string) => void;
   onSubmit: (text: string) => void;
   onCancel: () => void;
+  maxLines: number;
 }) {
-  const [value, setValue] = useState('');
-
   useInput((_input, key) => {
     if (key.escape) onCancel();
   });
@@ -31,12 +34,13 @@ export function InputBar({
         <Box marginLeft={2}>
           <MultilineInput
             value={value}
-            onChange={setValue}
+            onChange={onChange}
             onSubmit={(v) => {
               const t = v.trim();
               if (t) onSubmit(t);
             }}
             focusColor="yellow"
+            maxLines={maxLines}
             placeholder="type your answer · Enter to send · Alt/Shift+Enter newline · Esc to cancel"
           />
         </Box>
