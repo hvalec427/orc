@@ -64,6 +64,10 @@ export class AgentManager extends EventEmitter {
 
     await assertGitRepo(project.repo);
 
+    // Merge agents aren't named by the human; auto-name them "merger N", incrementing
+    // across the mergers created this session.
+    if (template === 'merge') name = this.nextMergerName();
+
     const id = this.uniqueId(slugify(name));
 
     // Only feature agents get an isolated worktree/branch/port; question & merge agents
@@ -119,6 +123,12 @@ export class AgentManager extends EventEmitter {
 
   async stopAll(): Promise<void> {
     await Promise.all(this.list().map((a) => a.stop()));
+  }
+
+  /** Next sequential "merger N" name, counting existing merge agents this session. */
+  private nextMergerName(): string {
+    const mergers = this.list().filter((a) => a.template === 'merge').length;
+    return `merger ${mergers + 1}`;
   }
 
   private uniqueId(base: string): string {
