@@ -9,6 +9,7 @@ export function InputBar({
   onSubmit,
   onCancel,
   maxLines,
+  inputWidth,
 }: {
   agentName: string;
   question?: string;
@@ -17,6 +18,7 @@ export function InputBar({
   onSubmit: (text: string) => void;
   onCancel: () => void;
   maxLines: number;
+  inputWidth: number;
 }) {
   useInput((_input, key) => {
     if (key.escape) onCancel();
@@ -41,6 +43,7 @@ export function InputBar({
             }}
             focusColor="yellow"
             maxLines={maxLines}
+            width={inputWidth}
             placeholder="type your answer · Enter to send · Alt/Shift+Enter newline · Esc to cancel"
           />
         </Box>

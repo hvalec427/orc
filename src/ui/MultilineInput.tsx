@@ -24,6 +24,7 @@ export function MultilineInput({
   isActive = true,
   focusColor = 'cyan',
   maxLines,
+  width,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -32,13 +33,20 @@ export function MultilineInput({
   isActive?: boolean;
   focusColor?: string;
   /**
-   * Maximum number of text rows to render at once. When the value has more
-   * lines than this, the view scrolls to keep the cursor's line visible. This
-   * caps the component's rendered height so the surrounding layout can reserve a
-   * fixed number of rows — critical in a TUI, where an output taller than the
-   * terminal scrolls the screen and corrupts Ink's in-place redraw (flicker).
+   * Maximum number of VISUAL rows to render at once. When the value occupies
+   * more rows than this (including soft-wrapped long lines), the view scrolls to
+   * keep the cursor's line visible. This caps the component's rendered height so
+   * the surrounding layout can reserve a fixed number of rows — critical in a
+   * TUI, where an output taller than the terminal scrolls the screen and
+   * corrupts Ink's in-place redraw (flicker).
    */
   maxLines?: number;
+  /**
+   * Column width available to the text. Used to count how many rows a logical
+   * line occupies once it soft-wraps, so the viewport bounds VISUAL rows rather
+   * than logical lines.
+   */
+  width?: number;
 }) {
   // Cursor offset into `value` (0..value.length).
   const [cursor, setCursor] = useState(value.length);
@@ -142,7 +150,7 @@ export function MultilineInput({
           {renderWithCursor('', 0, isActive, focusColor, placeholder)}
         </Text>
       ) : (
-        renderLines(value, cursor, isActive, focusColor, maxLines)
+        renderLines(value, cursor, isActive, focusColor, maxLines, width)
       )}
     </Box>
   );
@@ -154,6 +162,7 @@ function renderLines(
   active: boolean,
   focusColor: string,
   maxLines?: number,
+  width?: number,
 ) {
   const lines = value.split('\n');
   // Locate the (line, column) of the cursor.
@@ -170,14 +179,38 @@ function renderLines(
     remaining -= len + 1; // account for the '\n'
   }
 
-  // When the value has more lines than we're allowed to render, scroll a window
-  // of `maxLines` rows so the cursor's line stays visible. This keeps the
-  // component's height fixed and prevents the TUI from overflowing the terminal.
+  // How many VISUAL rows a logical line occupies once soft-wrapped at `width`.
+  const rowsOf = (line: string) =>
+    width && width > 0 ? Math.max(1, Math.ceil(line.length / width)) : 1;
+
+  // Scroll a window of logical lines so that (a) the cursor's line stays visible
+  // and (b) the window's total VISUAL rows never exceed `maxLines`. Counting
+  // wrapped rows (not logical lines) is what keeps the frame from overflowing the
+  // terminal — a single long line can wrap to several rows on its own.
   let start = 0;
   let windowed = lines;
-  if (maxLines !== undefined && lines.length > maxLines) {
-    start = Math.min(Math.max(0, cursorLine - (maxLines - 1)), lines.length - maxLines);
-    windowed = lines.slice(start, start + maxLines);
+  if (maxLines !== undefined) {
+    const total = lines.reduce((n, l) => n + rowsOf(l), 0);
+    if (total > maxLines) {
+      // Grow the window upward from the cursor line, adding whole lines while
+      // their wrapped rows still fit in the budget. The cursor's own line is
+      // always included even if it alone exceeds the budget (its last rows stay
+      // visible via wrap).
+      let used = rowsOf(lines[cursorLine]!);
+      let top = cursorLine;
+      let bottom = cursorLine;
+      // Prefer showing context below the cursor first, then above.
+      while (bottom + 1 < lines.length && used + rowsOf(lines[bottom + 1]!) <= maxLines) {
+        bottom += 1;
+        used += rowsOf(lines[bottom]!);
+      }
+      while (top - 1 >= 0 && used + rowsOf(lines[top - 1]!) <= maxLines) {
+        top -= 1;
+        used += rowsOf(lines[top]!);
+      }
+      start = top;
+      windowed = lines.slice(top, bottom + 1);
+    }
   }
 
   // `wrap="wrap"` lets a logical line that is wider than the terminal soft-wrap
