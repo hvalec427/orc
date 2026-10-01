@@ -104,7 +104,7 @@ export class AgentManager extends EventEmitter {
    *
    * Worktree templates (feature + the full-access roles implementer/tester/refactorer — see
    * {@link needsWorktree}) get their own isolated git worktree + branch and an allocated port.
-   * Read-only templates (question/launcher/pipeline + architect/explorer/planner/reviewer) and
+   * Read-only templates (launcher/pipeline + architect/explorer/planner/reviewer) and
    * merge agents run without their own worktree/branch/port and are locked to read-only tools
    * inside AgentSession (merge excepted — it runs git in the base repo).
    *
@@ -154,7 +154,7 @@ export class AgentManager extends EventEmitter {
     }
 
     // A launcher agent is handed a callback its in-process spawn tool uses to create agents. The
-    // launcher chooses the template per group (feature/fix/question/pipeline); create() then applies
+    // launcher chooses the template per group (feature/fix/explorer/pipeline); create() then applies
     // that template's own worktree/port rules. Each spawned agent is nested beneath this launcher
     // (parentId = id) so it shows up indented under the launcher in the sidebar.
     const launchFeature =
@@ -325,7 +325,7 @@ export class AgentManager extends EventEmitter {
    * (so every subagent is one flat level under a single orchestrator parent — children never have
    * children of their own), and shares the group's ONE worktree/branch:
    *   - If the group root already has a worktree, the subagent reuses it (ownsWorktree=false).
-   *   - If the group root has none (e.g. a question/launcher parent running in the base repo), a
+   *   - If the group root has none (e.g. an explorer/launcher parent running in the base repo), a
    *     worktree is created now and the ROOT adopts it, so the parent and all its subagents operate
    *     on the same branch from then on.
    * Read-only subagents can safely run in parallel with an editing sibling (they are denied mutating
@@ -579,8 +579,8 @@ export class AgentManager extends EventEmitter {
     }
     // Clean up the worktree only if this agent owns it. Pipeline role children share their
     // pipeline's worktree (ownsWorktree=false), so they must NOT remove it — the pipeline parent
-    // does, after its children are gone (children are removed first, above). Question/merge and
-    // read-only-role agents have no worktree at all.
+    // does, after its children are gone (children are removed first, above). Merge and
+    // read-only (launcher/pipeline/role) agents have no worktree at all.
     if (session.worktree && session.ownsWorktree) {
       try {
         await removeWorktree(session.repo, session.worktree);

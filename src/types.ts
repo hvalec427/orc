@@ -3,8 +3,6 @@
 /**
  * The kind of agent to launch, chosen in the new-agent form:
  * - `feature`  — the default: a task agent in its own git worktree + branch.
- * - `question` — a read-only agent that answers a question and cannot edit anything;
- *                it runs in the base repo (no worktree) and is denied all mutating tools.
  * - `fix`      — a full-access bug-fix agent in its own worktree + branch: given a problem, it
  *                reproduces it, finds the root cause, lands a minimal surgical fix, and proves it.
  * - `merge`    — an agent whose job is to merge branches in the base repo.
@@ -16,15 +14,16 @@
  *                in AgentManager/AgentSession.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
  *                together vs. apart, picks the right template for each group (feature/fix/
- *                question/pipeline) and spawns one agent per group (nested beneath it).
+ *                explorer/pipeline) and spawns one agent per group (nested beneath it).
  * - `pipeline` — a read-only orchestrator that runs the seven role agents below SEQUENTIALLY
  *                on one shared worktree (architect → explorer → planner → tester → implementer
  *                → reviewer → refactorer → tester), handing each role's summary to the next and
  *                able to "go back" to an earlier role when something is missing.
  *
- * The seven ROLE templates are the focused specialists a pipeline chains together (and which a
- * human can also launch standalone). They split into read-only investigators and full-access
- * workers; see {@link READ_ONLY_TEMPLATES} and {@link WORKTREE_TEMPLATES}.
+ * The seven ROLE templates are the focused specialists a pipeline chains together. The pipeline
+ * spawns them internally; `explorer` is also offered standalone for read-only investigation. They
+ * split into read-only investigators and full-access workers; see {@link READ_ONLY_TEMPLATES} and
+ * {@link WORKTREE_TEMPLATES}.
  * - `architect`   — owns high-level technical direction/decisions (READ-ONLY).
  * - `explorer`    — investigates the codebase: finds files, traces flows/deps (READ-ONLY).
  * - `planner`     — turns understanding into a concrete implementation plan (READ-ONLY).
@@ -36,7 +35,6 @@
 export type AgentTemplate =
   | 'feature'
   | 'fix'
-  | 'question'
   | 'merge'
   | 'worker'
   | 'launcher'
@@ -65,7 +63,6 @@ export type RoleTemplate =
  * but each additionally get their own spawn/run-step MCP tool allowed through explicitly.
  */
 export const READ_ONLY_TEMPLATES: ReadonlySet<AgentTemplate> = new Set<AgentTemplate>([
-  'question',
   'launcher',
   'pipeline',
   'architect',
@@ -150,9 +147,9 @@ export interface AgentInfo {
   /** Nice name of the project this agent belongs to. */
   project: string;
   ticket: string;
-  /** Git branch, or undefined for no-worktree templates (question/merge/read-only roles). */
+  /** Git branch, or undefined for no-worktree templates (merge/read-only roles). */
   branch?: string;
-  /** Worktree path, or undefined for no-worktree templates (question/merge/read-only roles). */
+  /** Worktree path, or undefined for no-worktree templates (merge/read-only roles). */
   worktree?: string;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;

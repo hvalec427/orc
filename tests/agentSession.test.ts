@@ -18,7 +18,7 @@ function makeSession(): AgentSession {
   const init: AgentSessionInit = {
     id: 'a1',
     name: 'tester',
-    template: 'question',
+    template: 'explorer',
     ticket: '',
     prompt: 'do the thing',
     config: CONFIG,

@@ -28,7 +28,6 @@ import {
 const ALL_TEMPLATES: AgentTemplate[] = [
   'feature',
   'fix',
-  'question',
   'merge',
   'worker',
   'launcher',
@@ -54,9 +53,8 @@ test('needsWorktree is true only for feature + fix + the three full-access roles
   assert.deepEqual(new Set(WORKTREE_TEMPLATES), expected);
 });
 
-test('isReadOnlyTemplate covers question/launcher/pipeline + the four read-only roles', () => {
+test('isReadOnlyTemplate covers launcher/pipeline + the four read-only roles', () => {
   const expected = new Set<AgentTemplate>([
-    'question',
     'launcher',
     'pipeline',
     'architect',
@@ -160,7 +158,7 @@ test('launcher prompt references the launch tool; pipeline prompt references the
 test('launcher prompt tells it to choose a template per group', () => {
   const launcher = buildAppendPrompt({ name: 'l', template: 'launcher', project: 'demo' });
   assert.match(launcher, /template/i, 'launcher prompt should mention choosing a template');
-  for (const t of ['feature', 'fix', 'question', 'pipeline']) {
+  for (const t of ['feature', 'fix', 'explorer', 'pipeline']) {
     assert.ok(launcher.includes(`\`${t}\``), `launcher prompt missing ${t} template option`);
   }
 });

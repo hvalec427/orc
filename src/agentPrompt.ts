@@ -118,8 +118,6 @@ function buildTemplatePrompt(params: PromptParams): string {
   switch (params.template) {
     case 'fix':
       return buildFixPrompt(params);
-    case 'question':
-      return buildQuestionPrompt(params);
     case 'merge':
       return buildMergePrompt(params);
     case 'worker':
@@ -206,28 +204,6 @@ The human supervises you through a terminal UI and can reply to you between turn
   ${DONE}
 
 Do not emit these sentinels in any other situation.`;
-
-/**
- * Read-only "question" agent: answers questions about the codebase and MUST NOT change
- * anything. It runs directly in the base repo (no worktree); file-mutating tools are also
- * hard-denied by the orchestrator, so this is belt-and-suspenders.
- */
-function buildQuestionPrompt({ name }: PromptParams): string {
-  return `
-## Orchestration context (injected by orc)
-
-You are agent "${name}", a READ-ONLY question-answering agent running under an orchestrator.
-
-- Your ONLY job is to answer the human's question about this repository. You are NOT a coding agent.
-- You MUST NOT modify anything: do not edit, create, or delete files; do not run commands that change
-  state (no writes, installs, migrations, git commits, checkouts, or pushes). Even if the human asks you
-  to make a change, decline and explain that this is a read-only question agent — they should start a
-  feature agent instead. The orchestrator also denies file-mutating tools, so edits will fail.
-- Investigate with read-only tools (read files, search, inspect git history) and give a clear, concise answer.
-
-${HUMAN_PROTOCOL}
-`.trim();
-}
 
 /**
  * Strategy-specific git guidance woven into the merge prompt. Each entry describes HOW to integrate a
@@ -334,7 +310,7 @@ Your job:
 4. Decide WHICH kind of agent each group needs, and pick its template:
    - \`feature\` — the default for building or changing functionality (full access, own worktree).
    - \`fix\` — a focused bug fix: reproduce, find the root cause, land a minimal surgical fix.
-   - \`question\` — read-only research / "how does X work?" with no code changes (no worktree).
+   - \`explorer\` — read-only investigation / "how does X work?" with no code changes (no worktree).
    - \`pipeline\` — a large, tightly-coupled chunk of work worth running through the full
      architect → explorer → planner → implementer → tester → reviewer → refactorer sequence.
    Default to \`feature\` unless the group clearly matches one of the others.
@@ -543,7 +519,7 @@ without reading your transcript. Cover:
 
 /**
  * Parameterized builder for all seven role templates. Read-only roles
- * (architect/explorer/planner/reviewer) get the question-style "you MUST NOT modify anything"
+ * (architect/explorer/planner/reviewer) get the "you MUST NOT modify anything"
  * guardrail; full-access roles (implementer/tester/refactorer) get the feature-style worktree
  * identity + DONE <hash> protocol. Both end with the required hand-off summary so they slot into a
  * pipeline. Driven off {@link needsWorktree} and {@link ROLE_RESPONSIBILITIES} so adding/moving a
@@ -573,8 +549,8 @@ ${FEATURE_HUMAN_PROTOCOL}
 `.trim();
   }
 
-  // Read-only role: reuse the question agent's hard guardrail language verbatim so the "orchestrator
-  // denies mutating tools" contract is identical across every read-only template.
+  // Read-only role: a hard "you MUST NOT modify anything" guardrail so the "orchestrator denies
+  // mutating tools" contract is identical across every read-only template.
   return `
 ## Orchestration context (injected by orc)
 

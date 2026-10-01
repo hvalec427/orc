@@ -19,21 +19,14 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'worker', label: 'Worker', hint: 'does anything asked; cuts a worktree only if it must edit code' },
   { value: 'pipeline', label: 'Pipeline', hint: 'orchestrates architect→…→tester roles on a shared worktree' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
-  { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
+  { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase, cannot edit' },
   { value: 'merge', label: 'Integrate', hint: 'lands the branches you name using the project\u2019s merge/rebase strategy' },
-  { value: 'architect', label: 'Architect', hint: 'read-only; owns high-level technical direction' },
-  { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase' },
-  { value: 'planner', label: 'Planner', hint: 'read-only; turns understanding into a plan' },
-  { value: 'implementer', label: 'Implementer', hint: 'writes code to execute the plan' },
-  { value: 'tester', label: 'Tester', hint: 'writes/runs unit, integration & E2E tests' },
-  { value: 'reviewer', label: 'Reviewer', hint: 'read-only; reviews completed changes' },
-  { value: 'refactorer', label: 'Refactorer', hint: 'cleans up the reviewed code' },
 ];
 
 /**
  * Does this template get the feature-only fields (magiclink + ticket) and a worktree? True for the
- * full-access templates (feature + implementer/tester/refactorer). Everything else — question,
- * merge, launcher, pipeline and the read-only roles — just needs a name + prompt.
+ * full-access `feature` template. Everything else — explorer, merge, launcher, pipeline — just
+ * needs a name + prompt.
  */
 function isFeature(t: AgentTemplate): boolean {
   return needsWorktree(t);
@@ -42,18 +35,11 @@ function isFeature(t: AgentTemplate): boolean {
 /** Per-template placeholder for the prompt field. Templates not listed fall back to a generic hint. */
 const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
   fix: 'describe the bug/problem to fix (symptoms, repro steps, expected behavior)',
-  question: 'what do you want to ask about this repo?',
   merge: 'which branches should be integrated? (e.g. land agent/foo into master)',
   worker: 'what should this worker do? (anything — it makes a worktree only if it needs to edit code)',
   launcher: 'list everything you want done; it will split the work into feature agents',
   pipeline: 'describe the feature; it will run the full architect→…→tester pipeline',
-  architect: 'what should the architect decide the technical direction for?',
   explorer: 'what part of the codebase should the explorer investigate and explain?',
-  planner: 'what feature should the planner produce an implementation plan for?',
-  implementer: 'what plan should the implementer execute (code + build + checks)?',
-  tester: 'what should the tester write/run tests for (unit, integration, E2E)?',
-  reviewer: 'what completed changes should the reviewer review?',
-  refactorer: 'what reviewed code should the refactorer clean up (preserving behavior)?',
 };
 
 export function NewAgentForm({

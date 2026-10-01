@@ -5,11 +5,11 @@ import type { RoleTemplate } from '../types.js';
 /**
  * The agent templates a launcher may spawn for a group of tasks. These are the standalone,
  * top-level templates that make sense to kick off from a prompt — a full-access `feature` agent
- * for new work, a surgical `fix` agent for a bug, a read-only `question` agent for research, or a
+ * for new work, a surgical `fix` agent for a bug, a read-only `explorer` agent for research, or a
  * `pipeline` orchestrator to run the seven roles sequentially on tightly-coupled work. (Merge and
  * the individual role templates are not launchable this way.)
  */
-const LAUNCH_TEMPLATES = ['feature', 'fix', 'question', 'pipeline'] as const;
+const LAUNCH_TEMPLATES = ['feature', 'fix', 'explorer', 'pipeline'] as const;
 
 /** One of the templates a launcher may spawn; the `template` arg of its launch tool. */
 export type LaunchTemplate = (typeof LAUNCH_TEMPLATES)[number];
@@ -118,7 +118,7 @@ export function buildLauncherTools(launch: LaunchFeature) {
             .describe(
               'Which kind of agent fits this group: "feature" (full-access task agent in its own ' +
                 'worktree+branch, the default for new work), "fix" (surgical bug-fix agent in its own ' +
-                'worktree+branch), "question" (read-only research/Q&A agent, no worktree) or ' +
+                'worktree+branch), "explorer" (read-only research/investigation agent, no worktree) or ' +
                 '"pipeline" (read-only orchestrator that runs the 7 roles sequentially on one shared ' +
                 'worktree for large, tightly-coupled work).',
             ),

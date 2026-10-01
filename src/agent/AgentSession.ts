@@ -94,7 +94,7 @@ export interface AgentSessionInit {
   prompt: string;
   /** Optional magic sign-in link (already resolved: per-agent override or project default). */
   magicLink?: string;
-  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  /** Git branch, or undefined for no-worktree templates (merge/read-only). */
   branch?: string;
   /** Worktree path, or undefined for no-worktree templates (they run in the base repo). */
   worktree?: string;
@@ -140,7 +140,7 @@ export interface AgentSessionInit {
 }
 
 /**
- * Tools a read-only "question" agent is never allowed to use. Covers the file-mutating
+ * Tools a read-only agent is never allowed to use. Covers the file-mutating
  * tools plus Bash (which can run arbitrary state-changing commands). The agent can still
  * investigate with Read/Grep/Glob/Task and other read-only tools.
  */
@@ -179,7 +179,7 @@ export class AgentSession extends EventEmitter {
   /** Whether the human archived this agent (hidden in the Done section; excluded from integrate). */
   private _archived = false;
 
-  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  /** Git branch, or undefined for no-worktree templates (merge/read-only). */
   get branch(): string | undefined {
     return this._branch;
   }
@@ -353,7 +353,7 @@ export class AgentSession extends EventEmitter {
    * launch in the wrong directory.
    */
   private async ensureWorktree(): Promise<boolean> {
-    // No-worktree templates (question/merge) run in the base repo — nothing to ensure.
+    // No-worktree templates (merge/read-only) run in the base repo — nothing to ensure.
     if (!this.worktree) return true;
     if (existsSync(this.worktree)) return true;
     // A shared worktree we don't own (a pipeline role child) must not be recreated here: its path
@@ -603,7 +603,7 @@ export class AgentSession extends EventEmitter {
   // ---- session options ----------------------------------------------------
 
   private buildOptions(resume?: string): Options {
-    // Read-only templates (question, launcher, pipeline and the read-only roles) never edit code.
+    // Read-only templates (launcher, pipeline and the read-only roles) never edit code.
     // The launcher and pipeline each additionally get exactly one write-ish power: their own MCP
     // tool (spawn feature agents / run one role step), allowed explicitly below.
     const readOnly = isReadOnlyTemplate(this.template);
@@ -612,7 +612,7 @@ export class AgentSession extends EventEmitter {
     this.abortController = new AbortController();
     const opts: Options = {
       abortController: this.abortController,
-      // No-worktree templates (question/merge) run in the project's base repo. For
+      // No-worktree templates (merge/read-only) run in the project's base repo. For
       // worktree templates, ensureWorktree() runs before every launch and guarantees the
       // path exists (recreating it if needed), so the SDK never spawns in a dead cwd.
       cwd: this.worktree ?? this.repo,

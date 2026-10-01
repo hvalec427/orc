@@ -21,7 +21,7 @@ export function buildPreviewInstructions(info: AgentInfo, project: ProjectConfig
   lines.push('');
 
   if (!info.worktree) {
-    // Read-only templates (question/merge/role investigators) run in the base repo with no
+    // Read-only templates (merge/launcher/pipeline/role investigators) run in the base repo with no
     // worktree, so there is nothing isolated to check out and preview.
     lines.push('This agent has no worktree, so there is nothing to preview.');
     lines.push('It runs read-only in the base repo.');
