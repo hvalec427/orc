@@ -4,6 +4,9 @@ import type { AgentTemplate } from './types.js';
 export const NEEDS_INPUT = '@@NEEDS_INPUT@@';
 export const DONE = '@@DONE@@';
 
+/** The in-process MCP tool the launcher agent uses to spawn feature agents. */
+export const LAUNCH_TOOL = 'mcp__orc__launch_feature_agents';
+
 export interface PromptParams {
   name: string;
   /** Which template the agent was launched from (selects the prompt shape). */
@@ -14,6 +17,8 @@ export interface PromptParams {
   ticket?: string;
   /** Optional magic sign-in link the agent opens on its simulator to log in. */
   magicLink?: string;
+  /** The project the agent belongs to (the launcher spawns feature agents into it). */
+  project?: string;
 }
 
 /** Pick the right orchestration addendum for the agent's template. */
@@ -23,6 +28,8 @@ export function buildAppendPrompt(params: PromptParams): string {
       return buildQuestionPrompt(params);
     case 'merge':
       return buildMergePrompt(params);
+    case 'launcher':
+      return buildLauncherPrompt(params);
     default:
       return buildFeaturePrompt(params);
   }
@@ -94,6 +101,52 @@ main repository.
   \`agent/merge\` worktree or your own working directory.
 - Do NOT push to any remote unless the human explicitly asks.
 - You may run git commands, read files, and search — but do not make unrelated code edits.
+
+${HUMAN_PROTOCOL}
+`.trim();
+}
+
+/**
+ * "Launcher" agent: a read-only planner. The human hands it several tasks at once; it decides
+ * which tasks belong together (same feature agent) vs. apart (separate feature agents), then
+ * spawns one feature agent per group via the ${LAUNCH_TOOL} tool. It never edits code itself —
+ * its whole job is to split the work and delegate it to feature agents that show up in the
+ * sidebar nested beneath it.
+ */
+function buildLauncherPrompt({ name, project }: PromptParams): string {
+  const projectLine = project
+    ? `You spawn feature agents into the project "${project}" (every agent you launch lands there).`
+    : 'You spawn feature agents into this project.';
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${name}", a read-only LAUNCHER/planner running under an orchestrator. ${projectLine}
+
+Your job:
+1. Read the human's message, which describes SEVERAL things they want done.
+2. Investigate the repository with read-only tools (read files, search, inspect git history) just
+   enough to understand scope and dependencies between the tasks.
+3. Decide how to split the work:
+   - Group tasks that touch the same area, are tightly coupled, or would conflict if done in
+     parallel INTO THE SAME feature agent (so one agent does them sequentially on one branch).
+   - Separate tasks that are independent INTO DIFFERENT feature agents (so they run in parallel on
+     their own branches/worktrees without stepping on each other).
+   - When in doubt, prefer fewer, well-scoped agents over many tiny ones.
+4. For each group, call the \`${LAUNCH_TOOL}\` tool ONCE with:
+   - \`name\`: a short, nice, kebab-case feature name (e.g. "login-flow", "dark-mode",
+     "checkout-refactor"). Make it descriptive and unique across the batch.
+   - \`prompt\`: clear, self-contained instructions for that feature agent covering every task in
+     the group. The feature agent does NOT see the human's original message, so include all the
+     context it needs to do the work end-to-end.
+   - \`ticket\`: the ticket reference IF the human gave one for that work; otherwise leave it empty.
+
+Rules:
+- You are READ-ONLY: do not edit, create, or delete files, and do not run state-changing commands.
+  The ONLY action you take is calling \`${LAUNCH_TOOL}\` to spawn feature agents.
+- Call the tool separately for each feature agent you want to create (one call = one agent).
+- Before launching, briefly explain your grouping decision (which tasks go together and why).
+- After you've launched all the agents, summarize what you created (names + what each will do), then
+  finish. The feature agents run on their own from there; you do not supervise them.
 
 ${HUMAN_PROTOCOL}
 `.trim();

@@ -6,8 +6,10 @@
  * - `question` — a read-only agent that answers a question and cannot edit anything;
  *                it runs in the base repo (no worktree) and is denied all mutating tools.
  * - `merge`    — an agent whose job is to merge branches in the base repo.
+ * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
+ *                together vs. apart, and spawns a feature agent per group (nested beneath it).
  */
-export type AgentTemplate = 'feature' | 'question' | 'merge';
+export type AgentTemplate = 'feature' | 'question' | 'merge' | 'launcher';
 
 export type AgentStatus =
   | 'booting' // session created, first turn not yet complete

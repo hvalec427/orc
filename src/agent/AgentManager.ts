@@ -92,6 +92,25 @@ export class AgentManager extends EventEmitter {
     const allocator = isFeature ? this.ports.get(project.name) : undefined;
     const metroPort = allocator ? await allocator.allocate() : undefined;
 
+    // A launcher agent is handed a callback its in-process spawn tool uses to create feature agents.
+    // Each spawned agent is nested beneath this launcher (parentId = id) so it shows up indented
+    // under the launcher in the sidebar.
+    const launchFeature =
+      template === 'launcher'
+        ? async (args: { name: string; prompt: string; ticket: string }) => {
+            const child = await this.create(
+              projectName,
+              'feature',
+              args.name,
+              args.ticket,
+              args.prompt,
+              undefined,
+              id,
+            );
+            return { id: child.id, name: child.name };
+          }
+        : undefined;
+
     const session = new AgentSession({
       id,
       name,
@@ -104,6 +123,7 @@ export class AgentManager extends EventEmitter {
       worktree: worktree?.path,
       metroPort,
       config: project,
+      launchFeature,
     });
     session.on('update', () => this.emit('update'));
     this.agents.set(id, session);
@@ -116,6 +136,11 @@ export class AgentManager extends EventEmitter {
   /** A given agent's child merge session, if one has already been spawned. */
   mergeChildOf(id: string): AgentSession | undefined {
     return [...this.agents.values()].find((a) => a.parentId === id && a.template === 'merge');
+  }
+
+  /** A given agent's first child session (e.g. a launcher's first spawned feature agent), if any. */
+  firstChildOf(id: string): AgentSession | undefined {
+    return [...this.agents.values()].find((a) => a.parentId === id);
   }
 
   /**
