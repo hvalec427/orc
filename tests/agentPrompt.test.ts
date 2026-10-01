@@ -4,6 +4,7 @@ import {
   buildAppendPrompt,
   LAUNCH_TOOL,
   RUN_STEP_TOOL,
+  CREATE_WORKTREE_TOOL,
   PIPELINE_ORDER,
   ROLE_RESPONSIBILITIES,
   NEEDS_INPUT,
@@ -19,6 +20,7 @@ import {
   type RoleTemplate,
   needsWorktree,
   isReadOnlyTemplate,
+  isWorkerTemplate,
   READ_ONLY_TEMPLATES,
   WORKTREE_TEMPLATES,
 } from '../src/types.js';
@@ -28,6 +30,7 @@ const ALL_TEMPLATES: AgentTemplate[] = [
   'fix',
   'question',
   'merge',
+  'worker',
   'launcher',
   'pipeline',
   'architect',
@@ -71,6 +74,27 @@ test('a template is never both read-only and worktree (mutually exclusive)', () 
   for (const t of ALL_TEMPLATES) {
     assert.ok(!(isReadOnlyTemplate(t) && needsWorktree(t)), `${t} must not be both`);
   }
+});
+
+test('worker is its own category: neither read-only nor a WORKTREE_TEMPLATE', () => {
+  assert.ok(isWorkerTemplate('worker'), 'isWorkerTemplate should be true for worker');
+  assert.ok(!isReadOnlyTemplate('worker'), 'worker must not be read-only (it can edit once it adopts a worktree)');
+  assert.ok(!needsWorktree('worker'), 'worker must not get a worktree up front');
+  // Only the worker template satisfies isWorkerTemplate.
+  for (const t of ALL_TEMPLATES) {
+    assert.equal(isWorkerTemplate(t), t === 'worker', `isWorkerTemplate(${t})`);
+  }
+});
+
+test('worker prompt is general-purpose, references the on-demand create_worktree tool, commits', () => {
+  const prompt = buildAppendPrompt({ name: 'odd-job', template: 'worker', project: 'demo' });
+  assert.match(prompt, /general-purpose WORKER agent/, 'worker prompt missing identity');
+  assert.ok(prompt.includes(CREATE_WORKTREE_TOOL), 'worker prompt must reference the create_worktree tool');
+  // It starts with no worktree and only cuts one when it must edit code.
+  assert.match(prompt, /NO git worktree/, 'worker prompt should say it starts with no worktree');
+  // It commits when it does make changes (feature-style DONE <hash>), and can also finish with a bare DONE.
+  assert.ok(prompt.includes(`${DONE} <commit-hash>`), 'worker prompt missing commit protocol');
+  assert.ok(prompt.includes(NEEDS_INPUT), 'worker prompt missing NEEDS_INPUT');
 });
 
 test('buildAppendPrompt produces a non-empty prompt for every template', () => {

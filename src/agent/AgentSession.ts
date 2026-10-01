@@ -23,8 +23,10 @@ import {
 import {
   buildLauncherTools,
   buildPipelineTools,
+  buildWorkerTools,
   type LaunchFeature,
   type RunPipelineStep,
+  type EnsureWorktree,
 } from './launcherTools.js';
 import {
   buildOrchestratorTools,
@@ -117,6 +119,13 @@ export interface AgentSessionInit {
    */
   runStep?: RunPipelineStep;
   /**
+   * For `worker` agents only: the callback the `create_worktree` tool uses to cut+adopt an isolated
+   * worktree on demand. The manager supplies it (it cuts the worktree, allocates a port and calls
+   * {@link AgentSession.adoptWorktree}); the session relaunches into the new worktree so subsequent
+   * edits land there instead of the base repo.
+   */
+  cutWorktreeOnDemand?: EnsureWorktree;
+  /**
    * The group orchestration callbacks (supplied by the manager, scoped to this agent's id) that back
    * the in-process `mcp__orc__*` coordination tools: as a parent, list/ask/answer this agent's
    * subagents; as a child, ask this agent's orchestrator. Every agent gets these — they're inert for
@@ -208,6 +217,8 @@ export class AgentSession extends EventEmitter {
   private readonly launchFeature?: LaunchFeature;
   /** Pipeline-only: runs ONE role step on the shared worktree (set by the manager). */
   private readonly runStep?: RunPipelineStep;
+  /** Worker-only: cuts+adopts an isolated worktree on demand (set by the manager). */
+  private readonly cutWorktreeOnDemand?: EnsureWorktree;
   /** Group orchestration callbacks backing the in-process `mcp__orc__*` coordination tools. */
   private readonly orchestration?: AgentSessionInit['orchestration'];
   private queue = new InputQueue();
@@ -253,6 +264,7 @@ export class AgentSession extends EventEmitter {
     this.config = init.config;
     this.launchFeature = init.launchFeature;
     this.runStep = init.runStep;
+    this.cutWorktreeOnDemand = init.cutWorktreeOnDemand;
     this.orchestration = init.orchestration;
     this.project = init.config.name;
     this.repo = init.config.repo;
@@ -261,19 +273,51 @@ export class AgentSession extends EventEmitter {
   // ---- public API ---------------------------------------------------------
 
   /**
-   * Adopt a worktree the manager created for this agent's group. Called on a worktree-less
-   * orchestrator parent the first time it gains a subagent: the parent becomes the OWNER of the
-   * shared worktree/branch (its children share it without owning it). The change takes effect on the
-   * parent's NEXT launch (its cwd becomes the worktree); the current turn keeps running where it is.
+   * Adopt a worktree the manager created for this agent.
+   *
+   * Two callers, two behaviors, selected by `relaunch`:
+   *  - An orchestrator parent adopting a SHARED worktree the first time it gains a subagent
+   *    (`relaunch` omitted/false): it becomes the OWNER of the shared worktree/branch (children share
+   *    it without owning it). The change takes effect on the parent's NEXT launch; the current turn
+   *    keeps running where it is, because the SUBAGENTS do the editing, not the parent.
+   *  - A general-purpose `worker` cutting its own worktree on demand (`relaunch` true): the worker
+   *    itself is the editor, so it must move INTO the worktree before it edits. We adopt the
+   *    worktree/port, then relaunch the session so its cwd (and port env) become the worktree's from
+   *    the next turn — the worker's `create_worktree` tool told it edits land there "from your next
+   *    turn". `port` is the freshly allocated port (if any) so METRO_PORT/AGENT_PORT are set on relaunch.
+   *
    * No-op if this agent already has a worktree.
    */
-  adoptWorktree(wt: Worktree): void {
+  adoptWorktree(wt: Worktree, port?: number, relaunch = false): void {
     if (this._worktree) return;
     this._branch = wt.branch;
     this._worktree = wt.path;
     this._ownsWorktree = true;
-    this.addLog('system', `adopted shared worktree on ${wt.branch} for its subagents`);
+    if (port !== undefined) this._metroPort = port;
+    const portNote = port !== undefined ? ` (port ${port})` : '';
+    this.addLog(
+      'system',
+      relaunch
+        ? `adopted worktree on ${wt.branch}${portNote} — relaunching inside it`
+        : `adopted shared worktree on ${wt.branch} for its subagents`,
+    );
     this.emitNow();
+    // Worker path: relaunch into the new worktree so the model's subsequent edits run there, not in
+    // the base repo. Deferred to a microtask so the in-flight `create_worktree` tool call can return
+    // its result to the model first; resumeWith() then interrupts and restarts the query in the new
+    // cwd, continuing the same Claude session.
+    if (relaunch) {
+      queueMicrotask(() => {
+        if (this.isDead()) return;
+        void this.stop().then(() => {
+          this.setStatus('working');
+          this.resumeWith(
+            'Your worktree is ready and this session is now running inside it. Continue the task — ' +
+              'make your edits, build, run checks and commit here.',
+          );
+        });
+      });
+    }
   }
 
   /** Start the session with the prompt as the first user message. */
@@ -708,6 +752,9 @@ export class AgentSession extends EventEmitter {
           : []),
         ...(this.template === 'pipeline' && this.runStep
           ? buildPipelineTools(this.runStep)
+          : []),
+        ...(this.template === 'worker' && this.cutWorktreeOnDemand
+          ? buildWorkerTools(this.cutWorktreeOnDemand)
           : []),
       ];
       mcpServers.orc = buildOrcServer(orcTools);

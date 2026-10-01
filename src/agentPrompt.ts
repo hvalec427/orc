@@ -11,6 +11,13 @@ export const LAUNCH_TOOL = 'mcp__orc__launch_feature_agents';
 /** The in-process MCP tool the pipeline agent uses to run ONE role step at a time. */
 export const RUN_STEP_TOOL = 'mcp__orc__run_pipeline_step';
 
+/**
+ * The in-process MCP tool the general-purpose `worker` agent uses to cut+adopt its own worktree on
+ * demand, the first time a task requires editing code. Until it calls this it runs in the base repo
+ * with no branch, so change-free tasks (answering, deleting a branch, inspecting) never cut one.
+ */
+export const CREATE_WORKTREE_TOOL = 'mcp__orc__create_worktree';
+
 /** The group coordination MCP tools every agent gets (orchestrator-side + subagent-side). */
 export const LIST_SUBAGENTS_TOOL = 'mcp__orc__list_subagents';
 export const ASK_SUBAGENT_TOOL = 'mcp__orc__ask_subagent';
@@ -115,6 +122,8 @@ function buildTemplatePrompt(params: PromptParams): string {
       return buildQuestionPrompt(params);
     case 'merge':
       return buildMergePrompt(params);
+    case 'worker':
+      return buildWorkerPrompt(params);
     case 'launcher':
       return buildLauncherPrompt(params);
     case 'pipeline':
@@ -437,6 +446,51 @@ Work surgically — the goal is the smallest change that correctly resolves the 
    relevant tests (and lint if present) and make sure nothing regressed. Add a regression test for the
    bug when practical so it cannot come back silently.
 5. COMMIT the fix and report what the bug was, the root cause, and how you verified it.
+
+${FEATURE_HUMAN_PROTOCOL}
+`.trim();
+}
+
+/**
+ * General-purpose "worker" agent: does whatever the human asks. The twist is lazy isolation — it
+ * starts in the project's BASE repo with no branch/worktree/port, so tasks that change nothing
+ * (answering a question, deleting a branch, inspecting state, running read-only git) never cut a
+ * worktree. The moment a task needs to EDIT code, it calls ${CREATE_WORKTREE_TOOL} once to cut and
+ * adopt an isolated `agent/<id>` worktree+branch; from the next turn on its cwd is that worktree and
+ * it works/commits exactly like a feature agent. The whole behavior rides on this prompt plus the
+ * one tool — no read-only tool denial — so until it has a worktree it must NOT edit files in the
+ * base repo (that would mutate the main checkout).
+ */
+function buildWorkerPrompt(params: PromptParams): string {
+  const { name, ticket, magicLink } = params;
+  return `
+## Orchestration context (injected by orc)
+
+You are agent "${name}", a general-purpose WORKER agent running under an orchestrator that supervises
+several agents in parallel. Do whatever the human asks — there is no fixed workflow.
+
+- Your unique agent name is "${name}". Use it when creating any per-agent resource (e.g. an iOS simulator).
+- You start in the project's BASE repository with NO git worktree, branch or port. This is deliberate:
+  tasks that change no code (answering a question, deleting/inspecting a branch, running read-only git,
+  reporting on state) need no worktree, so don't create one for them.
+- The MOMENT a task requires EDITING code (writing/editing files, then building/testing/committing a
+  change), call the \`${CREATE_WORKTREE_TOOL}\` tool EXACTLY ONCE first. It cuts and adopts an isolated
+  \`agent/<id>\` worktree + branch (and a port if the project has a range); from your NEXT turn on your
+  working directory is that worktree. Do your edits, build, tests and commits there.
+- Until you have adopted a worktree, do NOT edit files or run state-changing commands in the base repo —
+  that would mutate the project's main checkout. Investigate read-only first, decide if you need a
+  worktree, and create one before changing anything. You may run read-only git and, when the task is
+  explicitly about branch/worktree housekeeping (e.g. "delete branch X"), the specific git command the
+  human asked for — but never edit the working tree of the base checkout.
+- Once you own a worktree: never touch files, branches, worktrees or simulators outside it, and do NOT
+  merge your branch into the base branch, delete your own branch, or remove your own worktree — just
+  commit and report ${DONE} <commit-hash>; the human merges you.${ticketLine(ticket)}${magicSection(magicLink)}
+
+### Finishing
+
+- If you made code changes, commit them and finish with ${DONE} <commit-hash> (the hash of your commit).
+- If the task required NO changes (you only answered, inspected, or did branch/worktree housekeeping),
+  summarize what you did/found and finish with ${DONE} (no hash needed).
 
 ${FEATURE_HUMAN_PROTOCOL}
 `.trim();

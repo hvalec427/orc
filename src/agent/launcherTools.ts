@@ -55,6 +55,26 @@ export type RunPipelineStep = (args: {
   ticket: string;
 }) => Promise<RunStepResult>;
 
+/** Outcome of a worker cutting+adopting its worktree on demand, reported back to the worker. */
+export interface EnsureWorktreeResult {
+  /** The adopted branch name (e.g. `agent/<id>`). */
+  branch: string;
+  /** The worktree's absolute path — the worker's cwd from its next turn on. */
+  path: string;
+  /** The allocated port, if the project defines a range; undefined otherwise. */
+  port?: number;
+  /** True when a worktree already existed (idempotent repeat call) rather than being freshly cut. */
+  alreadyHad: boolean;
+}
+
+/**
+ * Cuts and adopts a worktree for a general-purpose `worker` agent on demand; supplied by the
+ * AgentSession so the tool can call back into the manager. Idempotent: a second call just reports the
+ * worktree the worker already has. The new cwd takes effect on the worker's NEXT turn (adoptWorktree
+ * changes where the session relaunches), so the tool tells the worker its edits land there from then.
+ */
+export type EnsureWorktree = () => Promise<EnsureWorktreeResult>;
+
 /**
  * Build the in-process MCP server that backs the launcher agent's single power: spawning feature
  * agents. The tool name is `launch_feature_agents` on server `orc`, so the fully-qualified tool the
@@ -218,5 +238,50 @@ export function buildPipelineTools(runStep: RunPipelineStep) {
           }
         },
       ),
+  ];
+}
+
+/**
+ * The worker's on-demand worktree tool(s), as a composable array sharing the one "orc" server. The
+ * tool name is `create_worktree`, so the fully-qualified tool the model calls is
+ * `mcp__orc__create_worktree` (see CREATE_WORKTREE_TOOL in agentPrompt.ts). It takes no arguments:
+ * the worker calls it once when a task needs code changes, and the supplied `ensureWorktree` callback
+ * cuts+adopts an isolated `agent/<id>` worktree/branch (and allocates a port). The new cwd takes
+ * effect on the worker's NEXT turn, so the result text tells the worker to do its edits from there.
+ */
+export function buildWorkerTools(ensureWorktree: EnsureWorktree) {
+  return [
+    tool(
+      'create_worktree',
+      'Cut and adopt your OWN isolated git worktree + branch so you can safely edit code. Call this ' +
+        'ONCE, before you make any file changes, when a task requires editing the codebase. Until you ' +
+        'call it you run in the project\u2019s base repo with no branch and must NOT edit files there. ' +
+        'Takes no arguments. Your working directory becomes the new worktree from your NEXT turn on; ' +
+        'make your edits, build, tests and commits there. Calling it again when you already have a ' +
+        'worktree is a safe no-op that just reports your existing branch.',
+      {},
+      async () => {
+        try {
+          const res = await ensureWorktree();
+          const portNote =
+            res.port !== undefined
+              ? ` A port (${res.port}) is allocated (env METRO_PORT / AGENT_PORT).`
+              : '';
+          const text = res.alreadyHad
+            ? `You already have a worktree on branch "${res.branch}" at ${res.path}. Keep working there.${portNote}`
+            : `Created and adopted worktree on branch "${res.branch}" at ${res.path}. From your NEXT ` +
+              `turn your working directory is this worktree — make all edits, builds, tests and ` +
+              `commits there, and stay inside it.${portNote}`;
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text', text: `Failed to create worktree: ${(err as Error).message}` },
+            ],
+            isError: true,
+          };
+        }
+      },
+    ),
   ];
 }

@@ -3,11 +3,11 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
-import { needsWorktree } from '../types.js';
+import { needsWorktree, isWorkerTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
-import type { RunPipelineStep } from './launcherTools.js';
+import type { RunPipelineStep, EnsureWorktree } from './launcherTools.js';
 import type {
   AskOrchestrator,
   AskSubagent,
@@ -202,12 +202,33 @@ export class AgentManager extends EventEmitter {
       };
     }
 
+    // A general-purpose worker starts with no worktree and cuts+adopts one ON DEMAND the first time
+    // a task needs code changes. Its `create_worktree` tool calls back here: we cut a worktree keyed
+    // off the worker's id (branch `agent/<id>`), allocate a port if the project has a range, and have
+    // the session adopt it so its NEXT launch runs inside it. Idempotent — a repeat call just reports
+    // the worktree it already has. `session` is assigned just below, before the session starts, so by
+    // the time the worker could invoke the tool (during a turn) the closure's reference is set.
+    let session: AgentSession;
+    const cutWorktreeOnDemand: EnsureWorktree | undefined = isWorkerTemplate(template)
+      ? async () => {
+          if (session.worktree && session.branch) {
+            return { branch: session.branch, path: session.worktree, port: session.metroPort, alreadyHad: true };
+          }
+          const wt = await createWorktree(project.repo, project.worktreeDir, id);
+          const allocator = this.ports.get(project.name);
+          const port = allocator ? await allocator.allocate() : undefined;
+          session.adoptWorktree(wt, port, true);
+          this.persist();
+          return { branch: wt.branch, path: wt.path, port, alreadyHad: false };
+        }
+      : undefined;
+
     // Every agent gets the group orchestration callbacks (scoped to its own id): as a parent it can
     // list/ask/answer its subagents; as a child it can ask its orchestrator. They are harmless no-ops
     // for an agent with no subagents and no parent, so they're wired unconditionally.
     const orchestration = this.orchestrationCallbacks(id);
 
-    const session = new AgentSession({
+    session = new AgentSession({
       id,
       name,
       template,
@@ -222,6 +243,7 @@ export class AgentManager extends EventEmitter {
       config: project,
       launchFeature,
       runStep,
+      cutWorktreeOnDemand,
       orchestration,
     });
     session.on('update', () => this.emit('update'));

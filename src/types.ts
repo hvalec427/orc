@@ -8,6 +8,12 @@
  * - `fix`      — a full-access bug-fix agent in its own worktree + branch: given a problem, it
  *                reproduces it, finds the root cause, lands a minimal surgical fix, and proves it.
  * - `merge`    — an agent whose job is to merge branches in the base repo.
+ * - `worker`   — a general-purpose "does anything asked" agent. It starts with NO worktree/branch/
+ *                port in the base repo (so tasks that change nothing — answering, deleting a branch,
+ *                inspecting — need no worktree), and cuts+adopts its own worktree ON DEMAND (via the
+ *                `create_worktree` tool) the moment it needs to edit code, then commits like a
+ *                feature agent. Neither read-only nor a WORKTREE_TEMPLATE: see the worker handling
+ *                in AgentManager/AgentSession.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
  *                together vs. apart, and spawns a feature agent per group (nested beneath it).
  * - `pipeline` — a read-only orchestrator that runs the seven role agents below SEQUENTIALLY
@@ -31,6 +37,7 @@ export type AgentTemplate =
   | 'fix'
   | 'question'
   | 'merge'
+  | 'worker'
   | 'launcher'
   | 'pipeline'
   | 'architect'
@@ -89,6 +96,17 @@ export function isReadOnlyTemplate(template: AgentTemplate): boolean {
 /** Whether a template's agent needs its own worktree/branch/port when created standalone. */
 export function needsWorktree(template: AgentTemplate): boolean {
   return WORKTREE_TEMPLATES.has(template);
+}
+
+/**
+ * The general-purpose `worker` is its own category: NOT read-only (it may edit/run Bash once it has
+ * a worktree) and NOT a {@link WORKTREE_TEMPLATES} member (it does not get a worktree up front).
+ * Instead it starts in the base repo and cuts+adopts a worktree ON DEMAND the first time it needs to
+ * change code (see the `create_worktree` tool wired in AgentManager/AgentSession). Centralized here
+ * so every call site agrees on the one template that behaves this way.
+ */
+export function isWorkerTemplate(template: AgentTemplate): boolean {
+  return template === 'worker';
 }
 
 export type AgentStatus =

@@ -16,6 +16,7 @@ interface TemplateChoice {
 const TEMPLATES: TemplateChoice[] = [
   { value: 'feature', label: 'Feature', hint: 'builds one task end-to-end itself, in its own worktree' },
   { value: 'fix', label: 'Fix', hint: 'reproduces, root-causes & lands a minimal fix for a bug' },
+  { value: 'worker', label: 'Worker', hint: 'does anything asked; cuts a worktree only if it must edit code' },
   { value: 'pipeline', label: 'Pipeline', hint: 'orchestrates architect→…→tester roles on a shared worktree' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
@@ -43,6 +44,7 @@ const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
   fix: 'describe the bug/problem to fix (symptoms, repro steps, expected behavior)',
   question: 'what do you want to ask about this repo?',
   merge: 'which branches should be integrated? (e.g. land agent/foo into master)',
+  worker: 'what should this worker do? (anything — it makes a worktree only if it needs to edit code)',
   launcher: 'list everything you want done; it will split the work into feature agents',
   pipeline: 'describe the feature; it will run the full architect→…→tester pipeline',
   architect: 'what should the architect decide the technical direction for?',
