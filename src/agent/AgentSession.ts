@@ -10,8 +10,19 @@ import {
   type HookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
+import { isRoleTemplate } from '../types.js';
 import { InputQueue } from './InputQueue.js';
-import { buildAppendPrompt, LAUNCH_TOOL, NEEDS_INPUT, DONE } from '../agentPrompt.js';
+import {
+  buildAppendPrompt,
+  buildPipelinePhasePrompt,
+  LAUNCH_TOOL,
+  NEEDS_INPUT,
+  DONE,
+  PHASE_DONE,
+  GO_BACK,
+  PIPELINE_PHASES,
+  ROLE_SPECS,
+} from '../agentPrompt.js';
 import { buildLauncherMcpServer, type LaunchFeature } from './launcherTools.js';
 import { createWorktree } from '../worktree.js';
 
@@ -137,6 +148,18 @@ export class AgentSession extends EventEmitter {
   private sessionId?: string;
   private totalCostUsd = 0;
 
+  /**
+   * Pipeline state (only for `template === 'pipeline'`). The pipeline drives a fixed sequence of
+   * role phases on its single shared worktree through this one session: `phaseIndex` is the phase
+   * currently running, and `phaseSummaries` accumulates each completed phase's hand-off summary so
+   * the next phase has context. The engine advances/rewinds `phaseIndex` in handleResult based on
+   * the PHASE_DONE / GO_BACK sentinel the phase emits, pushing the next phase prompt into the queue.
+   */
+  private phaseIndex = 0;
+  private phaseSummaries: string[] = [];
+  /** Guard against an unbounded go-back loop pinballing between phases forever. */
+  private goBackCount = 0;
+
   private events: LogEntry[] = [];
   private nextEventId = 1;
   private blockEntries = new Map<number, LogEntry>();
@@ -166,9 +189,13 @@ export class AgentSession extends EventEmitter {
 
   // ---- public API ---------------------------------------------------------
 
-  /** Start the session with the prompt as the first user message. */
+  /**
+   * Start the session with the prompt as the first user message. For a pipeline agent the human's
+   * prompt is the overall GOAL; the first message pushed is the first phase's (architect) prompt,
+   * and subsequent phases are pushed automatically as each one finishes (see handleResult).
+   */
   start(): void {
-    this.queue.push(this.prompt);
+    this.queue.push(this.template === 'pipeline' ? this.phasePrompt(0) : this.prompt);
     const ref = this.ticket ? ` [${this.ticket}]` : '';
     const portNote = this.metroPort !== undefined ? ` (port ${this.metroPort})` : '';
     const where = this.branch ? ` on ${this.branch}` : ` in ${this.repo}`;
@@ -176,7 +203,22 @@ export class AgentSession extends EventEmitter {
       'system',
       `▶ launching ${this.template} agent "${this.name}"${ref}${where}${portNote}`,
     );
+    if (this.template === 'pipeline') {
+      this.addLog('system', `▷ phase 1/${PIPELINE_PHASES.length}: ${PIPELINE_PHASES[0].label}`);
+    }
     void this.launch(this.buildOptions());
+  }
+
+  /** Build the prompt for the given pipeline phase, carrying the goal + prior phase summaries. */
+  private phasePrompt(index: number): string {
+    return buildPipelinePhasePrompt({
+      pipelineName: this.name,
+      phaseIndex: index,
+      phase: PIPELINE_PHASES[index],
+      goal: this.prompt,
+      ticket: this.ticket || undefined,
+      priorSummaries: this.phaseSummaries,
+    });
   }
 
   /**
@@ -376,11 +418,22 @@ export class AgentSession extends EventEmitter {
 
   // ---- session options ----------------------------------------------------
 
+  /**
+   * Whether this agent runs with mutating tools hard-denied. Question and launcher agents are
+   * read-only investigators (the launcher is additionally allowed its one spawn tool). The four
+   * analysis role agents (architect/explorer/planner/reviewer) are read-only too when run
+   * standalone. The pipeline is NOT locked read-only: it mixes analysis and editing phases in one
+   * continuous session (permission mode can't flip mid-stream), so it runs with edit permissions and
+   * relies on each phase's prompt to keep analysis phases from editing.
+   */
+  private isReadOnly(): boolean {
+    if (this.template === 'question' || this.template === 'launcher') return true;
+    if (isRoleTemplate(this.template)) return ROLE_SPECS[this.template].readOnly;
+    return false;
+  }
+
   private buildOptions(resume?: string): Options {
-    // Question and launcher agents are both read-only investigators — they never edit code. The
-    // launcher additionally gets exactly one write-ish power: the launch tool that spawns feature
-    // agents (allowed explicitly below).
-    const readOnly = this.template === 'question' || this.template === 'launcher';
+    const readOnly = this.isReadOnly();
     // A fresh controller per launch. stop() aborts it to tear down the SDK subprocess;
     // a later retry()/send() builds new options with a new controller.
     this.abortController = new AbortController();
@@ -644,6 +697,13 @@ export class AgentSession extends EventEmitter {
     }
 
     const text = (msg.result ?? '').trim();
+
+    // Pipeline agents drive their own phase sequence rather than ending on the human DONE sentinel.
+    if (this.template === 'pipeline') {
+      this.handlePipelineResult(text);
+      return;
+    }
+
     if (text.includes(DONE)) {
       const commit = text.slice(text.indexOf(DONE) + DONE.length).trim().split(/\s+/)[0] ?? '';
       this.addLog('result', `✓ done${commit ? ` · ${commit}` : ''}`);
@@ -657,6 +717,88 @@ export class AgentSession extends EventEmitter {
     this.question = text.replace(NEEDS_INPUT, '').trim();
     this.addLog('result', '⏸ waiting for your input');
     this.setStatus('needs_input');
+  }
+
+  /** How many times the pipeline may rewind before pausing for a human, to avoid an infinite loop. */
+  private static readonly MAX_GO_BACKS = 4;
+
+  /**
+   * Drive the pipeline's phase sequence from the just-finished phase's final text. The phase signals
+   * its outcome with a sentinel:
+   * - PHASE_DONE → record the phase's summary and advance to the next phase (or finish after the
+   *   last one), pushing the next phase's prompt into the same streaming session.
+   * - GO_BACK   → a later phase found a defect an earlier phase must fix; rewind to the implementer
+   *   phase (the one that can change code/tests) and continue from there, up to MAX_GO_BACKS times.
+   * If the phase ends with neither sentinel, the pipeline can't safely proceed on its own, so it
+   * pauses for the human (status needs_input) exactly like other templates.
+   */
+  private handlePipelineResult(text: string): void {
+    const phase = PIPELINE_PHASES[this.phaseIndex];
+
+    if (text.includes(GO_BACK)) {
+      const reason = oneLine(text.slice(text.indexOf(GO_BACK) + GO_BACK.length).trim(), 160);
+      this.goBackCount += 1;
+      if (this.goBackCount > AgentSession.MAX_GO_BACKS) {
+        this.question =
+          `Pipeline stopped after ${AgentSession.MAX_GO_BACKS} go-backs at phase ` +
+          `"${phase.label}". Last reason: ${reason || '(none given)'}. Tell me how to proceed.`;
+        this.addLog('result', `⏸ too many go-backs — waiting for your input`);
+        this.setStatus('needs_input');
+        return;
+      }
+      const target = AgentSession.implementerPhaseIndex();
+      this.phaseSummaries.push(
+        `[${phase.label}] requested go-back: ${reason || '(no reason given)'}`,
+      );
+      this.phaseIndex = target;
+      this.addLog(
+        'system',
+        oneLine(
+          `↩ go-back from "${phase.label}" → "${PIPELINE_PHASES[target].label}"` +
+            `${reason ? ` (${reason})` : ''}`,
+        ),
+      );
+      this.advancePipeline();
+      return;
+    }
+
+    // Treat PHASE_DONE (or a phase that simply ended) as completion of this phase. Record the
+    // summary (the phase text minus the sentinel) so the next phase has it as context.
+    const summary = oneLine(text.replace(PHASE_DONE, '').trim(), 400) || '(no summary provided)';
+    if (!text.includes(PHASE_DONE)) {
+      // No explicit sentinel: the phase may be asking a question. Pause for the human rather than
+      // silently advancing on an ambiguous ending.
+      this.question = summary;
+      this.addLog('result', `⏸ phase "${phase.label}" ended without ${PHASE_DONE} — waiting for you`);
+      this.setStatus('needs_input');
+      return;
+    }
+
+    this.phaseSummaries.push(`[${phase.label}] ${summary}`);
+    this.addLog('result', oneLine(`✓ phase ${this.phaseIndex + 1}/${PIPELINE_PHASES.length} "${phase.label}" done`));
+
+    if (this.phaseIndex >= PIPELINE_PHASES.length - 1) {
+      this.addLog('result', `✓ pipeline complete — all ${PIPELINE_PHASES.length} phases finished`);
+      this.setStatus('done');
+      this.queue.close();
+      return;
+    }
+    this.phaseIndex += 1;
+    this.advancePipeline();
+  }
+
+  /** Push the current phase's prompt into the live session so it runs as the next turn. */
+  private advancePipeline(): void {
+    const phase = PIPELINE_PHASES[this.phaseIndex];
+    this.addLog('system', `▷ phase ${this.phaseIndex + 1}/${PIPELINE_PHASES.length}: ${phase.label}`);
+    this.setStatus('working');
+    this.queue.push(this.phasePrompt(this.phaseIndex));
+  }
+
+  /** Index of the implementer phase — the rewind target for a GO_BACK (it can change code/tests). */
+  private static implementerPhaseIndex(): number {
+    const i = PIPELINE_PHASES.findIndex((p) => p.role === 'implementer');
+    return i >= 0 ? i : 0;
   }
 
   // ---- helpers ------------------------------------------------------------

@@ -3,6 +3,8 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { MultilineInput } from './MultilineInput.js';
 import type { AgentTemplate, ProjectConfig } from '../types.js';
+import { ROLE_TEMPLATES } from '../types.js';
+import { ROLE_SPECS } from '../agentPrompt.js';
 
 type Step = 'template' | 'project' | 'magiclink' | 'name' | 'ticket' | 'prompt';
 
@@ -17,11 +19,23 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
   { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
+  // The seven standalone role agents: each runs on its own in its own worktree.
+  ...ROLE_TEMPLATES.map((role) => ({
+    value: role,
+    label: ROLE_SPECS[role].label,
+    hint: ROLE_SPECS[role].hint,
+  })),
+  { value: 'pipeline', label: 'Pipeline', hint: 'runs the roles in a row on one shared worktree' },
 ];
 
-/** Does this template need a worktree/branch (and therefore the feature-only fields)? */
-function isFeature(t: AgentTemplate): boolean {
-  return t === 'feature';
+/**
+ * Templates backed by their own git worktree + branch + port, which therefore use the
+ * worktree-only form fields (magic link, ticket) and whose worktree gets cleaned up on removal:
+ * the original `feature` plus all seven role agents. `question`/`merge`/`launcher`/`pipeline`
+ * do not get their own worktree here (the pipeline creates a shared worktree internally).
+ */
+function isWorktreeTemplate(t: AgentTemplate): boolean {
+  return t === 'feature' || (ROLE_TEMPLATES as readonly AgentTemplate[]).includes(t);
 }
 
 export function NewAgentForm({
@@ -52,20 +66,23 @@ export function NewAgentForm({
   const [prompt, setPrompt] = useState('');
 
   const selected = projects.find((p) => p.name === project);
-  const feature = isFeature(template);
-  const hasMagic = feature && !!selected?.magicLink;
+  // Worktree-backed templates (feature + the seven role agents) use the magic-link and ticket
+  // fields; the orchestrator-ish templates (question/merge/launcher/pipeline) do not.
+  const worktree = isWorktreeTemplate(template);
+  const hasMagic = worktree && !!selected?.magicLink;
 
   // The first field to fill in for a template once a project is chosen. Merge agents are
-  // auto-named ("merger N"), so they skip the name step and go straight to the prompt.
+  // auto-named ("merger N"), so they skip the name step and go straight to the prompt; every
+  // other non-worktree template (question/launcher/pipeline) starts at the name field.
   const firstStep = (t: AgentTemplate, proj: ProjectConfig): Step =>
-    isFeature(t) ? (proj.magicLink ? 'magiclink' : 'name') : t === 'merge' ? 'prompt' : 'name';
+    isWorktreeTemplate(t) ? (proj.magicLink ? 'magiclink' : 'name') : t === 'merge' ? 'prompt' : 'name';
 
   // After choosing a project, jump to the first relevant field for the template.
   const afterProject = (proj: ProjectConfig): Step => firstStep(template, proj);
 
   // The step to return to when going back. This reverses the forward flow,
   // skipping steps that don't apply to the current template/project (e.g. the
-  // project chooser with a single project, magiclink/ticket for non-feature
+  // project chooser with a single project, magiclink/ticket for non-worktree
   // agents, name for merge agents). Returns undefined on the first step, where
   // there is nothing to go back to and Esc should cancel instead.
   const prevStep = (s: Step): Step | undefined => {
@@ -83,7 +100,7 @@ export function NewAgentForm({
         return 'name';
       case 'prompt':
         // Reverse of firstStep/field order for the current template.
-        if (feature) return 'ticket';
+        if (worktree) return 'ticket';
         return template === 'merge' ? beforeFields : 'name';
     }
   };
@@ -130,8 +147,8 @@ export function NewAgentForm({
       template,
       project,
       name.trim(),
-      // Ticket only applies to feature agents (they commit); others send empty.
-      feature ? ticket.trim() : '',
+      // Ticket only applies to worktree agents (they commit); others send empty.
+      worktree ? ticket.trim() : '',
       finalPrompt.trim(),
       hasMagic ? magicLink.trim() || selected?.magicLink : undefined,
     );
@@ -144,15 +161,19 @@ export function NewAgentForm({
         ? 'which branches should be merged? (e.g. merge agent/foo into master)'
         : template === 'launcher'
           ? 'list everything you want done; it will split the work into feature agents'
-          : 'what should this agent do?';
+          : template === 'pipeline'
+            ? 'describe the task; it runs architect→…→tester in a row on one worktree'
+            : 'what should this agent do?';
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Text bold color="cyan">New agent</Text>
       <Text dimColor>
-        {feature
+        {worktree
           ? 'A git worktree + branch + simulator name are derived from the agent name.'
-          : 'Runs in the project repo with no worktree.'}
+          : template === 'pipeline'
+            ? 'Runs the role phases in a row on one shared worktree it creates.'
+            : 'Runs in the project repo with no worktree.'}
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
@@ -217,7 +238,7 @@ export function NewAgentForm({
               value={name}
               onChange={(v) => setName(stripBreaks(v))}
               onSubmit={(v) => {
-                if (v.trim()) setStep(feature ? 'ticket' : 'prompt');
+                if (v.trim()) setStep(worktree ? 'ticket' : 'prompt');
               }}
               placeholder="e.g. login-flow"
             />
@@ -227,7 +248,7 @@ export function NewAgentForm({
         </Box>
       )}
 
-      {feature && (step === 'ticket' || step === 'prompt') && (
+      {worktree && (step === 'ticket' || step === 'prompt') && (
         <Box>
           <Text>{step === 'ticket' ? '› ' : '  '}ticket : </Text>
           {step === 'ticket' ? (

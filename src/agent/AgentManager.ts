@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
+import { isRoleTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
@@ -73,9 +74,11 @@ export class AgentManager extends EventEmitter {
   /**
    * Create and launch an agent in the named project.
    *
-   * `feature` agents get their own git worktree + branch and an allocated port. `question`
-   * and `merge` agents run directly in the project's base repo with no worktree, branch, or
-   * port (a question agent is additionally locked to read-only tools inside AgentSession).
+   * `feature`, the seven role agents, and `pipeline` each get their own git worktree + branch and
+   * an allocated port (the pipeline's worktree is shared across its phases). `question`, `merge`,
+   * and `launcher` run directly in the project's base repo with no worktree, branch, or port
+   * (question/launcher and the read-only role agents are additionally locked to read-only tools
+   * inside AgentSession).
    */
   async create(
     projectName: string,
@@ -97,13 +100,16 @@ export class AgentManager extends EventEmitter {
 
     const id = this.uniqueId(slugify(name));
 
-    // Only feature agents get an isolated worktree/branch/port; question & merge agents
-    // operate on the base repo itself.
-    const isFeature = template === 'feature';
-    const worktree = isFeature
+    // Agents that do real work on their own branch get an isolated worktree + branch + port:
+    // the original `feature`, the seven standalone role agents, and the `pipeline` (whose single
+    // worktree is SHARED across all its phases). The orchestrator-ish templates — question, merge,
+    // and launcher — operate on the project's base repo and get no worktree/port.
+    const needsWorktree =
+      template === 'feature' || template === 'pipeline' || isRoleTemplate(template);
+    const worktree = needsWorktree
       ? await createWorktree(project.repo, project.worktreeDir, id)
       : undefined;
-    const allocator = isFeature ? this.ports.get(project.name) : undefined;
+    const allocator = needsWorktree ? this.ports.get(project.name) : undefined;
     const metroPort = allocator ? await allocator.allocate() : undefined;
 
     // A launcher agent is handed a callback its in-process spawn tool uses to create feature agents.

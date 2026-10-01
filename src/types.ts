@@ -8,8 +8,55 @@
  * - `merge`    — an agent whose job is to merge branches in the base repo.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
  *                together vs. apart, and spawns a feature agent per group (nested beneath it).
+ *
+ * The seven ROLE templates below are focused, single-responsibility agents. Each is
+ * independently selectable and runnable from the new-agent form (exactly like `feature`),
+ * and each gets its own git worktree + branch + port so it can investigate and commit on
+ * its own. They can also be chained together automatically by the `pipeline` orchestrator.
+ * - `architect`   — designs the high-level approach/architecture before any code is written.
+ * - `explorer`    — maps the codebase: where things live, relevant patterns, constraints.
+ * - `planner`     — turns a goal into a concrete, ordered implementation plan.
+ * - `implementer` — writes the code to satisfy a plan/spec.
+ * - `tester`      — writes and/or runs tests and reports results.
+ * - `reviewer`    — reviews a diff/branch for correctness, style, and risks (read-only).
+ * - `refactorer`  — improves existing code structure without changing behavior.
+ *
+ * - `pipeline` — an orchestrator that runs the roles in a row on ONE shared worktree:
+ *                architect → explorer → planner → tester(write) → implementer → reviewer →
+ *                refactorer → tester(full suite), supporting go-back to an earlier phase when
+ *                a later phase fails. It is the "all in a row" flow; `feature` is unchanged.
  */
-export type AgentTemplate = 'feature' | 'question' | 'merge' | 'launcher';
+export type AgentTemplate =
+  | 'feature'
+  | 'question'
+  | 'merge'
+  | 'launcher'
+  | 'architect'
+  | 'explorer'
+  | 'planner'
+  | 'implementer'
+  | 'tester'
+  | 'reviewer'
+  | 'refactorer'
+  | 'pipeline';
+
+/** The seven standalone role templates, in their natural pipeline order. */
+export const ROLE_TEMPLATES = [
+  'architect',
+  'explorer',
+  'planner',
+  'implementer',
+  'tester',
+  'reviewer',
+  'refactorer',
+] as const satisfies readonly AgentTemplate[];
+
+export type RoleTemplate = (typeof ROLE_TEMPLATES)[number];
+
+/** Is this template one of the seven focused role agents? */
+export function isRoleTemplate(t: AgentTemplate): t is RoleTemplate {
+  return (ROLE_TEMPLATES as readonly AgentTemplate[]).includes(t);
+}
 
 export type AgentStatus =
   | 'booting' // session created, first turn not yet complete
@@ -51,9 +98,9 @@ export interface AgentInfo {
   /** Nice name of the project this agent belongs to. */
   project: string;
   ticket: string;
-  /** Git branch, or undefined for no-worktree templates (question/merge). */
+  /** Git branch, or undefined for no-worktree templates (question/merge/launcher/pipeline). */
   branch?: string;
-  /** Worktree path, or undefined for no-worktree templates (question/merge). */
+  /** Worktree path, or undefined for no-worktree templates (question/merge/launcher/pipeline). */
   worktree?: string;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
