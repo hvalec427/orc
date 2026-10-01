@@ -54,9 +54,13 @@ export function NewAgentForm({
   const feature = isFeature(template);
   const hasMagic = feature && !!selected?.magicLink;
 
+  // The first field to fill in for a template once a project is chosen. Merge agents are
+  // auto-named ("merger N"), so they skip the name step and go straight to the prompt.
+  const firstStep = (t: AgentTemplate, proj: ProjectConfig): Step =>
+    isFeature(t) ? (proj.magicLink ? 'magiclink' : 'name') : t === 'merge' ? 'prompt' : 'name';
+
   // After choosing a project, jump to the first relevant field for the template.
-  const afterProject = (proj: ProjectConfig): Step =>
-    feature ? (proj.magicLink ? 'magiclink' : 'name') : 'name';
+  const afterProject = (proj: ProjectConfig): Step => firstStep(template, proj);
 
   useInput((input, key) => {
     if (key.escape) {
@@ -74,7 +78,7 @@ export function NewAgentForm({
         // Single project: skip project selection and go to the template's first field.
         if (single) {
           setProject(single.name);
-          setStep(isFeature(t) ? (single.magicLink ? 'magiclink' : 'name') : 'name');
+          setStep(firstStep(t, single));
         } else {
           setStep('project');
         }
