@@ -98,9 +98,22 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
 
   const approvalPending = selected?.pendingApproval;
 
-  // Global keys — active only in list mode and when no approval modal is up.
+  // Global keys — active in list mode when no approval modal is up. Quit
+  // confirmation is handled inline here (rather than a second useInput) so a
+  // single keypress is never seen by two active handlers: when the popup was up,
+  // a separate quit-confirm hook and this one could both fire on the same `n`,
+  // leaving the popup open and then opening the new-agent form on the next press.
   useInput(
     (input, key) => {
+      // While the quit popup is up, only y/n/esc are meaningful; swallow the rest.
+      if (confirmingQuit) {
+        if (input === 'y') {
+          void manager.stopAll().finally(exit);
+        } else if (input === 'n' || key.escape) {
+          setConfirmingQuit(false);
+        }
+        return;
+      }
       if (input === 'q') {
         setConfirmingQuit(true);
         return;
@@ -174,19 +187,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
       }
     },
-    { isActive: mode === 'list' && !approvalPending && !confirmingQuit },
-  );
-
-  // Quit confirmation keys — active only while the confirm popup is up.
-  useInput(
-    (input, key) => {
-      if (input === 'y') {
-        void manager.stopAll().finally(exit);
-      } else if (input === 'n' || key.escape) {
-        setConfirmingQuit(false);
-      }
-    },
-    { isActive: confirmingQuit },
+    { isActive: mode === 'list' && !approvalPending },
   );
 
   if (mode === 'new') {
