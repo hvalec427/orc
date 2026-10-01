@@ -75,6 +75,25 @@ test('maestroMcp is assembled from command/args/env and omitted when command bla
   assert.deepEqual(bare.maestroMcp, { command: 'maestro' });
 });
 
+test('maestroMcp and magicLink are omitted for non-react-native types', () => {
+  const rnFields = { maestroCommand: 'maestro', maestroArgs: 'mcp', magicLink: 'app://login' };
+  const web = overridableFromDraft(filled({ type: 'web', ...rnFields }));
+  assert.ok(!('maestroMcp' in web), 'web type => no maestroMcp');
+  assert.ok(!('magicLink' in web), 'web type => no magicLink');
+
+  const orc = overridableFromDraft(filled({ type: 'orc', ...rnFields }));
+  assert.ok(!('maestroMcp' in orc), 'orc type => no maestroMcp');
+  assert.ok(!('magicLink' in orc), 'orc type => no magicLink');
+
+  const rn = overridableFromDraft(filled({ type: 'react-native', ...rnFields }));
+  assert.deepEqual(rn.maestroMcp, { command: 'maestro', args: ['mcp'] });
+  assert.equal(rn.magicLink, 'app://login');
+
+  const inherit = overridableFromDraft(filled({ type: '', ...rnFields }));
+  assert.deepEqual(inherit.maestroMcp, { command: 'maestro', args: ['mcp'] });
+  assert.equal(inherit.magicLink, 'app://login');
+});
+
 test('parseEnvLines ignores blanks and malformed lines', () => {
   assert.deepEqual(parseEnvLines('A=1\n\n  B = two \nnope\n=bad'), { A: '1', B: 'two' });
 });

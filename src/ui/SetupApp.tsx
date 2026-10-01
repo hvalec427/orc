@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import { MultilineInput } from './MultilineInput.js';
@@ -209,6 +209,8 @@ interface FieldDef {
   /** For select fields. */
   options?: readonly string[];
   placeholder?: string;
+  /** When set, the field only applies to react-native projects and is hidden for other types. */
+  reactNativeOnly?: boolean;
 }
 
 /** Overridable fields shared by projects and globals. */
@@ -222,10 +224,10 @@ function overridableFields(): FieldDef[] {
     { key: 'baseBranch', label: 'baseBranch', kind: 'text', placeholder: 'auto-detect (develop/main)' },
     { key: 'mergeStrategy', label: 'mergeStrategy', kind: 'select', options: MERGE_STRATEGIES, placeholder: 'inherit (rebase)' },
     { key: 'portRange', label: 'portRange', kind: 'text', placeholder: 'e.g. 8000-8099 (none)' },
-    { key: 'maestroCommand', label: 'maestro.command', kind: 'text', placeholder: 'inherit (maestro); blank disables' },
-    { key: 'maestroArgs', label: 'maestro.args', kind: 'text', placeholder: 'space-separated, e.g. mcp' },
-    { key: 'maestroEnv', label: 'maestro.env', kind: 'multiline', placeholder: 'KEY=value per line' },
-    { key: 'magicLink', label: 'magicLink', kind: 'text', placeholder: 'sign-in deep link (none)' },
+    { key: 'maestroCommand', label: 'maestro.command', kind: 'text', placeholder: 'inherit (maestro); blank disables', reactNativeOnly: true },
+    { key: 'maestroArgs', label: 'maestro.args', kind: 'text', placeholder: 'space-separated, e.g. mcp', reactNativeOnly: true },
+    { key: 'maestroEnv', label: 'maestro.env', kind: 'multiline', placeholder: 'KEY=value per line', reactNativeOnly: true },
+    { key: 'magicLink', label: 'magicLink', kind: 'text', placeholder: 'sign-in deep link (none)', reactNativeOnly: true },
   ];
 }
 
@@ -272,15 +274,25 @@ function FieldEditor({
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState<Draft>(initial);
-  // cursor indexes [...fields, SAVE].
+  // cursor indexes [...visibleFields, SAVE].
   const [cursor, setCursor] = useState(0);
   const [editing, setEditing] = useState(false);
   const [multiCursor, setMultiCursor] = useState(0);
   const [error, setError] = useState('');
 
-  const total = fields.length + 1;
-  const onSaveRow = cursor === fields.length;
-  const current = onSaveRow ? undefined : fields[cursor];
+  // react-native-only fields are hidden unless the project resolves to react-native. A blank type
+  // inherits the react-native default, so those fields stay visible until another type is chosen.
+  const isReactNative = !draft.type || draft.type === 'react-native';
+  const visibleFields = fields.filter((f) => !f.reactNativeOnly || isReactNative);
+
+  const total = visibleFields.length + 1;
+  const onSaveRow = cursor === visibleFields.length;
+  const current = onSaveRow ? undefined : visibleFields[cursor];
+
+  // Switching project type can hide react-native-only rows; keep the cursor in range.
+  useEffect(() => {
+    if (cursor > visibleFields.length) setCursor(visibleFields.length);
+  }, [cursor, visibleFields.length]);
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
@@ -294,7 +306,7 @@ function FieldEditor({
     const pErr = validatePortRange(draft.portRange);
     if (pErr) {
       setError(pErr);
-      const i = fields.findIndex((f) => f.key === 'portRange');
+      const i = visibleFields.findIndex((f) => f.key === 'portRange');
       if (i >= 0) setCursor(i);
       setEditing(false);
       return;
@@ -379,7 +391,7 @@ function FieldEditor({
       <Text dimColor>{subtitle}</Text>
 
       <Box flexDirection="column" marginTop={1}>
-        {fields.map((f, i) => {
+        {visibleFields.map((f, i) => {
           const focused = i === cursor;
           const isEditing = focused && editing;
           const value = fieldValue(draft, f);

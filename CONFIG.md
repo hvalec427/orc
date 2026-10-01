@@ -57,11 +57,14 @@ A few settings are also influenced by CLI flags (see [CLI flags](#cli-flags)).
 | `baseBranch`     | string              | No       | *(auto-detected)*    | Yes                     |
 | `mergeStrategy`  | enum                | No       | `rebase`             | Yes                     |
 | `portRange`      | string `"a-b"`      | No       | *(none)*             | Yes                     |
-| `maestroMcp`     | object              | No       | `{ "command": "maestro", "args": ["mcp"] }` | Yes |
-| `magicLink`      | string              | No       | *(none)*             | Yes                     |
+| `maestroMcp`     | object              | No       | `{ "command": "maestro", "args": ["mcp"] }` | Yes (react-native only) |
+| `magicLink`      | string              | No       | *(none)*             | Yes (react-native only)  |
 
 `projects` is the only key that is **not** overridable (it is the list itself). All the others may
 appear at the top level as a default and/or inside any project entry as an override.
+
+`maestroMcp` and `magicLink` apply only to `react-native` projects; the setup UI hides them for
+other project types.
 
 ---
 
@@ -185,8 +188,10 @@ environment as both `METRO_PORT` and `AGENT_PORT`.
 
 - **Type:** object `{ command, args?, env? }`
 - **Default:** `{ "command": "maestro", "args": ["mcp"] }`
+- **Applies to:** `react-native` projects only.
 
-The Maestro MCP server attached to every agent (drives the iOS simulator).
+The Maestro MCP server attached to every agent (drives the iOS simulator). Only relevant for
+`react-native` projects; the setup UI hides this option for other project types.
 
 | Field     | Type                      | Required | Description                               |
 | --------- | ------------------------- | -------- | ----------------------------------------- |
@@ -204,6 +209,7 @@ Omit the key, or pass `--no-maestro`, to disable the server entirely.
 
 - **Type:** string
 - **Default:** *(none)*
+- **Applies to:** `react-native` projects only.
 
 A sign-in deep link (e.g. `acme://login?token=...`). If set, the new-agent form offers a step to
 accept it (Enter) or type a different one per agent; the chosen value is passed to the agent as the

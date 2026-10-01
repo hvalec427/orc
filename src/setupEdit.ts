@@ -148,16 +148,23 @@ export function overridableFromDraft(d: Draft): Record<string, unknown> {
   put('baseBranch', d.baseBranch);
   put('mergeStrategy', d.mergeStrategy);
   put('portRange', d.portRange);
-  put('magicLink', d.magicLink);
 
-  const command = d.maestroCommand.trim();
-  if (command) {
-    const maestro: { command: string; args?: string[]; env?: Record<string, string> } = { command };
-    const args = d.maestroArgs.trim().split(/\s+/).filter(Boolean);
-    if (args.length) maestro.args = args;
-    const env = parseEnvLines(d.maestroEnv);
-    if (Object.keys(env).length) maestro.env = env;
-    out.maestroMcp = maestro;
+  // maestroMcp and magicLink only apply to react-native projects. A blank type inherits the
+  // react-native default, so keep them unless another type is explicitly chosen.
+  const type = d.type.trim();
+  const isReactNative = !type || type === 'react-native';
+  if (isReactNative) {
+    put('magicLink', d.magicLink);
+
+    const command = d.maestroCommand.trim();
+    if (command) {
+      const maestro: { command: string; args?: string[]; env?: Record<string, string> } = { command };
+      const args = d.maestroArgs.trim().split(/\s+/).filter(Boolean);
+      if (args.length) maestro.args = args;
+      const env = parseEnvLines(d.maestroEnv);
+      if (Object.keys(env).length) maestro.env = env;
+      out.maestroMcp = maestro;
+    }
   }
   return out;
 }
