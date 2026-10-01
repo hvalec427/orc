@@ -21,40 +21,98 @@ const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
  * headers, cost line) followed by a collapsible "Done" section of archived agents. `selectedIndex`
  * indexes into `active.concat(showDone ? archived : [])` — exactly the flat navigable list App builds —
  * so the `›` caret lands on the right row across both sections.
+ *
+ * The list is unbounded (one block per agent), so with many agents it could be taller than the
+ * terminal. `height` pins the box to the body height and we clip + scroll internally: the outer box
+ * is fixed height with overflow hidden, and the inner column is nudged up (negative marginTop) by
+ * whole agent blocks until the selected agent fits in view. This keeps the TOTAL frame height constant
+ * regardless of agent count, so the frame never overflows the terminal and scrolls Ink off-screen.
  */
 export function Sidebar({
   active,
   archived,
   showDone,
   selectedIndex,
+  height,
 }: {
   active: AgentInfo[];
   archived: AgentInfo[];
   showDone: boolean;
   selectedIndex: number;
+  height: number;
 }) {
+  // The flat navigable list, matching App's `active.concat(showDone ? archived : [])`.
+  const rows: AgentInfo[] = active.concat(showDone ? archived : []);
+  // Per-agent block heights (in terminal rows), in list order, so we can scroll by whole blocks
+  // and know exactly how many fit under the "Agents" title.
+  const blockHeights = rows.map((info, i) =>
+    info.archived
+      ? 1 // archived rows are a single compact line
+      : blockHeightOf(info, lastTopLevelProjectBefore(active, i)),
+  );
+  // Rows available for the list itself: the box interior (height - 2 for the round border) minus the
+  // "Agents" title line. Clamp so we always render at least one row.
+  const listRows = Math.max(1, height - 2 - 1);
+  const scroll = scrollOffset(blockHeights, selectedIndex, listRows);
+
   return (
-    <Box flexDirection="column" width={34} borderStyle="round" borderColor="gray" paddingX={1}>
+    <Box
+      flexDirection="column"
+      width={34}
+      height={height}
+      flexShrink={0}
+      overflow="hidden"
+      borderStyle="round"
+      borderColor="gray"
+      paddingX={1}
+    >
       <Text bold>Agents</Text>
-      {active.length === 0 ? (
-        <Text dimColor>press n to start one</Text>
-      ) : (
-        active.map((info, i) => (
-          <AgentRow key={info.id} info={info} index={i} selected={i === selectedIndex} prevProject={lastTopLevelProjectBefore(active, i)} />
-        ))
-      )}
-      {archived.length > 0 ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text dimColor>Done ({archived.length}){showDone ? '' : ' — t to show'}</Text>
-          {showDone
-            ? archived.map((info, i) => (
-                <ArchivedRow key={info.id} info={info} selected={active.length + i === selectedIndex} />
-              ))
-            : null}
-        </Box>
-      ) : null}
+      {/* marginTop shifts the whole list up by the scrolled-off rows; the outer box clips the rest. */}
+      <Box flexDirection="column" flexShrink={0} marginTop={-scroll}>
+        {active.length === 0 ? (
+          <Text dimColor>press n to start one</Text>
+        ) : (
+          active.map((info, i) => (
+            <AgentRow key={info.id} info={info} index={i} selected={i === selectedIndex} prevProject={lastTopLevelProjectBefore(active, i)} />
+          ))
+        )}
+        {archived.length > 0 ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>Done ({archived.length}){showDone ? '' : ' — t to show'}</Text>
+            {showDone
+              ? archived.map((info, i) => (
+                  <ArchivedRow key={info.id} info={info} selected={active.length + i === selectedIndex} />
+                ))
+              : null}
+          </Box>
+        ) : null}
+      </Box>
     </Box>
   );
+}
+
+/** Rendered height (in rows) of one active-agent block: optional project header + name + cost line,
+ *  plus the top margin that separates top-level agents. Mirrors AgentRow's layout. */
+function blockHeightOf(info: AgentInfo, prevProject: string | undefined): number {
+  const isChild = info.parentId !== undefined;
+  const marginTop = isChild ? 0 : 1;
+  const header = !isChild && info.project !== prevProject ? 1 : 0;
+  return marginTop + header + 1 /* name */ + 1 /* template·cost */;
+}
+
+/** Smallest number of leading rows to hide so the selected block fits within `listRows`.
+ *  Scrolls by whole agent blocks: accumulate hidden rows until the selected block's bottom is in view. */
+function scrollOffset(blockHeights: number[], selectedIndex: number, listRows: number): number {
+  if (selectedIndex < 0) return 0;
+  let start = 0; // first visible block index
+  const heightFrom = (from: number, to: number) => {
+    let h = 0;
+    for (let i = from; i <= to; i++) h += blockHeights[i] ?? 0;
+    return h;
+  };
+  // Advance the window start until the selected block's cumulative height fits.
+  while (start < selectedIndex && heightFrom(start, selectedIndex) > listRows) start++;
+  return heightFrom(0, start - 1);
 }
 
 /** A full active-agent row: status glyph, name, optional project header, and the template·cost line. */

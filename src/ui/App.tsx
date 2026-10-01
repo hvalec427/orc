@@ -336,12 +336,18 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         </Text>
       </Box>
 
-      <Box>
+      {/* Pin the body row to bodyHeight so neither pane can grow the frame past the terminal.
+          The sidebar list is unbounded (one block per agent), so without this the sidebar —
+          not the log — could make the total output taller than `rows`, scrolling the real
+          terminal and walking Ink's frame off the top (the "TUI moves up" bug). flexShrink=0
+          keeps it from being squeezed; the Sidebar clips/scrolls internally to this height. */}
+      <Box height={bodyHeight} flexShrink={0} overflow="hidden">
         <Sidebar
           active={activeInfos}
           archived={archivedInfos}
           showDone={showDone}
           selectedIndex={selectedIndex}
+          height={bodyHeight}
         />
         <AgentView
           session={selected}
