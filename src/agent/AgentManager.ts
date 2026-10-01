@@ -29,17 +29,31 @@ export class AgentManager extends EventEmitter {
   }
 
   list(): AgentSession[] {
-    // Top-level agents newest-first (most recently created at the top), with each agent's
-    // child sessions (e.g. a merge agent) nested immediately beneath their parent. This fixes
-    // the display/navigation order so a parent is always adjacent to its children.
+    // Agents are grouped by project so the sidebar can show a distinct section per project.
+    // Within a project, top-level agents are newest-first (most recently created at the top),
+    // with each agent's child sessions (e.g. a merge agent) nested immediately beneath their
+    // parent. This keeps a parent adjacent to its children and keeps same-project agents
+    // contiguous. Projects themselves are ordered by their most recently created agent, so the
+    // project you just launched into floats to the top.
     const all = [...this.agents.values()];
     const childrenOf = (parentId: string) =>
       all.filter((a) => a.parentId === parentId); // oldest-first among siblings
-    const topLevel = all.filter((a) => !a.parentId).reverse();
-    const ordered: AgentSession[] = [];
+    const topLevel = all.filter((a) => !a.parentId).reverse(); // newest-first
+
+    // Preserve the newest-first order of first appearance to order the project groups.
+    const groups = new Map<string, AgentSession[]>();
     for (const parent of topLevel) {
-      ordered.push(parent);
-      ordered.push(...childrenOf(parent.id));
+      const group = groups.get(parent.project);
+      if (group) group.push(parent);
+      else groups.set(parent.project, [parent]);
+    }
+
+    const ordered: AgentSession[] = [];
+    for (const group of groups.values()) {
+      for (const parent of group) {
+        ordered.push(parent);
+        ordered.push(...childrenOf(parent.id));
+      }
     }
     return ordered;
   }

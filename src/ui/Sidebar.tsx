@@ -25,8 +25,15 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
           // beneath its parent with a `└` connector instead of a list number.
           const isChild = info.parentId !== undefined;
           const pad = isChild ? '   ' : ' ';
+          // Agents are grouped by project (see AgentManager.list), so a distinct project header is
+          // rendered whenever a top-level agent's project differs from the previous top-level one.
+          const prevTopLevel = lastTopLevelProjectBefore(infos, i);
+          const showProjectHeader = !isChild && info.project !== prevTopLevel;
           return (
             <Box key={info.id} flexDirection="column" marginTop={isChild ? 0 : 1}>
+              {showProjectHeader ? (
+                <Text bold color="blue">{truncate(info.project, 30)}</Text>
+              ) : null}
               <Text>
                 <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
                 {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{i + 1} </Text>}
@@ -38,7 +45,6 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
                   <Text dimColor> [{info.template}]</Text>
                 ) : null}
               </Text>
-              {isChild ? null : <Text dimColor>{pad}⟨{truncate(info.project, 26)}⟩</Text>}
               {isChild ? null : <Text dimColor>{pad}{truncate(info.ticket, 28)}</Text>}
               <Text dimColor>
                 {pad}
@@ -52,6 +58,14 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
       )}
     </Box>
   );
+}
+
+/** Project of the nearest top-level agent before index `i` (skipping nested children), or undefined. */
+function lastTopLevelProjectBefore(infos: AgentInfo[], i: number): string | undefined {
+  for (let j = i - 1; j >= 0; j--) {
+    if (infos[j].parentId === undefined) return infos[j].project;
+  }
+  return undefined;
 }
 
 function truncate(s: string, n: number): string {
