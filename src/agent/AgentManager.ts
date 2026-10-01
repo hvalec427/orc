@@ -7,7 +7,7 @@ import { needsWorktree, isWorkerTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
-import type { RunPipelineStep, EnsureWorktree } from './launcherTools.js';
+import type { LaunchTemplate, RunPipelineStep, EnsureWorktree } from './launcherTools.js';
 import type {
   AskOrchestrator,
   AskSubagent,
@@ -153,15 +153,16 @@ export class AgentManager extends EventEmitter {
       metroPort = allocator ? await allocator.allocate() : undefined;
     }
 
-    // A launcher agent is handed a callback its in-process spawn tool uses to create feature agents.
-    // Each spawned agent is nested beneath this launcher (parentId = id) so it shows up indented
-    // under the launcher in the sidebar.
+    // A launcher agent is handed a callback its in-process spawn tool uses to create agents. The
+    // launcher chooses the template per group (feature/fix/question/pipeline); create() then applies
+    // that template's own worktree/port rules. Each spawned agent is nested beneath this launcher
+    // (parentId = id) so it shows up indented under the launcher in the sidebar.
     const launchFeature =
       template === 'launcher'
-        ? async (args: { name: string; prompt: string; ticket: string }) => {
+        ? async (args: { template: LaunchTemplate; name: string; prompt: string; ticket: string }) => {
             const child = await this.create(
               projectName,
-              'feature',
+              args.template,
               args.name,
               args.ticket,
               args.prompt,

@@ -15,7 +15,8 @@
  *                feature agent. Neither read-only nor a WORKTREE_TEMPLATE: see the worker handling
  *                in AgentManager/AgentSession.
  * - `launcher` — a read-only planner that takes several tasks at once, decides which belong
- *                together vs. apart, and spawns a feature agent per group (nested beneath it).
+ *                together vs. apart, picks the right template for each group (feature/fix/
+ *                question/pipeline) and spawns one agent per group (nested beneath it).
  * - `pipeline` — a read-only orchestrator that runs the seven role agents below SEQUENTIALLY
  *                on one shared worktree (architect → explorer → planner → tester → implementer
  *                → reviewer → refactorer → tester), handing each role's summary to the next and

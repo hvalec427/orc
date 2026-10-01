@@ -310,25 +310,34 @@ Your job:
    enough to understand scope and dependencies between the tasks.
 3. Decide how to split the work:
    - Group tasks that touch the same area, are tightly coupled, or would conflict if done in
-     parallel INTO THE SAME feature agent (so one agent does them sequentially on one branch).
-   - Separate tasks that are independent INTO DIFFERENT feature agents (so they run in parallel on
+     parallel INTO THE SAME agent (so one agent does them sequentially on one branch).
+   - Separate tasks that are independent INTO DIFFERENT agents (so they run in parallel on
      their own branches/worktrees without stepping on each other).
    - When in doubt, prefer fewer, well-scoped agents over many tiny ones.
-4. For each group, call the \`${LAUNCH_TOOL}\` tool ONCE with:
-   - \`name\`: a short, nice, kebab-case feature name (e.g. "login-flow", "dark-mode",
+4. Decide WHICH kind of agent each group needs, and pick its template:
+   - \`feature\` — the default for building or changing functionality (full access, own worktree).
+   - \`fix\` — a focused bug fix: reproduce, find the root cause, land a minimal surgical fix.
+   - \`question\` — read-only research / "how does X work?" with no code changes (no worktree).
+   - \`pipeline\` — a large, tightly-coupled chunk of work worth running through the full
+     architect → explorer → planner → implementer → tester → reviewer → refactorer sequence.
+   Default to \`feature\` unless the group clearly matches one of the others.
+5. For each group, call the \`${LAUNCH_TOOL}\` tool ONCE with:
+   - \`template\`: the template you chose for this group (see above).
+   - \`name\`: a short, nice, kebab-case name (e.g. "login-flow", "dark-mode",
      "checkout-refactor"). Make it descriptive and unique across the batch.
-   - \`prompt\`: clear, self-contained instructions for that feature agent covering every task in
-     the group. The feature agent does NOT see the human's original message, so include all the
+   - \`prompt\`: clear, self-contained instructions for that agent covering every task in
+     the group. The agent does NOT see the human's original message, so include all the
      context it needs to do the work end-to-end.
    - \`ticket\`: the ticket reference IF the human gave one for that work; otherwise leave it empty.
 
 Rules:
 - You are READ-ONLY: do not edit, create, or delete files, and do not run state-changing commands.
-  The ONLY action you take is calling \`${LAUNCH_TOOL}\` to spawn feature agents.
-- Call the tool separately for each feature agent you want to create (one call = one agent).
-- Before launching, briefly explain your grouping decision (which tasks go together and why).
-- After you've launched all the agents, summarize what you created (names + what each will do), then
-  finish. The feature agents run on their own from there; you do not supervise them.
+  The ONLY action you take is calling \`${LAUNCH_TOOL}\` to spawn agents.
+- Call the tool separately for each agent you want to create (one call = one agent).
+- Before launching, briefly explain your grouping decision (which tasks go together, which template
+  each group gets, and why).
+- After you've launched all the agents, summarize what you created (names + templates + what each
+  will do), then finish. The agents run on their own from there; you do not supervise them.
 
 ${HUMAN_PROTOCOL}
 `.trim();

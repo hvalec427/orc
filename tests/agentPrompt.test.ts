@@ -157,6 +157,14 @@ test('launcher prompt references the launch tool; pipeline prompt references the
   assert.ok(!pipeline.includes(LAUNCH_TOOL), 'pipeline should not mention LAUNCH_TOOL');
 });
 
+test('launcher prompt tells it to choose a template per group', () => {
+  const launcher = buildAppendPrompt({ name: 'l', template: 'launcher', project: 'demo' });
+  assert.match(launcher, /template/i, 'launcher prompt should mention choosing a template');
+  for (const t of ['feature', 'fix', 'question', 'pipeline']) {
+    assert.ok(launcher.includes(`\`${t}\``), `launcher prompt missing ${t} template option`);
+  }
+});
+
 test('every template prompt carries the group-coordination section with all four tools', () => {
   for (const t of ALL_TEMPLATES) {
     const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });

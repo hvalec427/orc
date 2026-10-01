@@ -3,6 +3,18 @@ import { z } from 'zod';
 import type { RoleTemplate } from '../types.js';
 
 /**
+ * The agent templates a launcher may spawn for a group of tasks. These are the standalone,
+ * top-level templates that make sense to kick off from a prompt — a full-access `feature` agent
+ * for new work, a surgical `fix` agent for a bug, a read-only `question` agent for research, or a
+ * `pipeline` orchestrator to run the seven roles sequentially on tightly-coupled work. (Merge and
+ * the individual role templates are not launchable this way.)
+ */
+const LAUNCH_TEMPLATES = ['feature', 'fix', 'question', 'pipeline'] as const;
+
+/** One of the templates a launcher may spawn; the `template` arg of its launch tool. */
+export type LaunchTemplate = (typeof LAUNCH_TEMPLATES)[number];
+
+/**
  * Result the launcher's spawn callback returns for one feature agent, so the tool can report
  * back to the launcher what actually got created (its final, uniquified name).
  */
@@ -11,8 +23,9 @@ export interface LaunchResult {
   name: string;
 }
 
-/** Spawns one feature agent; supplied by the AgentSession so the tool can call back into the manager. */
+/** Spawns one agent of the chosen template; supplied by the AgentSession so the tool can call back into the manager. */
 export type LaunchFeature = (args: {
+  template: LaunchTemplate;
   name: string;
   prompt: string;
   ticket: string;
@@ -94,22 +107,33 @@ export function buildLauncherTools(launch: LaunchFeature) {
   return [
     tool(
         'launch_feature_agents',
-        'Spawn ONE feature agent to carry out a group of tasks. Call this once per feature agent ' +
-          'you want to create. Each agent gets its own git worktree + branch and runs independently. ' +
-          'The prompt must be self-contained: the feature agent does not see the human\u2019s original message.',
+        'Spawn ONE agent to carry out a group of tasks. Call this once per agent you want to ' +
+          'create, choosing the template that best fits the group\u2019s work. Each agent runs ' +
+          'independently. The prompt must be self-contained: the agent does not see the human\u2019s ' +
+          'original message.',
         {
+          template: z
+            .enum(LAUNCH_TEMPLATES)
+            .default('feature')
+            .describe(
+              'Which kind of agent fits this group: "feature" (full-access task agent in its own ' +
+                'worktree+branch, the default for new work), "fix" (surgical bug-fix agent in its own ' +
+                'worktree+branch), "question" (read-only research/Q&A agent, no worktree) or ' +
+                '"pipeline" (read-only orchestrator that runs the 7 roles sequentially on one shared ' +
+                'worktree for large, tightly-coupled work).',
+            ),
           name: z
             .string()
             .min(1)
             .describe(
-              'Short, nice, kebab-case feature name (e.g. "login-flow", "dark-mode"). ' +
+              'Short, nice, kebab-case agent name (e.g. "login-flow", "dark-mode"). ' +
                 'Becomes the agent name and its git branch. Keep it unique across this batch.',
             ),
           prompt: z
             .string()
             .min(1)
             .describe(
-              'Complete, self-contained instructions for this feature agent covering every task in ' +
+              'Complete, self-contained instructions for this agent covering every task in ' +
                 'the group. Include all context needed to do the work end-to-end.',
             ),
           ticket: z
@@ -121,8 +145,10 @@ export function buildLauncherTools(launch: LaunchFeature) {
             ),
         },
         async (args) => {
+          const template = args.template ?? 'feature';
           try {
             const res = await launch({
+              template,
               name: args.name,
               prompt: args.prompt,
               ticket: args.ticket ?? '',
@@ -131,7 +157,7 @@ export function buildLauncherTools(launch: LaunchFeature) {
               content: [
                 {
                   type: 'text',
-                  text: `Launched feature agent "${res.name}" (id: ${res.id}).`,
+                  text: `Launched ${template} agent "${res.name}" (id: ${res.id}).`,
                 },
               ],
             };
@@ -140,7 +166,7 @@ export function buildLauncherTools(launch: LaunchFeature) {
               content: [
                 {
                   type: 'text',
-                  text: `Failed to launch feature agent "${args.name}": ${(err as Error).message}`,
+                  text: `Failed to launch ${template} agent "${args.name}": ${(err as Error).message}`,
                 },
               ],
               isError: true,
