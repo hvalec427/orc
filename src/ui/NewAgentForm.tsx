@@ -63,9 +63,36 @@ export function NewAgentForm({
   // After choosing a project, jump to the first relevant field for the template.
   const afterProject = (proj: ProjectConfig): Step => firstStep(template, proj);
 
+  // The step to return to when going back. This reverses the forward flow,
+  // skipping steps that don't apply to the current template/project (e.g. the
+  // project chooser with a single project, magiclink/ticket for non-feature
+  // agents, name for merge agents). Returns undefined on the first step, where
+  // there is nothing to go back to and Esc should cancel instead.
+  const prevStep = (s: Step): Step | undefined => {
+    const beforeFields: Step = single ? 'template' : 'project';
+    switch (s) {
+      case 'template':
+        return undefined;
+      case 'project':
+        return 'template';
+      case 'magiclink':
+        return beforeFields;
+      case 'name':
+        return hasMagic ? 'magiclink' : beforeFields;
+      case 'ticket':
+        return 'name';
+      case 'prompt':
+        // Reverse of firstStep/field order for the current template.
+        if (feature) return 'ticket';
+        return template === 'merge' ? beforeFields : 'name';
+    }
+  };
+
   useInput((input, key) => {
     if (key.escape) {
-      onCancel();
+      const back = prevStep(step);
+      if (back) setStep(back);
+      else onCancel();
       return;
     }
     if (step === 'template') {
@@ -94,7 +121,6 @@ export function NewAgentForm({
     else if (key.return) {
       const proj = projects[cursor];
       setProject(proj.name);
-      setMagicLink('');
       setStep(afterProject(proj));
     }
   });
@@ -234,11 +260,14 @@ export function NewAgentForm({
       )}
 
       <Text dimColor>
-        {step === 'template' || step === 'project'
-          ? '↑↓/jk: choose · Enter: select · Esc: cancel'
-          : step === 'prompt'
-            ? 'Enter: create · Alt/Shift+Enter: newline · Esc: cancel'
-            : 'Enter: next/create · Esc: cancel'}
+        {(() => {
+          // On the first step there's nothing to go back to, so Esc cancels.
+          const esc = prevStep(step) ? 'Esc: back' : 'Esc: cancel';
+          if (step === 'template' || step === 'project')
+            return `↑↓/jk: choose · Enter: select · ${esc}`;
+          if (step === 'prompt') return `Enter: create · Alt/Shift+Enter: newline · ${esc}`;
+          return `Enter: next/create · ${esc}`;
+        })()}
       </Text>
     </Box>
   );
