@@ -165,6 +165,20 @@ test('launcher prompt tells it to choose a template per group', () => {
   }
 });
 
+test('launcher prompt forbids splitting same-file work across parallel agents', () => {
+  const launcher = buildAppendPrompt({ name: 'l', template: 'launcher', project: 'demo' });
+  assert.match(launcher, /same files/i, 'launcher prompt should warn about editing the same files');
+  assert.match(launcher, /parallel/i, 'launcher prompt should note agents run in parallel');
+  assert.match(launcher, /DISJOINT/, 'launcher prompt should require disjoint file sets to split');
+});
+
+test('coordination section tells shared-worktree subagents to check in before editing', () => {
+  const prompt = buildAppendPrompt({ name: 'a', template: 'feature', project: 'demo' });
+  assert.match(prompt, /Avoiding collisions on shared code/, 'missing collision-avoidance guidance');
+  assert.match(prompt, /only ONE agent may edit it at a time/i, 'missing one-editor-at-a-time rule');
+  assert.match(prompt, /BEFORE you start editing/i, 'missing check-in-before-editing rule');
+});
+
 test('every template prompt carries the group-coordination section with all four tools', () => {
   for (const t of ALL_TEMPLATES) {
     const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
