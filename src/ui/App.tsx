@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import type { OrcConfig } from '../types.js';
+import type { OrcConfig, AgentStatus } from '../types.js';
 import type { AgentManager } from '../agent/AgentManager.js';
 import { Sidebar } from './Sidebar.js';
 import { AgentView } from './AgentView.js';
@@ -125,19 +125,23 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
       } else if (input === 'i' || key.return) {
-        if (selected) {
+        // Answering only makes sense when the agent is waiting on the human.
+        if (selected && selected.getInfo().status === 'needs_input') {
           setReplyValue('');
           setMode('input');
         }
       } else if (input === 'x') {
-        void selected?.stop();
+        // stop() no-ops once the agent is dead, so only act while it's alive.
+        const status = selected?.getInfo().status;
+        if (selected && status !== 'done' && status !== 'error' && status !== 'stopped') {
+          void selected.stop();
+        }
       } else if (input === 'r') {
         selected?.retry();
       } else if (input === 'm' && selected) {
         const id = selected.id;
         const branch = selected.getInfo().branch;
         if (!branch) {
-          setNotice(`"${selected.name}" has no branch to merge`);
           return;
         }
         const existing = manager.mergeChildOf(id);
@@ -256,7 +260,17 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           }}
         />
       ) : (
-        <HelpBar notice={notice} />
+        <HelpBar
+          notice={notice}
+          hasAgents={infos.length > 0}
+          hasSession={!!selected}
+          hasParent={!!selected?.getInfo().parentId}
+          hasChild={!!selected && !!manager.firstChildOf(selected.id)}
+          hasWaiting={!!manager.firstWaiting()}
+          selectedStatus={selected?.getInfo().status}
+          canAnswer={selected?.getInfo().status === 'needs_input'}
+          canMerge={!!selected?.getInfo().branch}
+        />
       )}
     </Box>
   );
@@ -276,13 +290,58 @@ function QuitConfirm({ agentCount }: { agentCount: number }) {
   );
 }
 
-function HelpBar({ notice }: { notice: string }) {
+function HelpBar({
+  notice,
+  hasAgents,
+  hasSession,
+  hasParent,
+  hasChild,
+  hasWaiting,
+  selectedStatus,
+  canAnswer,
+  canMerge,
+}: {
+  notice: string;
+  hasAgents: boolean;
+  hasSession: boolean;
+  hasParent: boolean;
+  hasChild: boolean;
+  hasWaiting: boolean;
+  selectedStatus: AgentStatus | undefined;
+  canAnswer: boolean;
+  canMerge: boolean;
+}) {
+  // An agent is "dead" (retryable) when its last turn ended; stop() only does
+  // something while it is still alive. Mirror AgentSession.isDead()/stop().
+  const isDead =
+    selectedStatus === 'done' || selectedStatus === 'error' || selectedStatus === 'stopped';
+
+  // Only list a command when pressing its key would actually do something.
+  const global: string[] = ['n:new'];
+  if (hasAgents) global.push('↑↓/jk:switch');
+  if (hasParent) global.push('h:parent');
+  if (hasChild) global.push('l:child');
+  if (hasWaiting) global.push('w:next waiting');
+  if (hasSession) global.push('J/K:scroll', 'p:pause/resume scroll');
+  global.push('q:quit tui');
+
+  const agent: string[] = [];
+  if (canAnswer) agent.push('i:answer');
+  if (isDead) agent.push('r:resume');
+  if (canMerge) agent.push('m:merge');
+  if (hasSession && !isDead) agent.push('x:stop');
+  if (hasSession) agent.push('d:delete');
+
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Text dimColor>
-        <Text bold>global</Text> n:new ↑↓/jk:switch h/l:parent/child w:next waiting J/K:scroll p:pause/resume scroll q:quit tui
-        {'  ·  '}
-        <Text bold>agent</Text> i:answer r:resume m:merge x:stop d:delete
+        <Text bold>global</Text> {global.join(' ')}
+        {agent.length > 0 ? (
+          <>
+            {'  ·  '}
+            <Text bold>agent</Text> {agent.join(' ')}
+          </>
+        ) : null}
       </Text>
       {notice ? (
         <Text color="yellow" wrap="truncate">
