@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs';
 import { query, type Query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
 import { InputQueue } from './InputQueue.js';
-import { buildAppendPrompt, NEEDS_INPUT, DONE } from '../agentPrompt.js';
+import { buildAppendPrompt, LAUNCH_TOOL, NEEDS_INPUT, DONE } from '../agentPrompt.js';
+import { buildLauncherMcpServer, type LaunchFeature } from './launcherTools.js';
 import { createWorktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
@@ -55,6 +56,11 @@ export interface AgentSessionInit {
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
   config: ProjectConfig;
+  /**
+   * For `launcher` agents only: the callback the launch tool uses to spawn a feature agent.
+   * The manager supplies this so the tool can create feature agents nested under the launcher.
+   */
+  launchFeature?: LaunchFeature;
 }
 
 /**
@@ -98,6 +104,8 @@ export class AgentSession extends EventEmitter {
   readonly repo: string;
 
   private readonly config: ProjectConfig;
+  /** Launcher-only: spawns a feature agent (set by the manager). Undefined for other templates. */
+  private readonly launchFeature?: LaunchFeature;
   private queue = new InputQueue();
   private query: Query | null = null;
   /** Aborts the current SDK subprocess. Recreated on every launch. */
@@ -130,6 +138,7 @@ export class AgentSession extends EventEmitter {
     this.worktree = init.worktree;
     this.metroPort = init.metroPort;
     this.config = init.config;
+    this.launchFeature = init.launchFeature;
     this.project = init.config.name;
     this.repo = init.config.repo;
   }
@@ -284,7 +293,10 @@ export class AgentSession extends EventEmitter {
   // ---- session options ----------------------------------------------------
 
   private buildOptions(resume?: string): Options {
-    const readOnly = this.template === 'question';
+    // Question and launcher agents are both read-only investigators — they never edit code. The
+    // launcher additionally gets exactly one write-ish power: the launch tool that spawns feature
+    // agents (allowed explicitly below).
+    const readOnly = this.template === 'question' || this.template === 'launcher';
     // A fresh controller per launch. stop() aborts it to tear down the SDK subprocess;
     // a later retry()/send() builds new options with a new controller.
     this.abortController = new AbortController();
@@ -319,6 +331,7 @@ export class AgentSession extends EventEmitter {
           metroPort: this.metroPort,
           ticket: this.ticket,
           magicLink: this.magicLink,
+          project: this.project,
         }),
       },
       stderr: (data) => {
@@ -328,18 +341,22 @@ export class AgentSession extends EventEmitter {
     };
 
     if (readOnly) {
-      // A question agent is read-only no matter the project's permission mode: never bypass
+      // A question/launcher agent is read-only no matter the project's permission mode: never bypass
       // permissions, and hard-deny every mutating tool. Read-only tools are auto-allowed so the
-      // agent can still investigate without pestering the human for approval on each read.
+      // agent can still investigate without pestering the human for approval on each read. The
+      // launcher is additionally allowed its own spawn tool so it can actually create feature agents.
+      const allowLaunch = this.template === 'launcher';
       opts.permissionMode = 'default';
       opts.canUseTool = (toolName, input) =>
         Promise.resolve(
-          READONLY_DENIED_TOOLS.has(toolName)
-            ? {
-                behavior: 'deny',
-                message: `"${toolName}" is disabled: this is a read-only question agent that cannot modify anything.`,
-              }
-            : { behavior: 'allow', updatedInput: input },
+          allowLaunch && toolName === LAUNCH_TOOL
+            ? { behavior: 'allow', updatedInput: input }
+            : READONLY_DENIED_TOOLS.has(toolName)
+              ? {
+                  behavior: 'deny',
+                  message: `"${toolName}" is disabled: this is a read-only ${this.template} agent that cannot modify the codebase.`,
+                }
+              : { behavior: 'allow', updatedInput: input },
         );
     } else if (this.config.permissionMode === 'bypassPermissions') {
       opts.allowDangerouslySkipPermissions = true;
@@ -361,16 +378,21 @@ export class AgentSession extends EventEmitter {
 
     if (resume) opts.resume = resume;
 
+    const mcpServers: NonNullable<Options['mcpServers']> = {};
     if (this.config.maestroMcp) {
-      opts.mcpServers = {
-        maestro: {
-          type: 'stdio',
-          command: this.config.maestroMcp.command,
-          args: this.config.maestroMcp.args,
-          env: this.config.maestroMcp.env,
-        },
+      mcpServers.maestro = {
+        type: 'stdio',
+        command: this.config.maestroMcp.command,
+        args: this.config.maestroMcp.args,
+        env: this.config.maestroMcp.env,
       };
     }
+    // Launcher agents get an in-process MCP server exposing the single tool that spawns feature
+    // agents. Its server name is "orc", so the tool is exposed as LAUNCH_TOOL to the model.
+    if (this.template === 'launcher' && this.launchFeature) {
+      mcpServers.orc = buildLauncherMcpServer(this.launchFeature);
+    }
+    if (Object.keys(mcpServers).length > 0) opts.mcpServers = mcpServers;
 
     return opts;
   }

@@ -111,9 +111,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       if (key.downArrow || input === 'j' || key.tab) select(selectedIndex + 1);
       else if (key.upArrow || input === 'k') select(selectedIndex - 1);
       else if (input === 'l') {
-        // Descend into the selected agent's child (e.g. its merge agent), if any.
+        // Descend into the selected agent's first child (a merge agent, or a launcher's first
+        // spawned feature agent), if any.
         if (selected) {
-          const child = manager.mergeChildOf(selected.id);
+          const child = manager.firstChildOf(selected.id);
           if (child) setSelectedId(child.id);
         }
       } else if (input === 'h') {

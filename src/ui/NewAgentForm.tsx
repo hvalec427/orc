@@ -16,6 +16,7 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'feature', label: 'Feature', hint: 'new git worktree + branch; builds a feature' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
   { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
+  { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
 ];
 
 /** Does this template need a worktree/branch (and therefore the feature-only fields)? */
@@ -115,7 +116,9 @@ export function NewAgentForm({
       ? 'what do you want to ask about this repo?'
       : template === 'merge'
         ? 'which branches should be merged? (e.g. merge agent/foo into master)'
-        : 'what should this agent do?';
+        : template === 'launcher'
+          ? 'list everything you want done; it will split the work into feature agents'
+          : 'what should this agent do?';
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
