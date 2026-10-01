@@ -121,15 +121,17 @@ When an agent is in `default` permission mode and a tool needs approval, press `
 
 Merging is done by a dedicated **merge agent**, not a keybinding. When an agent reports `@@DONE@@`,
 start a new agent with `n`, pick the **Merge** template, and tell it which branches to merge (e.g.
-`merge agent/foo into master`). The merge agent runs directly in the base repo (no worktree), so it
-can't delete the directory it's running in. (A feature agent asked to merge *itself* would
-`git worktree remove` its own working directory mid-command and permanently break its shell; that's
-why feature agents are told never to self-merge.)
+`merge agent/foo into master`). The merge agent runs directly in the base repo, so it can't delete
+the directory it's running in. (A feature agent asked to merge *itself* would `git worktree remove`
+its own working directory mid-command and permanently break its shell; that's why feature agents are
+told never to self-merge.)
 
+- Before merging, the merge agent confirms the target branch (usually `master` or `development`) and
+  makes sure the working tree is clean.
 - If a merge hits a **conflict** it can't safely resolve, the merge agent runs `git merge --abort`,
   leaves the repo clean, and asks you how to proceed — nothing is left half-merged.
-- After a branch merges cleanly, the merge agent removes its worktree and deletes the now-merged
-  branch.
+- After a branch merges cleanly, the merge agent verifies it actually landed on the target branch,
+  then deletes the now-merged branch and removes its worktree.
 - The merge agent won't push to any remote unless you explicitly ask.
 
 ## Config reference
