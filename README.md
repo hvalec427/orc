@@ -136,8 +136,9 @@ feature agent asked to merge *itself* would `git worktree remove` its own workin
 mid-command and permanently break its shell; that's why feature agents never self-merge — the nested
 merge agent does it from the base repo instead.)
 
-- Before merging, the merge agent confirms the target branch (usually `master` or `development`) and
-  makes sure the working tree is clean.
+- The target is the project's configured `baseBranch`. If none is configured, the merge agent detects
+  it (preferring `develop`/`development`, then `master`/`main`) and confirms with you before merging.
+- Before merging, the merge agent makes sure the working tree is clean.
 - If a merge hits a **conflict** it can't safely resolve, the merge agent runs `git merge --abort`,
   leaves the repo clean, and asks you how to proceed — nothing is left half-merged.
 - After a branch merges cleanly, the merge agent verifies it actually landed on the target branch,
@@ -156,6 +157,10 @@ Config lives in `~/.orc/config.json` (or `--config <path>`). Fields:
   `acceptEdits`, or `default` (routes tool approvals to the UI via `y`/`n`). Overridable per project.
 - `settingSources` **must include `project`** for the worktree's `CLAUDE.md` to load. Overridable.
 - `model`, `worktreeDir`, `maestroMcp`: global defaults, overridable per project.
+- `baseBranch` (per project, optional): the branch merge agents integrate into (e.g. `master`, `main`,
+  `develop`). If set, pressing `m` merges straight into it. If omitted, the merge agent detects the
+  target (preferring `develop`/`development`, then `master`/`main`) and **confirms with you before
+  merging**. Can also be set globally as a fallback.
 - `magicLink` (per project, optional): a sign-in deep link. If set, the new-agent form offers a step
   to accept it (Enter) or type a different one for that agent; the link is passed as `MAGIC_LINK` and
   the agent opens it on its simulator to log in. Projects without one skip that step.

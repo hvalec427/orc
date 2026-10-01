@@ -28,6 +28,7 @@ const OverridableSchema = {
   worktreeDir: z.string().optional(),
   permissionMode: z.enum(['bypassPermissions', 'default', 'acceptEdits']).optional(),
   settingSources: z.array(z.enum(['user', 'project', 'local'])).optional(),
+  baseBranch: z.string().min(1).optional(),
   portRange: PortRangeSchema.optional(),
   maestroMcp: MaestroSchema.optional(),
   magicLink: z.string().optional(),
@@ -76,7 +77,7 @@ export const SAMPLE_CONFIG = `{
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "path": "~/dev/acme-app", "portRange": "8000-8099" },
+    { "name": "Acme iOS", "path": "~/dev/acme-app", "baseBranch": "develop", "portRange": "8000-8099" },
     { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5", "portRange": "8100-8199" }
   ]
 }`;
@@ -126,6 +127,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
       worktreeDir: p.worktreeDir ?? parsed.worktreeDir ?? DEFAULTS.worktreeDir,
       permissionMode: p.permissionMode ?? parsed.permissionMode ?? DEFAULTS.permissionMode,
       settingSources: p.settingSources ?? parsed.settingSources ?? DEFAULTS.settingSources,
+      baseBranch: p.baseBranch ?? parsed.baseBranch,
       portRange: range ? parsePortRange(range) : undefined,
       maestroMcp: flags.noMaestro ? undefined : p.maestroMcp ?? globalMaestro,
       magicLink: p.magicLink ?? parsed.magicLink,

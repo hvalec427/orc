@@ -6,6 +6,7 @@ import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
+import { NEEDS_INPUT } from '../agentPrompt.js';
 
 const STATE_PATH = join(homedir(), '.orc', 'state.json');
 
@@ -131,11 +132,22 @@ export class AgentManager extends EventEmitter {
     }
     const existing = this.mergeChildOf(id);
     if (existing) return existing;
-    const prompt = `Merge the branch \`${branch}\` into the project's base branch (usually \`master\`). ${
-      source.worktree ? `Its worktree is at \`${source.worktree}\`. ` : ''
-    }After the merge lands cleanly and you've verified it, delete the \`${branch}\` branch${
+    const project = this.config.projects.find((p) => p.name === source.project);
+    const baseBranch = project?.baseBranch;
+    const worktreeNote = source.worktree ? `Its worktree is at \`${source.worktree}\`. ` : '';
+    const cleanupNote = `After the merge lands cleanly and you've verified it, delete the \`${branch}\` branch${
       source.worktree ? ` and remove its worktree` : ''
     }.`;
+    // With a configured base branch, merge straight into it. Without one, the agent must figure
+    // out the target (preferring develop/development, then master/main) and confirm with the human
+    // before merging, since we don't want to guess the integration branch.
+    const target = baseBranch
+      ? `Merge the branch \`${branch}\` into \`${baseBranch}\` (the project's configured base branch). `
+      : `Merge the branch \`${branch}\` into the project's base branch. No base branch is configured, so ` +
+        `determine the target yourself: prefer \`develop\` or \`development\` if either exists, otherwise ` +
+        `\`master\` or \`main\`. Once you've picked the target, confirm it with the human (ending your turn ` +
+        `with ${NEEDS_INPUT}) BEFORE running the merge. `;
+    const prompt = `${target}${worktreeNote}${cleanupNote}`;
     return this.create(source.project, 'merge', `merge ${branch}`, '', prompt, undefined, id);
   }
 

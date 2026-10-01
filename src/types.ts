@@ -88,6 +88,12 @@ export interface ProjectConfig {
   permissionMode: 'bypassPermissions' | 'default' | 'acceptEdits';
   /** settingSources so the worktree CLAUDE.md is loaded. */
   settingSources: Array<'user' | 'project' | 'local'>;
+  /**
+   * Branch merge agents integrate into (e.g. `master`, `main`, `develop`). Omit to let the merge
+   * agent detect it (preferring `develop`/`development`, then `master`/`main`) and confirm with the
+   * human before merging.
+   */
+  baseBranch?: string;
   /** Port range agents allocate from. Omit to give agents no port. */
   portRange?: PortRange;
   /** Maestro MCP server command, attached to every agent. Omit to disable. */
