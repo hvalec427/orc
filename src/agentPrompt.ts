@@ -88,6 +88,11 @@ export interface PromptParams {
   project?: string;
   /** How a merge agent should integrate branches. Only consumed by the merge prompt. */
   mergeStrategy?: MergeStrategy;
+  /**
+   * The project's configured base branch, if any. Only consumed by the merge prompt: when set, the
+   * merge agent integrates straight into it instead of asking the human to confirm the target.
+   */
+  baseBranch?: string;
 }
 
 /**
@@ -237,20 +242,27 @@ const MERGE_STRATEGY_GUIDANCE: Record<MergeStrategy, string> = {
  * {@link MergeStrategy} (resolved per-project → global → default `rebase`) selects the integration
  * commands and the matching abort command; defaults to `rebase` when none is threaded through.
  */
-function buildMergePrompt({ name, mergeStrategy = 'rebase' }: PromptParams): string {
+function buildMergePrompt({ name, mergeStrategy = 'rebase', baseBranch }: PromptParams): string {
   const strategyGuidance = MERGE_STRATEGY_GUIDANCE[mergeStrategy];
+  // With a configured base branch, the target is already decided — integrate straight into it without
+  // asking. Without one, the agent must pick a target and confirm it with the human before integrating.
+  const targetGuidance = baseBranch
+    ? `- The target branch is \`${baseBranch}\` (the project's configured base branch). Integrate into it
+  directly; do NOT ask the human which branch to integrate into. Make sure the working tree is clean, and
+  run \`git branch\` / \`git log\` as needed to understand the state.`
+    : `- Before integrating: confirm the target branch. If it isn't specified, prefer \`develop\`/\`development\`
+  if either exists, otherwise \`master\`/\`main\`, and confirm your choice with the human before
+  integrating. Make sure the working tree is clean, and run \`git branch\` / \`git log\` as needed to
+  understand the state.`;
   return `
 ## Orchestration context (injected by orc)
 
 You are agent "${name}", a branch-INTEGRATION agent (it merges OR rebases depending on the project's
 configured strategy) running under an orchestrator, working directly in the main repository.
 
-- Your job is to integrate the git branches the human specifies. If they haven't told you which branches
-  to integrate (source(s) and target), ask before doing anything.
-- Before integrating: confirm the target branch. If it isn't specified, prefer \`develop\`/\`development\`
-  if either exists, otherwise \`master\`/\`main\`, and confirm your choice with the human before
-  integrating. Make sure the working tree is clean, and run \`git branch\` / \`git log\` as needed to
-  understand the state.
+- Your job is to integrate the git branches the human specifies. If they haven't told you which source
+  branch(es) to integrate, ask before doing anything.
+${targetGuidance}
 - Integration strategy for this project is **${mergeStrategy}**. ${strategyGuidance}
 - Whatever the strategy, if a conflict arises that you cannot SAFELY auto-resolve, run the
   strategy-appropriate abort above, leave the repo clean, describe the conflict, and ask the human how

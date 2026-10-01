@@ -177,6 +177,28 @@ test('merge prompt defaults to rebase and bakes in the chosen strategy', () => {
   }
 });
 
+test('merge prompt integrates straight into a configured baseBranch without asking', () => {
+  const configured = buildAppendPrompt({ name: 'm', template: 'merge', baseBranch: 'master' });
+  assert.ok(
+    configured.includes('The target branch is `master`'),
+    'merge prompt should name the configured base branch',
+  );
+  assert.ok(
+    configured.includes('do NOT ask the human which branch to integrate into'),
+    'merge prompt should tell the agent not to ask when a base branch is configured',
+  );
+  assert.ok(
+    !configured.includes('confirm the target branch'),
+    'merge prompt must not ask to confirm the target when a base branch is configured',
+  );
+
+  const unset = buildAppendPrompt({ name: 'm', template: 'merge' });
+  assert.ok(
+    unset.includes('confirm the target branch'),
+    'merge prompt should still confirm the target when no base branch is configured',
+  );
+});
+
 test('pipeline prompt encodes the canonical order (tests-first, tester twice)', () => {
   assert.deepEqual(
     [...PIPELINE_ORDER],
