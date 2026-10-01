@@ -21,6 +21,7 @@ function session(rec: Rec) {
     getInfo: () => info,
     getEvents: () => [{ kind: 'text', text: rec.name, done: true }],
     retry: () => {},
+    send: () => {},
     _info: info,
   } as any;
 }
@@ -135,7 +136,7 @@ test('m is refused for an archived agent', async () => {
   unmount();
 });
 
-test('u unarchives the selected archived agent', async () => {
+test('sending a message to an archived agent unarchives it', async () => {
   const manager = makeManager();
   const { stdin, unmount } = render(React.createElement(App, { manager, config }));
   await delay();
@@ -144,10 +145,31 @@ test('u unarchives the selected archived agent', async () => {
   await delay();
   stdin.write('t'); // expand Done so the archived agent is selectable/visible
   await delay();
-  stdin.write('u'); // unarchive
+  stdin.write('i'); // open the ask/reply input
+  await delay();
+  stdin.write('follow up');
+  await delay();
+  stdin.write('\r'); // submit
   await delay();
 
-  assert.deepEqual(manager.calls.unarchive, ['a1'], 'u calls unarchive');
+  assert.deepEqual(manager.calls.unarchive, ['a1'], 'sending a message calls unarchive');
+
+  unmount();
+});
+
+test('u is no longer a command (does not unarchive)', async () => {
+  const manager = makeManager();
+  const { stdin, unmount } = render(React.createElement(App, { manager, config }));
+  await delay();
+
+  stdin.write('d'); // archive
+  await delay();
+  stdin.write('t'); // expand Done
+  await delay();
+  stdin.write('u'); // former unarchive key — should be inert now
+  await delay();
+
+  assert.deepEqual(manager.calls.unarchive, [], 'u does nothing');
 
   unmount();
 });

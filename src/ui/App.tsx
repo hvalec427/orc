@@ -230,13 +230,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         if (next) setSelectedId(next.id);
         setNotice(`deleting ${id}…`);
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
-      } else if (input === 'u' && selected) {
-        // Unarchive: return the selected (archived) agent to the active list. Inert otherwise.
-        if (selected.getInfo().archived) {
-          const id = selected.id;
-          setNotice(`unarchived ${id}`);
-          void manager.unarchive(id);
-        }
       } else if (input === 't') {
         // Toggle the collapsible Done section.
         setShowDone((v) => !v);
@@ -384,6 +377,8 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           onCancel={() => setMode('list')}
           onSubmit={(text) => {
             selected.send(text);
+            // Messaging an archived (done) agent resumes it, so bring it back out of Done.
+            if (selected.getInfo().archived) void manager.unarchive(selected.id);
             setMode('list');
           }}
         />
@@ -479,9 +474,9 @@ function HelpBar({
   if (hasSession && !isDead) agent.push('x:stop');
   // P shows orc's generated "how to run/test this branch" instructions inside the agent window.
   if (hasSession) agent.push(previewing ? 'P:close preview' : 'P:preview');
-  // d archives (non-destructive, into Done); Shift+D is the old destructive delete. An archived
-  // agent instead offers u to bring it back.
-  if (hasSession) agent.push(selectedArchived ? 'u:unarchive' : 'd:archive');
+  // d archives (non-destructive, into Done); Shift+D is the old destructive delete. Messaging an
+  // archived agent (i:ask) resumes it and brings it back out of Done automatically.
+  if (hasSession && !selectedArchived) agent.push('d:archive');
   if (hasSession) agent.push('D:delete');
 
   // Render each "key:description" entry with the key highlighted in yellow and
