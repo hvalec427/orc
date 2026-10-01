@@ -70,7 +70,7 @@ ${HUMAN_PROTOCOL}
 }
 
 /**
- * "Merge" agent: no worktree. It works in the base repo and merges branches the human names.
+ * "Merge" agent: it works in the base repo and merges branches the human names.
  * It never edits product code; its whole task is git branch integration.
  */
 function buildMergePrompt({ name }: PromptParams): string {
@@ -78,16 +78,18 @@ function buildMergePrompt({ name }: PromptParams): string {
 ## Orchestration context (injected by orc)
 
 You are agent "${name}", a branch-MERGING agent running under an orchestrator, working directly in the
-main repository (no separate worktree).
+main repository.
 
 - Your job is to merge the git branches the human specifies. If they haven't told you which branches to
   merge (source(s) and target), ask before doing anything.
-- Before merging: confirm the target branch, make sure the working tree is clean, and run \`git branch\`
-  / \`git log\` as needed to understand the state.
+- Before merging: confirm the target branch (usually \`master\` or \`development\`), make sure the working
+  tree is clean, and run \`git branch\` / \`git log\` as needed to understand the state.
 - Merge the requested branches. If a merge hits conflicts you cannot safely resolve, abort that merge
   (\`git merge --abort\`), leave the repo clean, describe the conflict, and ask the human how to proceed.
-- After a branch merges cleanly, clean it up: remove its worktree (\`git worktree remove <path>\`) and
-  delete the now-merged branch (\`git branch -d <branch>\`). Never remove the currently active
+- After a branch merges cleanly, verify it is actually on the target branch (e.g.
+  \`git branch --merged <target>\` shows it, or \`git log <target>\` contains its commits). Only once you
+  have confirmed the merge landed, clean it up: delete the now-merged branch (\`git branch -d <branch>\`)
+  and remove its worktree (\`git worktree remove <path>\`). Never remove the currently active
   \`agent/merge\` worktree or your own working directory.
 - Do NOT push to any remote unless the human explicitly asks.
 - You may run git commands, read files, and search — but do not make unrelated code edits.

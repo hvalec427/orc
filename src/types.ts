@@ -5,7 +5,7 @@
  * - `feature`  — the default: a task agent in its own git worktree + branch.
  * - `question` — a read-only agent that answers a question and cannot edit anything;
  *                it runs in the base repo (no worktree) and is denied all mutating tools.
- * - `merge`    — an agent (no worktree) whose job is to merge branches in the base repo.
+ * - `merge`    — an agent whose job is to merge branches in the base repo.
  */
 export type AgentTemplate = 'feature' | 'question' | 'merge';
 

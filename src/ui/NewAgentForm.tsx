@@ -15,7 +15,7 @@ interface TemplateChoice {
 const TEMPLATES: TemplateChoice[] = [
   { value: 'feature', label: 'Feature', hint: 'new git worktree + branch; builds a feature' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
-  { value: 'merge', label: 'Merge', hint: 'no worktree; merges branches you name' },
+  { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
 ];
 
 /** Does this template need a worktree/branch (and therefore the feature-only fields)? */
