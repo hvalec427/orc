@@ -119,8 +119,21 @@ export function NewAgentForm({
   useInput((input, key) => {
     if (key.escape) {
       const back = prevStep(step);
-      if (back) setStep(back);
-      else onCancel();
+      if (back) {
+        // Returning to the template picker is a fresh start: clear every field
+        // filled in on later steps so a re-pick doesn't carry over stale input.
+        if (back === 'template') {
+          setMagicLink('');
+          setName('');
+          setTicket('');
+          setPrompt('');
+          if (!single) {
+            setProject('');
+            setCursor(0);
+          }
+        }
+        setStep(back);
+      } else onCancel();
       return;
     }
     if (step === 'template') {
