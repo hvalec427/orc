@@ -29,6 +29,7 @@ const OverridableSchema = {
   permissionMode: z.enum(['bypassPermissions', 'default', 'acceptEdits']).optional(),
   settingSources: z.array(z.enum(['user', 'project', 'local'])).optional(),
   baseBranch: z.string().min(1).optional(),
+  mergeStrategy: z.enum(['merge', 'rebase', 'squash-merge', 'squash-rebase']).optional(),
   portRange: PortRangeSchema.optional(),
   maestroMcp: MaestroSchema.optional(),
   magicLink: z.string().optional(),
@@ -60,6 +61,7 @@ const DEFAULTS = {
   worktreeDir: '.worktrees',
   permissionMode: 'bypassPermissions' as const,
   settingSources: ['user', 'project', 'local'] as Array<'user' | 'project' | 'local'>,
+  mergeStrategy: 'rebase' as const,
   maestroMcp: { command: 'maestro', args: ['mcp'] },
 };
 
@@ -77,7 +79,7 @@ export const SAMPLE_CONFIG = `{
   "settingSources": ["user", "project", "local"],
   "maestroMcp": { "command": "maestro", "args": ["mcp"] },
   "projects": [
-    { "name": "Acme iOS", "path": "~/dev/acme-app", "baseBranch": "develop", "portRange": "8000-8099" },
+    { "name": "Acme iOS", "path": "~/dev/acme-app", "baseBranch": "develop", "mergeStrategy": "rebase", "portRange": "8000-8099" },
     { "name": "Beta App", "path": "~/dev/beta", "model": "claude-sonnet-5", "portRange": "8100-8199" }
   ]
 }`;
@@ -128,6 +130,7 @@ export function loadConfig(flags: CliFlags): OrcConfig {
       permissionMode: p.permissionMode ?? parsed.permissionMode ?? DEFAULTS.permissionMode,
       settingSources: p.settingSources ?? parsed.settingSources ?? DEFAULTS.settingSources,
       baseBranch: p.baseBranch ?? parsed.baseBranch,
+      mergeStrategy: p.mergeStrategy ?? parsed.mergeStrategy ?? DEFAULTS.mergeStrategy,
       portRange: range ? parsePortRange(range) : undefined,
       maestroMcp: flags.noMaestro ? undefined : p.maestroMcp ?? globalMaestro,
       magicLink: p.magicLink ?? parsed.magicLink,

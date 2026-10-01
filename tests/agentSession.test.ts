@@ -11,6 +11,7 @@ const CONFIG: ProjectConfig = {
   worktreeDir: '.worktrees',
   permissionMode: 'bypassPermissions',
   settingSources: ['project'],
+  mergeStrategy: 'rebase',
 };
 
 function makeSession(): AgentSession {

@@ -148,6 +148,15 @@ export interface AgentInfo {
 /** Project kind — selects which CLAUDE.md template the `p` action installs. */
 export type ProjectType = 'react-native' | 'web' | 'orc';
 
+/**
+ * How a merge agent integrates a feature branch into the base branch:
+ * - `merge`         — a standard merge commit.
+ * - `rebase`        — rebase the feature branch onto the target, preserving its individual commits.
+ * - `squash-merge`  — collapse the branch to a single commit via `git merge --squash`.
+ * - `squash-rebase` — collapse the branch to a single commit via an (auto)squash rebase.
+ */
+export type MergeStrategy = 'merge' | 'rebase' | 'squash-merge' | 'squash-rebase';
+
 /** Inclusive port range agents in a project allocate from. */
 export interface PortRange {
   start: number;
@@ -176,6 +185,8 @@ export interface ProjectConfig {
    * human before merging.
    */
   baseBranch?: string;
+  /** How a merge agent integrates this project's branches. Resolved; defaults to `rebase`. */
+  mergeStrategy: MergeStrategy;
   /** Port range agents allocate from. Omit to give agents no port. */
   portRange?: PortRange;
   /** Maestro MCP server command, attached to every agent. Omit to disable. */

@@ -1,4 +1,4 @@
-import type { AgentTemplate, RoleTemplate } from './types.js';
+import type { AgentTemplate, MergeStrategy, RoleTemplate } from './types.js';
 import { needsWorktree } from './types.js';
 
 /** Sentinels the orchestrator parses out of an agent's final turn text. */
@@ -86,6 +86,8 @@ export interface PromptParams {
   magicLink?: string;
   /** The project the agent belongs to (the launcher spawns feature agents into it). */
   project?: string;
+  /** How a merge agent should integrate branches. Only consumed by the merge prompt. */
+  mergeStrategy?: MergeStrategy;
 }
 
 /**
@@ -204,26 +206,58 @@ ${HUMAN_PROTOCOL}
 }
 
 /**
- * "Merge" agent: it works in the base repo and merges branches the human names.
- * It never edits product code; its whole task is git branch integration.
+ * Strategy-specific git guidance woven into the merge prompt. Each entry describes HOW to integrate a
+ * branch under that strategy and WHICH abort command to run on an unresolvable conflict, so the merge
+ * agent uses the configured strategy (resolved from per-project → global → default `rebase`) instead
+ * of picking one itself. `<branch>`/`<target>` are placeholders the agent fills from the actual names.
  */
-function buildMergePrompt({ name }: PromptParams): string {
+const MERGE_STRATEGY_GUIDANCE: Record<MergeStrategy, string> = {
+  merge:
+    'Integrate with a standard merge commit: check out the target and run `git merge <branch>`. On a ' +
+    'conflict you cannot safely resolve, abort with `git merge --abort`.',
+  rebase:
+    'Rebase to keep a linear history while PRESERVING each of the branch\u2019s individual commits (do ' +
+    'NOT squash them): with the feature branch checked out run `git rebase <target>`, then fast-forward ' +
+    'the target onto the rebased branch (check out <target> and `git merge --ff-only <branch>`). ' +
+    'Conflicts may surface per-commit; on any you cannot safely resolve, abort with `git rebase --abort`.',
+  'squash-merge':
+    'Collapse the whole branch into a SINGLE commit on the target: check out the target, run ' +
+    '`git merge --squash <branch>`, then make one `git commit`. On a conflict you cannot safely ' +
+    'resolve, abort with `git merge --abort`.',
+  'squash-rebase':
+    'Collapse the branch into a SINGLE commit via an (auto)squash rebase (e.g. ' +
+    '`git rebase -i --autosquash <target>` on the feature branch, squashing its commits into one), then ' +
+    'fast-forward the target onto it. On a conflict you cannot safely resolve, abort with ' +
+    '`git rebase --abort`.',
+};
+
+/**
+ * "Merge" agent: it works in the base repo and merges branches the human names.
+ * It never edits product code; its whole task is git branch integration. The configured
+ * {@link MergeStrategy} (resolved per-project → global → default `rebase`) selects the integration
+ * commands and the matching abort command; defaults to `rebase` when none is threaded through.
+ */
+function buildMergePrompt({ name, mergeStrategy = 'rebase' }: PromptParams): string {
+  const strategyGuidance = MERGE_STRATEGY_GUIDANCE[mergeStrategy];
   return `
 ## Orchestration context (injected by orc)
 
 You are agent "${name}", a branch-MERGING agent running under an orchestrator, working directly in the
 main repository.
 
-- Your job is to merge the git branches the human specifies. If they haven't told you which branches to
-  merge (source(s) and target), ask before doing anything.
-- Before merging: confirm the target branch. If it isn't specified, prefer \`develop\`/\`development\` if
-  either exists, otherwise \`master\`/\`main\`, and confirm your choice with the human before merging. Make
-  sure the working tree is clean, and run \`git branch\` / \`git log\` as needed to understand the state.
-- Merge the requested branches. If a merge hits conflicts you cannot safely resolve, abort that merge
-  (\`git merge --abort\`), leave the repo clean, describe the conflict, and ask the human how to proceed.
-- After a branch merges cleanly, verify it is actually on the target branch (e.g.
+- Your job is to integrate the git branches the human specifies. If they haven't told you which branches
+  to integrate (source(s) and target), ask before doing anything.
+- Before integrating: confirm the target branch. If it isn't specified, prefer \`develop\`/\`development\`
+  if either exists, otherwise \`master\`/\`main\`, and confirm your choice with the human before
+  integrating. Make sure the working tree is clean, and run \`git branch\` / \`git log\` as needed to
+  understand the state.
+- Integration strategy for this project is **${mergeStrategy}**. ${strategyGuidance}
+- Whatever the strategy, if a conflict arises that you cannot SAFELY auto-resolve, run the
+  strategy-appropriate abort above, leave the repo clean, describe the conflict, and ask the human how
+  to proceed. Do NOT force-resolve conflicts yourself.
+- After a branch integrates cleanly, verify it actually landed on the target branch (e.g.
   \`git branch --merged <target>\` shows it, or \`git log <target>\` contains its commits). Only once you
-  have confirmed the merge landed, clean it up: delete the now-merged branch (\`git branch -d <branch>\`)
+  have confirmed it landed, clean it up: delete the now-integrated branch (\`git branch -d <branch>\`)
   and remove its worktree (\`git worktree remove <path>\`). Never remove the currently active
   \`agent/merge\` worktree or your own working directory.
 - Do NOT push to any remote unless the human explicitly asks.
