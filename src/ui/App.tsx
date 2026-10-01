@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { OrcConfig, AgentStatus } from '../types.js';
 import type { AgentManager } from '../agent/AgentManager.js';
@@ -87,16 +87,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     }
   }, [selectedId, infos]);
 
-  const select = useCallback(
-    (index: number) => {
-      const list = manager.list();
-      if (list.length === 0) return;
-      const clamped = Math.max(0, Math.min(index, list.length - 1));
-      setSelectedId(list[clamped].id);
-    },
-    [manager],
-  );
-
   const approvalPending = selected?.pendingApproval;
 
   // Global keys — active in list mode when no approval modal is up. Quit
@@ -127,17 +117,26 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       }
       if (manager.list().length === 0) return;
 
-      if (key.downArrow || input === 'j' || key.tab) select(selectedIndex + 1);
-      else if (key.upArrow || input === 'k') select(selectedIndex - 1);
-      else if (input === 'l') {
-        // Descend into the selected agent's first child (a merge agent, or a launcher's first
-        // spawned feature agent), if any.
-        if (selected) {
+      if (key.downArrow || input === 'j' || key.tab || key.upArrow || input === 'k') {
+        // j/k are context-sensitive: they step through the MAIN (top-level) agents while the
+        // selection is on a parent, and through the selected parent's SUBAGENTS once you've
+        // descended into one with `l`. l enters a group, h leaves it — j/k never cross that
+        // boundary, so each list stays self-contained.
+        if (!selected) return;
+        const delta = key.downArrow || input === 'j' || key.tab ? 1 : -1;
+        const target = selected.getInfo().parentId
+          ? manager.siblingOf(selected.id, delta)
+          : manager.topLevelSibling(selected.id, delta);
+        if (target) setSelectedId(target.id);
+      } else if (input === 'l') {
+        // Enter the selected parent's subagents: land on its first child, if any. Once inside,
+        // j/k navigate between the subagents (see above).
+        if (selected && !selected.getInfo().parentId) {
           const child = manager.firstChildOf(selected.id);
           if (child) setSelectedId(child.id);
         }
       } else if (input === 'h') {
-        // Jump from a child session back up to its parent.
+        // Leave a parent's subagents and return to the main list by jumping back to the parent.
         const parentId = selected?.getInfo().parentId;
         if (parentId) setSelectedId(parentId);
       } else if (input === 'w') {
@@ -377,9 +376,10 @@ function HelpBar({
 
   // Only list a command when pressing its key would actually do something.
   const global: string[] = ['n:new'];
-  if (hasAgents) global.push('↑↓/jk:switch');
-  if (hasParent) global.push('h:parent');
-  if (hasChild) global.push('l:child');
+  // j/k switch between subagents once you've entered a group (hasParent), else between main agents.
+  if (hasAgents) global.push(hasParent ? '↑↓/jk:switch subagent' : '↑↓/jk:switch');
+  if (hasParent) global.push('h:back');
+  if (hasChild) global.push('l:subagents');
   if (hasWaiting) global.push('w:next waiting');
   if (hasSession) global.push('J/K:scroll', 'p:pause/resume scroll');
   global.push('q:quit tui');
