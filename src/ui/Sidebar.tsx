@@ -1,14 +1,19 @@
 import { Box, Text } from 'ink';
 import type { AgentInfo, AgentStatus } from '../types.js';
 
-const STATUS_ICON: Record<AgentStatus, string> = {
-  booting: '⏳',
-  working: '⚙️',
-  needs_input: '💬',
-  needs_approval: '🔔',
-  done: '✅',
-  error: '❌',
-  stopped: '🛑',
+/**
+ * Single-width glyphs + colors instead of emojis: terminals render emojis at an
+ * inconsistent (often 2-cell) width which breaks column alignment, whereas these
+ * glyphs are reliably one cell wide.
+ */
+const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
+  booting: { glyph: '○', color: 'yellow' },
+  working: { glyph: '●', color: 'cyan' },
+  needs_input: { glyph: '?', color: 'magenta' },
+  needs_approval: { glyph: '!', color: 'yellow' },
+  done: { glyph: '✓', color: 'green' },
+  error: { glyph: '✗', color: 'red' },
+  stopped: { glyph: '■', color: 'gray' },
 };
 
 export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selectedIndex: number }) {
@@ -19,7 +24,7 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
         <Text dimColor>press n to start one</Text>
       ) : (
         infos.map((info, i) => {
-          const icon = STATUS_ICON[info.status];
+          const { glyph, color } = STATUS_ICON[info.status];
           const selected = i === selectedIndex;
           // A child session (e.g. a merge agent spawned from a feature agent) renders indented
           // beneath its parent with a `└` connector instead of a list number.
@@ -36,8 +41,11 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
               <Text wrap="truncate">
                 <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
                 {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{i + 1} </Text>}
-                <Text bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
-                  {icon}
+                <Text
+                  color={color}
+                  bold={info.status === 'needs_input' || info.status === 'needs_approval'}
+                >
+                  {glyph}
                 </Text>
                 <Text bold={selected}> {truncate(info.name, isChild ? 20 : 22)}</Text>
               </Text>
