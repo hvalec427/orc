@@ -91,7 +91,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     (index: number) => {
       const list = manager.list();
       if (list.length === 0) return;
-      const clamped = ((index % list.length) + list.length) % list.length;
+      const clamped = Math.max(0, Math.min(index, list.length - 1));
       setSelectedId(list[clamped].id);
     },
     [manager],
