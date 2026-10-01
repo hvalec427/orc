@@ -171,20 +171,20 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         if (!branch) {
           return;
         }
-        // Don't merge a branch the agent is still actively editing. Only allow
-        // merging once its turn has ended (mirrors HelpBar's canMerge gate).
+        // Don't integrate a branch the agent is still actively editing. Only allow
+        // integrating once its turn has ended (mirrors HelpBar's canMerge gate).
         if (status === 'working' || status === 'booting') {
           return;
         }
         const existing = manager.mergeChildOf(id);
-        setNotice(existing ? `merge agent for ${branch} already running` : `merging ${branch}…`);
+        setNotice(existing ? `integrate agent for ${branch} already running` : `integrating ${branch}…`);
         manager
           .mergeAgent(id)
           .then((s) => {
             setSelectedId(s.id);
-            if (!existing) setNotice(`merging ${branch}`);
+            if (!existing) setNotice(`integrating ${branch}`);
           })
-          .catch((err) => setNotice(`merge failed: ${(err as Error).message}`));
+          .catch((err) => setNotice(`integrate failed: ${(err as Error).message}`));
       } else if (input === 'd' && selected) {
         const id = selected.id;
         // Move selection to the next agent (or previous if deleting the last).
@@ -387,7 +387,7 @@ function HelpBar({
   // i (ask/reply) and c (launch a subagent) work for any selected agent regardless of state.
   if (hasSession) agent.push('i:ask', 'c:subagent');
   if (isDead) agent.push('r:resume');
-  if (canMerge) agent.push('m:merge');
+  if (canMerge) agent.push('m:integrate');
   if (hasSession && !isDead) agent.push('x:stop');
   if (hasSession) agent.push('d:delete');
 

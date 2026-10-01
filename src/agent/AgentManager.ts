@@ -119,9 +119,9 @@ export class AgentManager extends EventEmitter {
 
     await assertGitRepo(project.repo);
 
-    // Merge agents aren't named by the human; auto-name them "merger N", incrementing
-    // across the mergers created this session.
-    if (template === 'merge') name = this.nextMergerName();
+    // Integrate agents aren't named by the human; auto-name them "integrator N", incrementing
+    // across the integrators created this session.
+    if (template === 'merge') name = this.nextIntegratorName();
 
     const id = this.uniqueId(slugify(name));
 
@@ -437,25 +437,26 @@ export class AgentManager extends EventEmitter {
     if (!source) throw new Error(`Unknown agent: ${id}`);
     const branch = source.branch;
     if (!branch) {
-      throw new Error(`Agent "${source.name}" has no branch to merge (not a feature agent).`);
+      throw new Error(`Agent "${source.name}" has no branch to integrate (not a feature agent).`);
     }
     const existing = this.mergeChildOf(id);
     if (existing) return existing;
     const project = this.config.projects.find((p) => p.name === source.project);
     const baseBranch = project?.baseBranch;
     const worktreeNote = source.worktree ? `Its worktree is at \`${source.worktree}\`. ` : '';
-    const cleanupNote = `After the merge lands cleanly and you've verified it, delete the \`${branch}\` branch${
+    const cleanupNote = `After the branch lands cleanly and you've verified it, delete the \`${branch}\` branch${
       source.worktree ? ` and remove its worktree` : ''
     }.`;
-    // With a configured base branch, merge straight into it. Without one, the agent must figure
+    // With a configured base branch, integrate straight into it. Without one, the agent must figure
     // out the target (preferring develop/development, then master/main) and confirm with the human
-    // before merging, since we don't want to guess the integration branch.
+    // before integrating, since we don't want to guess the integration branch. The actual
+    // strategy (merge/rebase/squash) comes from the injected merge-agent prompt.
     const target = baseBranch
-      ? `Merge the branch \`${branch}\` into \`${baseBranch}\` (the project's configured base branch). `
-      : `Merge the branch \`${branch}\` into the project's base branch. No base branch is configured, so ` +
+      ? `Integrate the branch \`${branch}\` into \`${baseBranch}\` (the project's configured base branch). `
+      : `Integrate the branch \`${branch}\` into the project's base branch. No base branch is configured, so ` +
         `determine the target yourself: prefer \`develop\` or \`development\` if either exists, otherwise ` +
         `\`master\` or \`main\`. Once you've picked the target, confirm it with the human (ending your turn ` +
-        `with ${NEEDS_INPUT}) BEFORE running the merge. `;
+        `with ${NEEDS_INPUT}) BEFORE integrating. `;
     const prompt = `${target}${worktreeNote}${cleanupNote}`;
     return this.create(source.project, 'merge', `merge ${branch}`, '', prompt, undefined, id);
   }
@@ -501,10 +502,10 @@ export class AgentManager extends EventEmitter {
     await Promise.all(this.list().map((a) => a.stop()));
   }
 
-  /** Next sequential "merger N" name, counting existing merge agents this session. */
-  private nextMergerName(): string {
-    const mergers = this.list().filter((a) => a.template === 'merge').length;
-    return `merger ${mergers + 1}`;
+  /** Next sequential "integrator N" name, counting existing integrate agents this session. */
+  private nextIntegratorName(): string {
+    const integrators = this.list().filter((a) => a.template === 'merge').length;
+    return `integrator ${integrators + 1}`;
   }
 
   private uniqueId(base: string): string {

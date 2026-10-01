@@ -19,7 +19,7 @@ const TEMPLATES: TemplateChoice[] = [
   { value: 'pipeline', label: 'Pipeline', hint: 'orchestrates architect→…→tester roles on a shared worktree' },
   { value: 'launcher', label: 'Launcher', hint: 'splits several tasks into separate feature agents' },
   { value: 'question', label: 'Question', hint: 'read-only; answers a question, cannot edit' },
-  { value: 'merge', label: 'Merge', hint: 'merges the branches you name' },
+  { value: 'merge', label: 'Integrate', hint: 'lands the branches you name using the project\u2019s merge/rebase strategy' },
   { value: 'architect', label: 'Architect', hint: 'read-only; owns high-level technical direction' },
   { value: 'explorer', label: 'Explorer', hint: 'read-only; investigates the codebase' },
   { value: 'planner', label: 'Planner', hint: 'read-only; turns understanding into a plan' },
@@ -42,7 +42,7 @@ function isFeature(t: AgentTemplate): boolean {
 const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
   fix: 'describe the bug/problem to fix (symptoms, repro steps, expected behavior)',
   question: 'what do you want to ask about this repo?',
-  merge: 'which branches should be merged? (e.g. merge agent/foo into master)',
+  merge: 'which branches should be integrated? (e.g. land agent/foo into master)',
   launcher: 'list everything you want done; it will split the work into feature agents',
   pipeline: 'describe the feature; it will run the full architect→…→tester pipeline',
   architect: 'what should the architect decide the technical direction for?',
@@ -88,8 +88,8 @@ export function NewAgentForm({
   const feature = isFeature(template);
   const hasMagic = feature && !!selected?.magicLink;
 
-  // The first field to fill in for a template once a project is chosen. Merge agents are
-  // auto-named ("merger N"), so they skip the name step and go straight to the prompt.
+  // The first field to fill in for a template once a project is chosen. Integrate agents are
+  // auto-named ("integrator N"), so they skip the name step and go straight to the prompt.
   const firstStep = (t: AgentTemplate, proj: ProjectConfig): Step =>
     isFeature(t) ? (proj.magicLink ? 'magiclink' : 'name') : t === 'merge' ? 'prompt' : 'name';
 
@@ -99,7 +99,7 @@ export function NewAgentForm({
   // The step to return to when going back. This reverses the forward flow,
   // skipping steps that don't apply to the current template/project (e.g. the
   // project chooser with a single project, magiclink/ticket for non-feature
-  // agents, name for merge agents). Returns undefined on the first step, where
+  // agents, name for integrate agents). Returns undefined on the first step, where
   // there is nothing to go back to and Esc should cancel instead.
   const prevStep = (s: Step): Step | undefined => {
     const beforeFields: Step = single ? 'template' : 'project';

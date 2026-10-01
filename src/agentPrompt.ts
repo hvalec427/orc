@@ -242,8 +242,8 @@ function buildMergePrompt({ name, mergeStrategy = 'rebase' }: PromptParams): str
   return `
 ## Orchestration context (injected by orc)
 
-You are agent "${name}", a branch-MERGING agent running under an orchestrator, working directly in the
-main repository.
+You are agent "${name}", a branch-INTEGRATION agent (it merges OR rebases depending on the project's
+configured strategy) running under an orchestrator, working directly in the main repository.
 
 - Your job is to integrate the git branches the human specifies. If they haven't told you which branches
   to integrate (source(s) and target), ask before doing anything.
