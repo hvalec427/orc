@@ -54,10 +54,13 @@ const PROMPT_PLACEHOLDERS: Partial<Record<AgentTemplate, string>> = {
 
 export function NewAgentForm({
   projects,
+  parentName,
   onSubmit,
   onCancel,
 }: {
   projects: ProjectConfig[];
+  /** When set, this form creates a subagent nested under the named parent (opened via `c`). */
+  parentName?: string;
   onSubmit: (
     template: AgentTemplate,
     project: string,
@@ -182,11 +185,13 @@ export function NewAgentForm({
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-      <Text bold color="cyan">New agent</Text>
+      <Text bold color="cyan">{parentName ? `New subagent of "${parentName}"` : 'New agent'}</Text>
       <Text dimColor>
-        {feature
-          ? 'A git worktree + branch + simulator name are derived from the agent name.'
-          : 'Runs in the project repo with no worktree.'}
+        {parentName
+          ? 'Shares the group\u2019s worktree/branch; the parent orchestrates it alongside its siblings.'
+          : feature
+            ? 'A git worktree + branch + simulator name are derived from the agent name.'
+            : 'Runs in the project repo with no worktree.'}
       </Text>
 
       <Box flexDirection="column" marginTop={1}>

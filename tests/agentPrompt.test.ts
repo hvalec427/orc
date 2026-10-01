@@ -8,6 +8,11 @@ import {
   ROLE_RESPONSIBILITIES,
   NEEDS_INPUT,
   DONE,
+  LIST_SUBAGENTS_TOOL,
+  ASK_SUBAGENT_TOOL,
+  ANSWER_SUBAGENT_TOOL,
+  ASK_ORCHESTRATOR_TOOL,
+  ORCHESTRATION_TOOLS,
 } from '../src/agentPrompt.js';
 import {
   type AgentTemplate,
@@ -112,6 +117,28 @@ test('launcher prompt references the launch tool; pipeline prompt references the
   const pipeline = buildAppendPrompt({ name: 'p', template: 'pipeline', project: 'demo' });
   assert.ok(pipeline.includes(RUN_STEP_TOOL), 'pipeline missing RUN_STEP_TOOL');
   assert.ok(!pipeline.includes(LAUNCH_TOOL), 'pipeline should not mention LAUNCH_TOOL');
+});
+
+test('every template prompt carries the group-coordination section with all four tools', () => {
+  for (const t of ALL_TEMPLATES) {
+    const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
+    assert.match(prompt, /Coordinating with your group/, `${t} missing coordination section`);
+    assert.ok(prompt.includes(LIST_SUBAGENTS_TOOL), `${t} missing list_subagents`);
+    assert.ok(prompt.includes(ASK_SUBAGENT_TOOL), `${t} missing ask_subagent`);
+    assert.ok(prompt.includes(ANSWER_SUBAGENT_TOOL), `${t} missing answer_subagent`);
+    assert.ok(prompt.includes(ASK_ORCHESTRATOR_TOOL), `${t} missing ask_orchestrator`);
+  }
+});
+
+test('ORCHESTRATION_TOOLS is exactly the four fully-qualified coordination tool names', () => {
+  assert.deepEqual(
+    new Set(ORCHESTRATION_TOOLS),
+    new Set([LIST_SUBAGENTS_TOOL, ASK_SUBAGENT_TOOL, ANSWER_SUBAGENT_TOOL, ASK_ORCHESTRATOR_TOOL]),
+  );
+  // Every coordination tool is namespaced on the in-process "orc" MCP server.
+  for (const name of ORCHESTRATION_TOOLS) {
+    assert.match(name, /^mcp__orc__/, `${name} not on the orc server`);
+  }
 });
 
 test('pipeline prompt encodes the canonical order (tests-first, tester twice)', () => {
