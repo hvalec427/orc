@@ -1,10 +1,12 @@
 # `config.json` reference
 
 `orc` reads a single JSON config that lists the **projects** you can launch agents into, plus
-optional defaults. It never writes this file — you create and edit it yourself.
+optional defaults. You can edit it by hand, or run `orc setup` to add/edit projects and the global
+defaults through a wizard (it preserves any keys it doesn't manage).
 
 - **Default location:** `~/.orc/config.json`
 - **Override:** `orc --config <path>`
+- **Wizard:** `orc setup` (Add / Edit project, Global settings, Apply CLAUDE.md, Remove project)
 
 If the file is missing or invalid, `orc` exits with an error and prints a sample config. The schema
 is validated with [zod](https://zod.dev) in `src/config.ts`; unknown keys are rejected (`.strict()`).
