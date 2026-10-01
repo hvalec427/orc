@@ -21,11 +21,15 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
         infos.map((info, i) => {
           const s = STATUS[info.status];
           const selected = i === selectedIndex;
+          // A child session (e.g. a merge agent spawned from a feature agent) renders indented
+          // beneath its parent with a `└` connector instead of a list number.
+          const isChild = info.parentId !== undefined;
+          const pad = isChild ? '   ' : ' ';
           return (
-            <Box key={info.id} flexDirection="column" marginTop={1}>
+            <Box key={info.id} flexDirection="column" marginTop={isChild ? 0 : 1}>
               <Text>
                 <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
-                <Text dimColor>{i + 1} </Text>
+                {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{i + 1} </Text>}
                 <Text color={s.color} bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
                   {s.icon}
                 </Text>
@@ -34,10 +38,10 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
                   <Text dimColor> [{info.template}]</Text>
                 ) : null}
               </Text>
-              <Text dimColor> ⟨{truncate(info.project, 26)}⟩</Text>
-              <Text dimColor> {truncate(info.ticket, 28)}</Text>
+              {isChild ? null : <Text dimColor>{pad}⟨{truncate(info.project, 26)}⟩</Text>}
+              {isChild ? null : <Text dimColor>{pad}{truncate(info.ticket, 28)}</Text>}
               <Text dimColor>
-                {' '}
+                {pad}
                 <Text color={s.color}>{s.label}</Text>
                 {info.metroPort !== undefined ? ` · :${info.metroPort}` : ''}
                 {info.totalCostUsd > 0 ? ` · $${info.totalCostUsd.toFixed(2)}` : ''}

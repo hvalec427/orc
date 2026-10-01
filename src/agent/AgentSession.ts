@@ -40,6 +40,8 @@ export interface AgentSessionInit {
   name: string;
   /** Which template the agent was launched from (selects prompt shape + tool policy). */
   template: AgentTemplate;
+  /** Parent agent id, for a nested child session (e.g. a merge agent under its feature agent). */
+  parentId?: string;
   /** Short ticket reference (for commit messages / display). May be empty. */
   ticket: string;
   /** The actual task instructions — the agent's first message. */
@@ -80,6 +82,8 @@ export class AgentSession extends EventEmitter {
   readonly id: string;
   readonly name: string;
   readonly template: AgentTemplate;
+  /** Parent agent id, for a nested child session (e.g. a merge agent under its feature agent). */
+  readonly parentId?: string;
   readonly ticket: string;
   private readonly prompt: string;
   private readonly magicLink?: string;
@@ -118,6 +122,7 @@ export class AgentSession extends EventEmitter {
     this.id = init.id;
     this.name = init.name;
     this.template = init.template;
+    this.parentId = init.parentId;
     this.ticket = init.ticket;
     this.prompt = init.prompt;
     this.magicLink = init.magicLink;
@@ -259,6 +264,7 @@ export class AgentSession extends EventEmitter {
       id: this.id,
       name: this.name,
       template: this.template,
+      parentId: this.parentId,
       project: this.project,
       ticket: this.ticket,
       branch: this.branch,

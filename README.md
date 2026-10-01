@@ -105,12 +105,14 @@ actually do). Steer it afterward with `i`.
 | -------------- | ----------------------------------------------- |
 | `n`            | new agent (pick project, then name + ticket)    |
 | `p`            | projects: install mobile CLAUDE.md into a repo   |
-| `↑`/`↓`, `Tab`, `hjkl` | switch selected agent                   |
+| `↑`/`↓`, `Tab`, `j`/`k` | switch selected agent                  |
+| `h` / `l`      | jump to parent / descend into its merge agent   |
 | `J` / `K`      | scroll the log down / up · `G` jumps back to live |
 | `1`–`9`        | jump to the nth agent                           |
 | `w`            | jump to the next agent waiting on you           |
 | `i` / `Enter`  | answer the selected agent                       |
 | `r`            | resume a crashed/finished agent (same session)  |
+| `m`            | merge the selected agent (spawns a nested merge agent) |
 | `x`            | stop (interrupt) the selected agent             |
 | `d`            | remove the agent + its worktree                 |
 | `q`            | quit (stops all agents)                         |
@@ -119,12 +121,20 @@ When an agent is in `default` permission mode and a tool needs approval, press `
 
 ### Merging an agent
 
-Merging is done by a dedicated **merge agent**, not a keybinding. When an agent reports `@@DONE@@`,
-start a new agent with `n`, pick the **Merge** template, and tell it which branches to merge (e.g.
-`merge agent/foo into master`). The merge agent runs directly in the base repo, so it can't delete
-the directory it's running in. (A feature agent asked to merge *itself* would `git worktree remove`
-its own working directory mid-command and permanently break its shell; that's why feature agents are
-told never to self-merge.)
+When a feature agent reports `@@DONE@@`, press `m` on it to merge its branch. This spawns a dedicated
+**merge agent** nested under that feature agent in the sidebar (shown indented with a `└` connector).
+Press `l` to descend from the feature agent into its merge agent and `h` to jump back to the parent.
+The merge agent is pre-prompted with the parent's branch, so it starts merging straight away — you
+don't have to name the branch yourself.
+
+You can also start a merge agent manually with `n` → **Merge** template if you want to merge arbitrary
+branches; in that case tell it which branches to merge (e.g. `merge agent/foo into master`).
+
+Either way, the merge agent runs directly in the base repo, **not** in the feature agent's worktree,
+so it can't delete the directory it's running in and it *can* clean up the parent's worktree. (A
+feature agent asked to merge *itself* would `git worktree remove` its own working directory
+mid-command and permanently break its shell; that's why feature agents never self-merge — the nested
+merge agent does it from the base repo instead.)
 
 - Before merging, the merge agent confirms the target branch (usually `master` or `development`) and
   makes sure the working tree is clean.
@@ -133,6 +143,7 @@ told never to self-merge.)
 - After a branch merges cleanly, the merge agent verifies it actually landed on the target branch,
   then deletes the now-merged branch and removes its worktree.
 - The merge agent won't push to any remote unless you explicitly ask.
+- Removing a feature agent with `d` also removes its nested merge agent.
 
 ## Config reference
 

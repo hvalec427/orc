@@ -44,6 +44,8 @@ export interface AgentInfo {
   name: string;
   /** Which template this agent was launched from. */
   template: AgentTemplate;
+  /** Parent agent id, for a nested child (e.g. a merge agent spawned from a feature agent). */
+  parentId?: string;
   /** Nice name of the project this agent belongs to. */
   project: string;
   ticket: string;

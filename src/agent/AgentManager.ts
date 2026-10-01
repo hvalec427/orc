@@ -28,8 +28,19 @@ export class AgentManager extends EventEmitter {
   }
 
   list(): AgentSession[] {
-    // Newest first: the most recently created agent shows at the top.
-    return [...this.agents.values()].reverse();
+    // Top-level agents newest-first (most recently created at the top), with each agent's
+    // child sessions (e.g. a merge agent) nested immediately beneath their parent. This fixes
+    // the display/navigation order so a parent is always adjacent to its children.
+    const all = [...this.agents.values()];
+    const childrenOf = (parentId: string) =>
+      all.filter((a) => a.parentId === parentId); // oldest-first among siblings
+    const topLevel = all.filter((a) => !a.parentId).reverse();
+    const ordered: AgentSession[] = [];
+    for (const parent of topLevel) {
+      ordered.push(parent);
+      ordered.push(...childrenOf(parent.id));
+    }
+    return ordered;
   }
 
   get(id: string): AgentSession | undefined {
@@ -58,6 +69,7 @@ export class AgentManager extends EventEmitter {
     ticket: string,
     prompt: string,
     magicLink?: string,
+    parentId?: string,
   ): Promise<AgentSession> {
     const project = this.config.projects.find((p) => p.name === projectName);
     if (!project) throw new Error(`Unknown project: ${projectName}`);
@@ -79,6 +91,7 @@ export class AgentManager extends EventEmitter {
       id,
       name,
       template,
+      parentId,
       ticket,
       prompt,
       magicLink: magicLink ?? project.magicLink,
@@ -95,10 +108,47 @@ export class AgentManager extends EventEmitter {
     return session;
   }
 
+  /** A given agent's child merge session, if one has already been spawned. */
+  mergeChildOf(id: string): AgentSession | undefined {
+    return [...this.agents.values()].find((a) => a.parentId === id && a.template === 'merge');
+  }
+
+  /**
+   * Spawn a merge agent nested under the given feature agent to integrate its branch into the
+   * project's base branch. The merge agent is a child session (shown indented beneath its parent
+   * in the sidebar) that runs in the base repo — NOT in the parent's worktree — so it can safely
+   * delete the parent's branch and worktree once the merge lands, which the parent can't do to
+   * itself without destroying its own working directory. The branch name is woven into the
+   * prompt so the child starts merging immediately. Only one merge child is kept per parent: a
+   * repeat request reselects the existing child instead of spawning a duplicate.
+   */
+  async mergeAgent(id: string): Promise<AgentSession> {
+    const source = this.agents.get(id);
+    if (!source) throw new Error(`Unknown agent: ${id}`);
+    const branch = source.branch;
+    if (!branch) {
+      throw new Error(`Agent "${source.name}" has no branch to merge (not a feature agent).`);
+    }
+    const existing = this.mergeChildOf(id);
+    if (existing) return existing;
+    const prompt = `Merge the branch \`${branch}\` into the project's base branch (usually \`master\`). ${
+      source.worktree ? `Its worktree is at \`${source.worktree}\`. ` : ''
+    }After the merge lands cleanly and you've verified it, delete the \`${branch}\` branch${
+      source.worktree ? ` and remove its worktree` : ''
+    }.`;
+    return this.create(source.project, 'merge', `merge ${branch}`, '', prompt, undefined, id);
+  }
+
   /** Stop and remove an agent, cleaning up its worktree and releasing its port. */
   async remove(id: string): Promise<void> {
     const session = this.agents.get(id);
     if (!session) return;
+
+    // Removing a parent also removes its nested children (e.g. a merge agent): they only exist
+    // in service of the parent, so leaving them orphaned in the sidebar would be confusing.
+    const children = [...this.agents.values()].filter((a) => a.parentId === id);
+    for (const child of children) await this.remove(child.id);
+
     await session.stop();
     this.agents.delete(id);
     if (session.metroPort !== undefined) {
@@ -138,6 +188,7 @@ export class AgentManager extends EventEmitter {
           id: info.id,
           name: info.name,
           template: info.template,
+          parentId: info.parentId,
           project: info.project,
           ticket: info.ticket,
           branch: info.branch,
