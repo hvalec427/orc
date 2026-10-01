@@ -584,6 +584,7 @@ export class AgentSession extends EventEmitter {
           ticket: this.ticket,
           magicLink: this.magicLink,
           project: this.project,
+          mergeStrategy: this.config.mergeStrategy,
         }),
       },
       stderr: (data) => {

@@ -155,6 +155,28 @@ test('ORCHESTRATION_TOOLS is exactly the four fully-qualified coordination tool 
   }
 });
 
+test('merge prompt defaults to rebase and bakes in the chosen strategy', () => {
+  const dflt = buildAppendPrompt({ name: 'm', template: 'merge' });
+  assert.match(dflt, /strategy for this project is \*\*rebase\*\*/, 'merge default is not rebase');
+  assert.ok(dflt.includes('git rebase --abort'), 'rebase default missing rebase abort');
+
+  const cases: Array<[Parameters<typeof buildAppendPrompt>[0]['mergeStrategy'], string]> = [
+    ['merge', 'git merge --abort'],
+    ['rebase', 'git rebase --abort'],
+    ['squash-merge', 'git merge --squash'],
+    ['squash-rebase', '--autosquash'],
+  ];
+  for (const [strategy, marker] of cases) {
+    const prompt = buildAppendPrompt({ name: 'm', template: 'merge', mergeStrategy: strategy });
+    assert.match(
+      prompt,
+      new RegExp(`strategy for this project is \\*\\*${strategy}\\*\\*`),
+      `merge prompt missing strategy label for ${strategy}`,
+    );
+    assert.ok(prompt.includes(marker), `merge prompt for ${strategy} missing "${marker}"`);
+  }
+});
+
 test('pipeline prompt encodes the canonical order (tests-first, tester twice)', () => {
   assert.deepEqual(
     [...PIPELINE_ORDER],
