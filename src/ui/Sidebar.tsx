@@ -39,11 +39,15 @@ export function Sidebar({ infos, selectedIndex }: { infos: AgentInfo[]; selected
                 <Text bold={info.status === 'needs_input' || info.status === 'needs_approval'}>
                   {s.icon}
                 </Text>
-                <Text color={s.color}> {s.label}</Text>
-                <Text dimColor> - </Text>
-                <Text bold={selected}>{truncate(info.name, isChild ? 16 : 20)}</Text>
-                <Text dimColor> - {info.template}</Text>
-                <Text dimColor> - {info.totalCostUsd > 0 ? `$${info.totalCostUsd.toFixed(2)}` : '$0.00'}</Text>
+                <Text bold={selected}> {truncate(info.name, isChild ? 20 : 22)}</Text>
+              </Text>
+              <Text dimColor>
+                {isChild ? '    ' : '  '}
+                <Text color={s.color}>{s.label}</Text>
+                {' · '}
+                {info.template}
+                {' · '}
+                {info.totalCostUsd > 0 ? `$${info.totalCostUsd.toFixed(2)}` : '$0.00'}
               </Text>
             </Box>
           );
