@@ -54,6 +54,13 @@ function feed(session: AgentSession, msg: unknown): void {
   (session as unknown as { handle(m: unknown): void }).handle(msg);
 }
 
+// Reach the private PreToolUse guard for AskUserQuestion without the real SDK.
+function guardAsk(session: AgentSession, toolName: string): Promise<unknown> {
+  return (
+    session as unknown as { guardAskUserQuestion(i: unknown): Promise<unknown> }
+  ).guardAskUserQuestion({ tool_name: toolName, tool_input: {}, cwd: '/tmp/demo' });
+}
+
 test('a DONE result marks the session done and keeps the commit hash', () => {
   const session = makeSession();
   feed(session, successResult('all set\n\n@@DONE@@ abc123'));
@@ -79,4 +86,19 @@ test('an error result before completion still surfaces as error', () => {
   const session = makeSession();
   feed(session, errorResult('error_during_execution', ['boom']));
   assert.equal(session.getInfo().status, 'error');
+});
+
+test('AskUserQuestion is denied and redirected to the NEEDS_INPUT sentinel', async () => {
+  const session = makeSession();
+  const out = (await guardAsk(session, 'AskUserQuestion')) as {
+    hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+  };
+  assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(out.hookSpecificOutput?.permissionDecisionReason ?? '', /@@NEEDS_INPUT@@/);
+});
+
+test('the AskUserQuestion guard leaves other tools untouched', async () => {
+  const session = makeSession();
+  const out = (await guardAsk(session, 'Read')) as { continue?: boolean };
+  assert.equal(out.continue, true);
 });

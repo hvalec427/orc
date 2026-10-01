@@ -607,10 +607,20 @@ export class AgentSession extends EventEmitter {
         if (line) this.addLog('system', `stderr: ${line}`);
       },
       // Runs for every tool call in every permission mode (even bypassPermissions, where
-      // canUseTool is skipped). We use it only to stop an oversized unbounded Read from
-      // reaching the SDK's file reader, which would otherwise throw and kill the session.
+      // canUseTool is skipped). We use it to stop an oversized unbounded Read from reaching
+      // the SDK's file reader (which would otherwise throw and kill the session), and to
+      // block the built-in AskUserQuestion tool, which orc doesn't service — orc's only
+      // human-input channel is the @@NEEDS_INPUT@@ sentinel, so AskUserQuestion would
+      // otherwise resolve with empty answers and the agent would continue without pausing.
       hooks: {
-        PreToolUse: [{ hooks: [(input) => this.guardLargeRead(input as PreToolUseHookInput)] }],
+        PreToolUse: [
+          {
+            hooks: [
+              (input) => this.guardLargeRead(input as PreToolUseHookInput),
+              (input) => this.guardAskUserQuestion(input as PreToolUseHookInput),
+            ],
+          },
+        ],
       },
     };
 
@@ -749,6 +759,32 @@ export class AgentSession extends EventEmitter {
       },
     };
     this.addLog('system', oneLine(`blocked oversized Read of ${filePath} (~${estTokens} tokens)`));
+    return Promise.resolve(deny);
+  }
+
+  /**
+   * PreToolUse guard: deny the SDK's built-in `AskUserQuestion` tool. orc has no handler for
+   * it — the only way an agent reaches the human is by ending its turn with the
+   * `@@NEEDS_INPUT@@` sentinel (see handleResult), which flips the agent to 'needs_input' and
+   * opens the reply box. Left to the SDK, `AskUserQuestion` resolves with empty answers in this
+   * non-interactive harness, so the agent "sees" a blank answer and barrels on without ever
+   * pausing. Denying it with guidance redirects the agent onto orc's real human-input flow.
+   * Runs in every permission mode (even bypassPermissions, where canUseTool is skipped).
+   */
+  private guardAskUserQuestion(input: PreToolUseHookInput): Promise<HookJSONOutput> {
+    if (input.tool_name !== 'AskUserQuestion') return Promise.resolve({ continue: true });
+    const deny: HookJSONOutput = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason:
+          `AskUserQuestion isn't supported here — it returns no answer and your turn would ` +
+          `continue as if the human said nothing. To ask the human, write your question (with ` +
+          `the options) as plain text and end your turn with ${NEEDS_INPUT}. The session pauses ` +
+          `and the human's reply arrives as your next message.`,
+      },
+    };
+    this.addLog('system', 'blocked AskUserQuestion — use the @@NEEDS_INPUT@@ sentinel instead');
     return Promise.resolve(deny);
   }
 
