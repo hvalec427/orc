@@ -623,7 +623,10 @@ export class AgentSession extends EventEmitter {
       // A deliberate stop() aborts the SDK subprocess, which surfaces here as an
       // AbortError. That's expected teardown, not a failure — stop() has already set the
       // 'stopped' status and closed the queue, so don't log it as an error or clobber it.
-      if (this.status === 'stopped') return;
+      // Likewise, once a turn resolved to 'done' we closed the input queue, and the SDK
+      // subprocess often exits non-zero on its way down ("Claude Code process exited with
+      // code 1"); that's post-completion teardown, not a failure, so keep the 'done' status.
+      if (this.status === 'stopped' || this.status === 'done') return;
       this.addLog('error', oneLine(`session error: ${(err as Error).message}`));
       this.setStatus('error');
       // The SDK session is gone; close our side so the input queue and its async iterator
@@ -634,6 +637,12 @@ export class AgentSession extends EventEmitter {
   }
 
   private handle(msg: SDKMessage): void {
+    // Once a turn has resolved to 'done', the SDK subprocess is tearing down (we closed the
+    // input queue). During that teardown it can emit a stray 'result' with subtype
+    // 'error_during_execution' ("only prompt commands are supported in streaming mode") and
+    // then exit non-zero. That's post-completion noise, not a real failure — ignore anything
+    // that arrives after we've already finished so it can't clobber the 'done' status.
+    if (this.status === 'done') return;
     switch (msg.type) {
       case 'system':
         if (msg.subtype === 'init') {
