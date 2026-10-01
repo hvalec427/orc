@@ -134,3 +134,38 @@ test('y confirms quit and stops all agents', async () => {
 
   unmount();
 });
+
+test('opening and closing the popup does not change the frame height', async () => {
+  // The popup ghosted on iTerm2's alt screen because the frame was one row TALLER while
+  // the popup was up (overlayRows under-reserved the bordered box). Closing then shrank
+  // the frame by a line, which Ink doesn't clear on the alt screen — so the box stayed
+  // drawn. Lock the invariant: the rendered line count must be identical open vs closed.
+  const manager = makeManager(true);
+  const { stdin, lastFrame, unmount } = render(
+    React.createElement(App, { manager, config }),
+  );
+  await delay();
+
+  const linesOf = () => (lastFrame() ?? '').split('\n').length;
+  const closedHeight = linesOf();
+
+  stdin.write('q');
+  await delay();
+  assert.match(lastFrame() ?? '', /Quit orc\?/, 'popup should be open after q');
+  assert.equal(
+    linesOf(),
+    closedHeight,
+    'frame height must not change when the popup opens',
+  );
+
+  stdin.write(ESC);
+  await delay();
+  assert.doesNotMatch(lastFrame() ?? '', /Quit orc\?/, 'popup should be closed');
+  assert.equal(
+    linesOf(),
+    closedHeight,
+    'frame height must return to the original after closing',
+  );
+
+  unmount();
+});

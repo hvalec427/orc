@@ -251,11 +251,20 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const maxInputLines = Math.max(1, rows - 2 - 1 - inputChrome - 6);
   const inputLines = Math.min(maxInputLines, visualRows(replyValue, inputWidth));
 
+  // Rows reserved for the bottom overlay. This MUST equal the occupant's real rendered
+  // height, and the overlay Box below is pinned to exactly this height so the two can
+  // never disagree: if the frame grew while an overlay was up and then shrank when it
+  // closed, Ink would leave the taller frame's trailing rows uncleared on an alt-screen
+  // terminal (iTerm2) — the overlay (e.g. the quit popup) would stay ghosted on screen.
+  //   - QuitConfirm: bordered box, 3 text lines → 2 + 3 = 5 rows.
+  //   - ApprovalModal: 6 rows.
+  //   - HelpBar: one line that can soft-wrap to a second → reserve 2 so the frame height
+  //     is stable whether or not the command list wraps.
   const overlayRows =
-    confirmingQuit ? 4
+    confirmingQuit ? 5
     : approvalPending ? 6
     : mode === 'input' ? inputChrome + inputLines
-    : 1;
+    : 2;
   const bodyHeight = Math.max(6, rows - 2 - overlayRows);
 
   return (
@@ -277,6 +286,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         />
       </Box>
 
+      <Box height={overlayRows} flexDirection="column" flexShrink={0}>
       {confirmingQuit ? (
         <QuitConfirm agentCount={infos.length} />
       ) : approvalPending && selected ? (
@@ -321,6 +331,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           }
         />
       )}
+      </Box>
     </Box>
   );
 }
