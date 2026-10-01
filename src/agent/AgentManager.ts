@@ -394,6 +394,16 @@ export class AgentManager extends EventEmitter {
     if (!child || child.parentId !== parentId) {
       throw new Error(`"${childId}" is not one of your subagents.`);
     }
+    // If the child is waiting on the human (needs_input), that turn is reserved for the human —
+    // sending now would hijack it. Refuse so only the human answers the subagent's question.
+    if (child.getInfo().status === 'needs_input') {
+      const pending = child.getInfo().question?.trim();
+      throw new Error(
+        `Subagent "${child.name}" is waiting for human input and cannot be asked right now` +
+          (pending ? `; it asked the human: ${pending}` : '') +
+          '. Wait for the human to answer it before asking again.',
+      );
+    }
     // Deliver the question (continues a live turn or resumes a finished child), then wait for the
     // turn to reach a terminal state so we can hand its summary back to the asking parent.
     child.send(question);
