@@ -23,11 +23,14 @@ export function AgentView({
   height,
   width,
   active,
+  preview,
 }: {
   session: AgentSession | undefined;
   height: number;
   width: number;
   active: boolean;
+  /** When set, show these "how to run/test this branch" instructions instead of the log. */
+  preview?: string;
 }) {
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
@@ -36,20 +39,24 @@ export function AgentView({
   const followRef = useRef(follow);
   followRef.current = follow;
 
-  // Reset scroll to live-tail when the selected agent changes.
+  // Reset scroll when the selected agent changes, or when toggling into/out of preview, so the
+  // view starts at the top of the preview and returns to live-tail afterwards.
   const sessionId = session?.id;
+  const previewing = preview !== undefined;
   useEffect(() => {
     setFollow(true);
     setPaused(false);
     setScrollTop(0);
-  }, [sessionId]);
+  }, [sessionId, previewing]);
 
   const bodyRows = Math.max(3, height - 3);
   const contentWidth = Math.max(20, width - 4);
 
-  // Flatten log entries into wrapped display lines.
+  // Flatten the log entries — or, while previewing, the instruction text — into wrapped lines.
   const lines: DLine[] = [];
-  if (session) {
+  if (previewing) {
+    for (const t of wrapText(preview, contentWidth)) lines.push({ kind: 'system', text: t });
+  } else if (session) {
     for (const e of session.getEvents()) {
       const wrapped = wrapText(e.text, contentWidth);
       if (wrapped.length === 0) {
@@ -61,7 +68,9 @@ export function AgentView({
   }
   const maxTop = Math.max(0, lines.length - bodyRows);
   maxTopRef.current = maxTop;
-  const top = follow ? maxTop : Math.min(scrollTop, maxTop);
+  // The preview is a static document: start at the top and let the reader scroll, rather than
+  // auto-tailing to the bottom like the live log.
+  const top = previewing ? Math.min(scrollTop, maxTop) : follow ? maxTop : Math.min(scrollTop, maxTop);
 
   useInput(
     (input) => {
@@ -101,16 +110,18 @@ export function AgentView({
   while (windowLines.length < bodyRows) windowLines.push({ kind: 'text', text: '' });
 
   const behind = maxTop - top;
-  const scrollLabel = follow
-    ? 'live'
-    : paused
-      ? behind > 0
-        ? `⏸ scroll paused ↑${behind} (p:resume)`
-        : '⏸ scroll paused (p:resume)'
-      : maxTop === 0
-        ? 'live'
-        : `↑${behind} (G:bottom)`;
-  const labelColor = follow ? 'green' : paused ? 'magenta' : 'yellow';
+  const scrollLabel = previewing
+    ? 'preview (P:close)'
+    : follow
+      ? 'live'
+      : paused
+        ? behind > 0
+          ? `⏸ scroll paused ↑${behind} (p:resume)`
+          : '⏸ scroll paused (p:resume)'
+        : maxTop === 0
+          ? 'live'
+          : `↑${behind} (G:bottom)`;
+  const labelColor = previewing ? 'cyan' : follow ? 'green' : paused ? 'magenta' : 'yellow';
 
   return (
     <Box

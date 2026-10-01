@@ -8,8 +8,9 @@ import { InputBar } from './InputBar.js';
 import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
 import { visualRows } from './layout.js';
+import { buildPreviewInstructions } from '../previewInstructions.js';
 
-type Mode = 'list' | 'new' | 'input';
+type Mode = 'list' | 'new' | 'input' | 'preview';
 
 export function App({ manager, config }: { manager: AgentManager; config: OrcConfig }) {
   const { exit } = useApp();
@@ -106,6 +107,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         }
         return;
       }
+      // In preview mode the body shows the run/test instructions; P or Esc closes it. Scroll keys
+      // (J/K/G/p) fall through to AgentView's own handler, so we only swallow the rest here to keep
+      // the overlay from also triggering list navigation/actions.
+      if (mode === 'preview') {
+        if (input === 'P' || key.escape) setMode('list');
+        return;
+      }
       if (input === 'q') {
         setConfirmingQuit(true);
         return;
@@ -184,6 +192,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
             if (!existing) setNotice(`integrating ${branch}`);
           })
           .catch((err) => setNotice(`integrate failed: ${(err as Error).message}`));
+      } else if (input === 'P' && selected) {
+        // Show orc's generated "how to run/test this branch" instructions inside the agent window.
+        setMode('preview');
       } else if (input === 'd' && selected) {
         const id = selected.id;
         // Move selection to the next agent (or previous if deleting the last).
@@ -193,7 +204,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         void manager.remove(id).then(() => setNotice(`deleted ${id}`));
       }
     },
-    { isActive: mode === 'list' && !approvalPending },
+    { isActive: (mode === 'list' || mode === 'preview') && !approvalPending },
   );
 
   if (mode === 'new') {
@@ -267,6 +278,17 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     : 2;
   const bodyHeight = Math.max(6, rows - 2 - overlayRows);
 
+  // While previewing, build orc's "how to run/test this branch" instructions for the selected
+  // agent from its project config (type, port, magic link) and worktree. Looked up by project name
+  // since the session doesn't expose its ProjectConfig directly.
+  const previewText =
+    mode === 'preview' && selected
+      ? buildPreviewInstructions(
+          selected.getInfo(),
+          manager.projects().find((p) => p.name === selected.project) ?? config.projects[0],
+        )
+      : undefined;
+
   return (
     <Box flexDirection="column">
       <Box paddingX={1}>
@@ -282,7 +304,8 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           session={selected}
           height={bodyHeight}
           width={(stdout?.columns ?? 100) - 36}
-          active={mode === 'list' && !approvalPending}
+          active={(mode === 'list' || mode === 'preview') && !approvalPending}
+          preview={previewText}
         />
       </Box>
 
@@ -324,6 +347,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           hasChild={!!selected && !!manager.firstChildOf(selected.id)}
           hasWaiting={!!manager.firstWaiting()}
           selectedStatus={selected?.getInfo().status}
+          previewing={mode === 'preview'}
           canMerge={
             !!selected?.getInfo().branch &&
             selected.getInfo().status !== 'working' &&
@@ -358,6 +382,7 @@ function HelpBar({
   hasChild,
   hasWaiting,
   selectedStatus,
+  previewing,
   canMerge,
 }: {
   notice: string;
@@ -367,6 +392,7 @@ function HelpBar({
   hasChild: boolean;
   hasWaiting: boolean;
   selectedStatus: AgentStatus | undefined;
+  previewing: boolean;
   canMerge: boolean;
 }) {
   // An agent is "dead" (retryable) when its last turn ended; stop() only does
@@ -390,6 +416,8 @@ function HelpBar({
   if (isDead) agent.push('r:resume');
   if (canMerge) agent.push('m:integrate');
   if (hasSession && !isDead) agent.push('x:stop');
+  // P shows orc's generated "how to run/test this branch" instructions inside the agent window.
+  if (hasSession) agent.push(previewing ? 'P:close preview' : 'P:preview');
   if (hasSession) agent.push('d:delete');
 
   return (
