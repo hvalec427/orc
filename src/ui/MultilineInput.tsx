@@ -138,7 +138,7 @@ export function MultilineInput({
   return (
     <Box flexDirection="column">
       {showPlaceholder ? (
-        <Text dimColor wrap="truncate">
+        <Text dimColor wrap="wrap">
           {renderWithCursor('', 0, isActive, focusColor, placeholder)}
         </Text>
       ) : (
@@ -180,13 +180,13 @@ function renderLines(
     windowed = lines.slice(start, start + maxLines);
   }
 
-  // `wrap="truncate"` keeps each logical line on exactly one terminal row. A line
-  // that soft-wrapped would add rows the parent layout didn't budget for, pushing
-  // the frame past the terminal height and reintroducing the redraw flicker.
+  // `wrap="wrap"` lets a logical line that is wider than the terminal soft-wrap
+  // onto the next row instead of being truncated with an ellipsis. The window
+  // above still bounds how many logical lines we render.
   return windowed.map((line, i) => {
     const lineIndex = start + i;
     return (
-      <Text key={lineIndex} wrap="truncate">
+      <Text key={lineIndex} wrap="wrap">
         {lineIndex === cursorLine
           ? renderWithCursor(line, cursorCol, active, focusColor)
           : line || ' '}
