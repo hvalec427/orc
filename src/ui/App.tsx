@@ -484,14 +484,36 @@ function HelpBar({
   if (hasSession) agent.push(selectedArchived ? 'u:unarchive' : 'd:archive');
   if (hasSession) agent.push('D:delete');
 
+  // Render each "key:description" entry with the key highlighted in yellow and
+  // the description dimmed. Entries are space-separated.
+  const renderCommands = (commands: string[]) =>
+    commands.map((cmd, index) => {
+      const sep = cmd.indexOf(':');
+      const key = sep === -1 ? cmd : cmd.slice(0, sep);
+      const desc = sep === -1 ? '' : cmd.slice(sep);
+      return (
+        <Text key={cmd}>
+          {index > 0 ? ' ' : ''}
+          <Text color="yellow">{key}</Text>
+          <Text dimColor>{desc}</Text>
+        </Text>
+      );
+    });
+
   return (
     <Box paddingX={1} justifyContent="space-between">
-      <Text dimColor>
-        <Text bold>global</Text> {global.join(' ')}
+      <Text>
+        <Text bold dimColor>
+          global
+        </Text>{' '}
+        {renderCommands(global)}
         {agent.length > 0 ? (
           <>
-            {'  ·  '}
-            <Text bold>agent</Text> {agent.join(' ')}
+            <Text dimColor>{'  ·  '}</Text>
+            <Text bold dimColor>
+              agent
+            </Text>{' '}
+            {renderCommands(agent)}
           </>
         ) : null}
       </Text>
