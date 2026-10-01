@@ -120,7 +120,6 @@ export function NewAgentForm({
     else if (key.return) {
       const proj = projects[cursor];
       setProject(proj.name);
-      setMagicLink('');
       setStep(afterProject(proj));
     }
   });
