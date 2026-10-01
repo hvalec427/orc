@@ -1,12 +1,33 @@
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
-import { query, type Query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync, statSync } from 'node:fs';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
+import {
+  query,
+  type Query,
+  type Options,
+  type SDKMessage,
+  type PreToolUseHookInput,
+  type HookJSONOutput,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { AgentInfo, AgentStatus, AgentTemplate, LogEntry, ProjectConfig, PendingApproval } from '../types.js';
 import { InputQueue } from './InputQueue.js';
 import { buildAppendPrompt, NEEDS_INPUT, DONE } from '../agentPrompt.js';
 import { createWorktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
+
+/**
+ * The SDK aborts the whole session (not just the turn) when a `Read` returns more than
+ * ~25 000 tokens: its file reader throws a `MaxFileReadTokenExceededError` that escapes the
+ * turn loop and kills the streaming query. It estimates tokens as `chars / 4`, so the fatal
+ * threshold is ~100 000 characters. We guard reads *before* they hit that path (see
+ * `guardLargeRead`) and deny unbounded ones a bit below the limit, turning a session-killing
+ * crash into ordinary tool feedback the agent can recover from.
+ */
+const READ_TOKEN_LIMIT = 25_000;
+const CHARS_PER_TOKEN = 4;
+/** Deny unbounded reads at 90% of the limit to leave headroom over the chars/4 estimate. */
+const MAX_UNBOUNDED_READ_BYTES = Math.floor(READ_TOKEN_LIMIT * CHARS_PER_TOKEN * 0.9);
 
 /**
  * Collapse arbitrary (possibly multi-line) text into a single, length-capped line.
@@ -196,6 +217,16 @@ export class AgentSession extends EventEmitter {
    */
   send(text: string): void {
     this.question = undefined;
+    const trimmed = text.trim();
+
+    // Slash commands. Control-style ones (/stop, /model, /commands) map to the SDK's
+    // streaming control API and are handled here without starting a turn. Everything else
+    // — custom .claude/commands and prompt-expanding built-ins like /compact — is forwarded
+    // verbatim as prompt text; the SDK expands it inside the turn. (The SDK rejects any
+    // non-prompt message pushed onto the input stream with "only prompt commands are
+    // supported in streaming mode", so control commands must never be enqueued.)
+    if (trimmed.startsWith('/') && this.handleSlashCommand(trimmed)) return;
+
     if (this.isDead()) {
       this.resumeWith(text);
       return;
@@ -203,6 +234,59 @@ export class AgentSession extends EventEmitter {
     this.addLog('input', `you: ${text}`);
     this.setStatus('working');
     this.queue.push(text);
+  }
+
+  /**
+   * Route the control-style slash commands to the SDK's streaming control API. Returns true
+   * if the command was handled here (caller should stop), false to let it fall through and
+   * be sent as an ordinary prompt command (custom commands, /compact, etc.).
+   */
+  private handleSlashCommand(text: string): boolean {
+    const [command, ...rest] = text.slice(1).split(/\s+/);
+    const arg = rest.join(' ').trim();
+    switch (command.toLowerCase()) {
+      case 'stop':
+      case 'interrupt':
+        this.addLog('input', `you: /${command}`);
+        void this.stop();
+        return true;
+      case 'model':
+        this.addLog('input', `you: ${text}`);
+        void this.runControl(
+          () => this.query?.setModel(arg || undefined),
+          arg ? `model set to ${arg}` : 'model reset to default',
+        );
+        return true;
+      case 'commands':
+        this.addLog('input', 'you: /commands');
+        void this.runControl(async () => {
+          const cmds = (await this.query?.supportedCommands()) ?? [];
+          const names = cmds.map((c) => `/${c.name}`).join(', ');
+          this.addLog('system', names ? `available commands: ${names}` : 'no commands available');
+        });
+        return true;
+      default:
+        // Not a control command — forward as a prompt command.
+        return false;
+    }
+  }
+
+  /**
+   * Run an SDK control request against the live query. These only work in streaming input
+   * mode on a running session; if the session is dead or the call fails, surface it as a
+   * log line instead of letting the rejection bubble into an unhandled rejection.
+   */
+  private async runControl(fn: () => Promise<unknown> | undefined, okMessage?: string): Promise<void> {
+    if (!this.query || this.isDead()) {
+      this.addLog('error', 'command needs a running session — retry the agent first');
+      return;
+    }
+    try {
+      await fn();
+      if (okMessage) this.addLog('system', okMessage);
+    } catch (err) {
+      this.addLog('error', oneLine(`command failed: ${(err as Error).message}`));
+    }
   }
 
   /** Resume a dead/finished agent and nudge it to continue. */
@@ -325,6 +409,12 @@ export class AgentSession extends EventEmitter {
         const line = oneLine(data);
         if (line) this.addLog('system', `stderr: ${line}`);
       },
+      // Runs for every tool call in every permission mode (even bypassPermissions, where
+      // canUseTool is skipped). We use it only to stop an oversized unbounded Read from
+      // reaching the SDK's file reader, which would otherwise throw and kill the session.
+      hooks: {
+        PreToolUse: [{ hooks: [(input) => this.guardLargeRead(input as PreToolUseHookInput)] }],
+      },
     };
 
     if (readOnly) {
@@ -373,6 +463,51 @@ export class AgentSession extends EventEmitter {
     }
 
     return opts;
+  }
+
+  /**
+   * PreToolUse guard: deny an unbounded `Read` of a file large enough to trip the SDK's
+   * 25k-token file-read limit. Without this, the SDK's reader throws a
+   * MaxFileReadTokenExceededError that escapes the turn loop and kills the whole session
+   * (surfacing as "turn ended: error_during_execution" then "process exited with code 1").
+   * Denying with guidance keeps the session alive and nudges the agent to page the file
+   * with offset/limit or search it with Grep. Reads that already pass `limit` are left
+   * alone — the SDK bounds those itself — as are non-Read tools.
+   */
+  private guardLargeRead(input: PreToolUseHookInput): Promise<HookJSONOutput> {
+    const allow: HookJSONOutput = { continue: true };
+    if (input.tool_name !== 'Read') return Promise.resolve(allow);
+    const toolInput = (input.tool_input ?? {}) as { file_path?: unknown; limit?: unknown };
+    // A bounded read (limit set) is safe: the SDK caps how much it returns.
+    if (toolInput.limit !== undefined && toolInput.limit !== null) return Promise.resolve(allow);
+    const filePath = toolInput.file_path;
+    if (typeof filePath !== 'string' || !filePath) return Promise.resolve(allow);
+
+    let bytes: number;
+    try {
+      const abs = isAbsolute(filePath) ? filePath : resolvePath(input.cwd, filePath);
+      const stat = statSync(abs);
+      if (!stat.isFile()) return Promise.resolve(allow);
+      bytes = stat.size;
+    } catch {
+      // Can't stat it (missing/permission) — let the SDK handle the real error.
+      return Promise.resolve(allow);
+    }
+    if (bytes <= MAX_UNBOUNDED_READ_BYTES) return Promise.resolve(allow);
+
+    const estTokens = Math.round(bytes / CHARS_PER_TOKEN);
+    const deny: HookJSONOutput = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason:
+          `File is ~${estTokens.toLocaleString()} tokens, over the ${READ_TOKEN_LIMIT.toLocaleString()}-token ` +
+          `read limit. Reading it whole would abort the session. Re-read a portion with the ` +
+          `\`offset\` and \`limit\` parameters, or use Grep to search for the content you need.`,
+      },
+    };
+    this.addLog('system', oneLine(`blocked oversized Read of ${filePath} (~${estTokens} tokens)`));
+    return Promise.resolve(deny);
   }
 
   // ---- main loop ----------------------------------------------------------
