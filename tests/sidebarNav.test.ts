@@ -199,6 +199,45 @@ test('launching a subagent keeps focus on the parent, not the new child', async 
   unmount();
 });
 
+test('integrating an agent (m) keeps focus on the source, not the merge child', async () => {
+  const manager = makeManager();
+
+  // The source agent must be mergeable: it has a branch and its turn has ended (not working/booting).
+  const src = session({ id: 'p1', name: 'parent-one', template: 'feature', status: 'done' });
+  (src.getInfo() as any).branch = 'feat/x';
+  const c1 = session({ id: 'c1', name: 'child-one', parentId: 'p1', template: 'reviewer', status: 'done' });
+  const c2 = session({ id: 'c2', name: 'child-two', parentId: 'p1', template: 'tester', status: 'done' });
+  const p2 = session({ id: 'p2', name: 'parent-two', template: 'feature', status: 'working' });
+  const ordered = [src, c1, c2, p2];
+  manager.list = () => ordered;
+  manager.active = () => ordered.filter((s: any) => !s.getInfo().archived);
+  manager.get = (id: string) => ordered.find((s: any) => s.id === id);
+  manager.childrenOf = (id: string) => ordered.filter((s: any) => s.getInfo().parentId === id);
+
+  // Model mergeAgent: spawn a merge subagent nested under the source and resolve with it, mirroring
+  // AgentManager so App's `m` handler runs its real path.
+  let created: any;
+  manager.mergeAgent = async (id: string) => {
+    created = session({ id: 'm1', name: 'merge-child', parentId: id, template: 'merge', status: 'working' });
+    ordered.push(created);
+    manager.emit('update');
+    return created;
+  };
+
+  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
+
+  stdin.write('m');
+  await delay();
+
+  assert.ok(created, 'mergeAgent should have been invoked');
+  // Focus must remain on the source; it must NOT jump to the freshly spawned merge child.
+  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one', 'focus stays on the source after integrating');
+
+  unmount();
+});
+
 test('l does nothing on a parent with no subagents', async () => {
   const manager = makeManager();
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));

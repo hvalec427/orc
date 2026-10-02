@@ -201,8 +201,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         setNotice(existing ? `integrate agent for ${branch} already running` : `integrating ${branch}…`);
         manager
           .mergeAgent(id)
-          .then((s) => {
-            setSelectedId(s.id);
+          .then(() => {
+            // The integrate agent is a subagent nested under the source. Stay on the source so
+            // the view keeps its place instead of jumping to the freshly spawned merge child.
             if (!existing) setNotice(`integrating ${branch}`);
           })
           .catch((err) => setNotice(`integrate failed: ${(err as Error).message}`));
