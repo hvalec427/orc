@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -22,8 +22,6 @@ import {
   buildReexecArgv,
   TmuxController,
 } from '../src/tmux/TmuxController.js';
-import { formatLogLineAnsi } from '../src/ui/logFormat.js';
-import type { LogEntry } from '../src/types.js';
 
 /** A fake tmux runner that records every argv and returns canned stdout per call. */
 function fakeRunner(stdouts: string[] = []) {
@@ -40,10 +38,6 @@ function fakeRunner(stdouts: string[] = []) {
 
 function tmpLogsDir(): string {
   return mkdtempSync(join(tmpdir(), 'orc-tmux-'));
-}
-
-function entry(over: Partial<LogEntry> & { id: number }): LogEntry {
-  return { kind: 'text', text: '', done: true, ...over };
 }
 
 describe('paneSlug', () => {
@@ -206,102 +200,6 @@ describe('buildReexecArgv', () => {
   });
 });
 
-describe('TmuxController file mirroring (fake runner)', () => {
-  test('registerAgent creates the pane-log file', () => {
-    const logsDir = tmpLogsDir();
-    try {
-      const { run } = fakeRunner();
-      const c = new TmuxController({ run, logsDir });
-      c.registerAgent('a1', 'alpha', 'feature');
-      assert.ok(existsSync(paneLogPath(logsDir, 'a1')), 'the pane-log file exists after register');
-    } finally {
-      rmSync(logsDir, { recursive: true, force: true });
-    }
-  });
-
-  test('unregisterAgent deletes the pane-log file', () => {
-    const logsDir = tmpLogsDir();
-    try {
-      const { run } = fakeRunner();
-      const c = new TmuxController({ run, logsDir });
-      c.registerAgent('a1', 'alpha', 'feature');
-      c.unregisterAgent('a1');
-      assert.ok(!existsSync(paneLogPath(logsDir, 'a1')), 'the pane-log file is gone after unregister');
-    } finally {
-      rmSync(logsDir, { recursive: true, force: true });
-    }
-  });
-
-  test('mirror appends the formatted log, growing the file and never duplicating', () => {
-    const logsDir = tmpLogsDir();
-    try {
-      const { run } = fakeRunner();
-      const c = new TmuxController({ run, logsDir });
-      c.registerAgent('a1', 'alpha', 'feature');
-
-      c.mirror('a1', [entry({ id: 0, kind: 'text', text: 'one', done: true })]);
-      const afterFirst = readFileSync(paneLogPath(logsDir, 'a1'), 'utf8');
-      assert.equal(afterFirst, formatLogLineAnsi(entry({ id: 0, kind: 'text', text: 'one', done: true })) + '\n');
-
-      // A growing event list: the old entry plus a new one. Only the new line is appended.
-      c.mirror('a1', [
-        entry({ id: 0, kind: 'text', text: 'one', done: true }),
-        entry({ id: 1, kind: 'tool', text: 'two', done: true }),
-      ]);
-      const afterSecond = readFileSync(paneLogPath(logsDir, 'a1'), 'utf8');
-      const expected =
-        formatLogLineAnsi(entry({ id: 0, kind: 'text', text: 'one', done: true })) +
-        '\n' +
-        formatLogLineAnsi(entry({ id: 1, kind: 'tool', text: 'two', done: true })) +
-        '\n';
-      assert.equal(afterSecond, expected, 'file is the concatenation of both appends, no duplication');
-
-      // A repeat call with the SAME events appends nothing.
-      c.mirror('a1', [
-        entry({ id: 0, kind: 'text', text: 'one', done: true }),
-        entry({ id: 1, kind: 'tool', text: 'two', done: true }),
-      ]);
-      assert.equal(readFileSync(paneLogPath(logsDir, 'a1'), 'utf8'), expected, 'idempotent re-mirror');
-    } finally {
-      rmSync(logsDir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('TmuxController.showAgent (fake runner)', () => {
-  test('respawns the viewer pane tailing the selected agent log', async () => {
-    const logsDir = tmpLogsDir();
-    try {
-      // The controller discovers panes first; the fake returns the orc pane (%1 index 0) and the
-      // viewer pane (%2 index 1). Then showAgent must respawn %2 with the tail command.
-      const { run, calls } = fakeRunner(['%1 0\n%2 1']);
-      const c = new TmuxController({ run, logsDir }) as unknown as {
-        adopt?: () => Promise<void> | void;
-        attach?: () => Promise<void> | void;
-        discoverPanes?: () => Promise<void> | void;
-        showAgent(id?: string): Promise<void> | void;
-        registerAgent(id: string, name: string, template: string): void;
-      };
-      c.registerAgent('a1', 'alpha', 'feature');
-
-      // Drive whatever discovery entry point the controller exposes to learn the pane ids.
-      const discover = c.adopt ?? c.attach ?? c.discoverPanes;
-      if (discover) await discover.call(c);
-
-      await c.showAgent('a1');
-
-      const tail = viewerTailCommand(paneLogPath(logsDir, 'a1'));
-      // The respawn-pane call must target the viewer pane (%2) with the tail command as its last arg.
-      const respawn = calls.find((a) => a[0] === 'respawn-pane' && a.includes('-k'));
-      assert.ok(respawn, 'a respawn-pane -k call was issued');
-      assert.equal(respawn![respawn!.length - 1], tail, 'the viewer tails the agent log');
-      assert.ok(respawn!.includes('%2'), 'the respawn targets the discovered viewer pane');
-    } finally {
-      rmSync(logsDir, { recursive: true, force: true });
-    }
-  });
-});
-
 describe('TmuxController.adoptInside (fake runner)', () => {
   test('splits its own viewer pane off the current pane and respawns only that pane', async () => {
     const logsDir = tmpLogsDir();
@@ -319,10 +217,12 @@ describe('TmuxController.adoptInside (fake runner)', () => {
       assert.deepEqual(split, argvSplitRightPrint('%5'));
 
       await c.showAgent('a1');
-      const tail = viewerTailCommand(paneLogPath(logsDir, 'a1'));
+      // showAgent now respawns the DRIVER (not tail -F) into the pane orc created (%9), never %5.
       const respawn = calls.find((a) => a[0] === 'respawn-pane' && a.includes('-k'));
       assert.ok(respawn, 'a respawn-pane -k call was issued');
-      assert.equal(respawn![respawn!.length - 1], tail, 'the viewer tails the agent log');
+      const cmd = respawn![respawn!.length - 1] as string;
+      assert.ok(!cmd.includes('tail -F'), 'the viewer no longer tails the log');
+      assert.ok(cmd.includes('while :') || cmd.includes("trap '' INT"), 'the viewer runs the driver loop');
       assert.ok(respawn!.includes('%9'), 'the respawn targets the pane orc created, not %5');
       assert.ok(!respawn!.includes('%5'), "orc never respawns the user's own pane");
     } finally {

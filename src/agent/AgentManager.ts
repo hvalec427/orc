@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events';
-import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { paneLogPath } from '../tmux/TmuxController.js';
+import { capOutput } from '../tmux/paneRun.js';
 import type { AgentStatus, AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { needsWorktree, isWorkerTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
@@ -78,6 +81,8 @@ export class AgentManager extends EventEmitter {
    * it — auto-archive is a convenience for the first completion, not a permanent policy.)
    */
   private readonly autoArchived = new Set<string>();
+  /** The agent currently shown in the tmux viewer pane; only it can run commands live in-pane. */
+  private selectedId?: string;
 
   constructor(
     private readonly config: OrcConfig,
@@ -102,8 +107,9 @@ export class AgentManager extends EventEmitter {
     return this.config.projects;
   }
 
-  /** Re-point the tmux viewer pane at the given agent's log (inert when tmux is off). */
+  /** Re-point the tmux viewer pane at the given agent (inert when tmux is off). */
   showAgentInPane(id?: string): void {
+    this.selectedId = id;
     this.tmux?.showAgent(id);
   }
 
@@ -371,12 +377,11 @@ export class AgentManager extends EventEmitter {
       cutWorktreeOnDemand,
       orchestration,
     });
-    // Mirror this agent's rendered log into its tmux pane file on every update (inert when tmux off).
+    // Provision this agent's tmux pane IPC (FIFO + done/ids dirs; inert when tmux is off).
     this.tmux?.registerAgent(id, name, template);
     session.on('update', () => {
       this.autoArchiveIfDoneChild(session);
       this.emit('update');
-      this.tmux?.mirror(id, session.getEvents());
     });
     this.agents.set(id, session);
     return session;
@@ -617,6 +622,56 @@ export class AgentManager extends EventEmitter {
     });
   }
 
+  /**
+   * Run a shell command for agent `id`, backing its `mcp__orc__run` tool. When the agent is the one
+   * selected in the tmux viewer pane, the command runs LIVE in that pane (via the driver) so the human
+   * watches it execute; otherwise (unselected, or tmux off) it runs in-process and its output is
+   * appended to the agent's pane log so it's still visible when the human later selects it.
+   */
+  private async runInPaneFor(id: string, cmd: string, signal: AbortSignal): Promise<{ output: string; rc: number }> {
+    // Try the live pane first, but only for the currently-selected agent.
+    if (this.tmux && this.selectedId === id) {
+      const res = await this.tmux.runInPane(id, cmd, signal);
+      if (res) return res;
+    }
+    return this.runInProcess(id, cmd, signal);
+  }
+
+  /** In-process fallback: run `cmd` via bash, capture combined output, mirror it to the pane log. */
+  private runInProcess(id: string, cmd: string, signal: AbortSignal): Promise<{ output: string; rc: number }> {
+    return new Promise((resolve) => {
+      const logPath = paneLogPath(join(homedir(), '.orc', 'panes'), id);
+      const append = (text: string) => {
+        try {
+          appendFileSync(logPath, text);
+        } catch {
+          /* best-effort mirroring */
+        }
+      };
+      append(`$ ${cmd}\n`);
+      let out = '';
+      const child = spawn('bash', ['-c', cmd], { signal });
+      child.stdout?.on('data', (d: Buffer) => {
+        out += d.toString();
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        out += d.toString();
+      });
+      child.on('error', () => {
+        // AbortError or spawn failure → report a non-zero rc with whatever was captured.
+        const capped = capOutput(out);
+        append(capped);
+        resolve({ output: capped, rc: 130 });
+      });
+      child.on('close', (code, sig) => {
+        const capped = capOutput(out);
+        append(capped);
+        const rc = sig ? 128 + 2 : code ?? -1; // a signalled kill (e.g. SIGINT) reports 130.
+        resolve({ output: capped, rc });
+      });
+    });
+  }
+
   /** Build the orchestration callbacks a session at `id` exposes as its in-process MCP tools. */
   private orchestrationCallbacks(id: string): {
     listSubagents: ListSubagents;
@@ -625,6 +680,7 @@ export class AgentManager extends EventEmitter {
     askOrchestrator: AskOrchestrator;
     reportToOrchestrator: ReportToOrchestrator;
     spawnSubagent: SpawnSubagent;
+    runInPane: (cmd: string, signal: AbortSignal) => Promise<{ output: string; rc: number }>;
   } {
     return {
       listSubagents: () => this.listSubagentsOf(id),
@@ -633,6 +689,7 @@ export class AgentManager extends EventEmitter {
       askOrchestrator: (args) => this.askParent(id, args.question),
       reportToOrchestrator: (args) => this.reportToParent(id, args.note),
       spawnSubagent: (args) => this.spawnSubagentFor(id, args),
+      runInPane: (cmd, signal) => this.runInPaneFor(id, cmd, signal),
     };
   }
 

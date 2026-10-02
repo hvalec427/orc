@@ -12,6 +12,14 @@ export const LAUNCH_TOOL = 'mcp__orc__launch_feature_agents';
 export const RUN_STEP_TOOL = 'mcp__orc__run_pipeline_step';
 
 /**
+ * The custom shell tool EVERY agent gets in place of the built-in Bash tool. Commands run through it
+ * execute live in the shared tmux viewer pane when this agent is the selected one (otherwise
+ * in-process); the agent sees only the final output. The built-in Bash tool is disabled, so this is
+ * the agent's ONLY way to run shell commands.
+ */
+export const RUN_TOOL = 'mcp__orc__run';
+
+/**
  * The in-process MCP tool the general-purpose `worker` agent uses to cut+adopt its own worktree on
  * demand, the first time a task requires editing code. Until it calls this it runs in the base repo
  * with no branch, so change-free tasks (answering, deleting a branch, inspecting) never cut one.
@@ -131,7 +139,7 @@ export interface PromptParams {
  * than duplicated into each template builder.
  */
 export function buildAppendPrompt(params: PromptParams): string {
-  return `${buildTemplatePrompt(params)}\n\n${COORDINATION_SECTION}\n\n${BREVITY_SECTION}`;
+  return `${buildTemplatePrompt(params)}\n\n${SHELL_SECTION}\n\n${COORDINATION_SECTION}\n\n${BREVITY_SECTION}`;
 }
 
 /** The template-specific body of the append prompt (before the shared coordination section). */
@@ -232,6 +240,18 @@ Avoiding collisions on shared code:
 
 These coordination tools only pass messages within your group; they never modify the codebase, so you
 may use them even when you are a read-only agent.`;
+
+/**
+ * Appended to every agent: the built-in Bash tool is disabled, so all shell work goes through the
+ * custom ${RUN_TOOL} tool. This is what makes an agent's commands show up live in the tmux viewer
+ * pane when it is the selected agent.
+ */
+const SHELL_SECTION = `### Running shell commands
+
+Run EVERY shell command through the \`${RUN_TOOL}\` tool (builds, tests, git, file inspection — all of
+it). The built-in Bash tool is disabled; \`${RUN_TOOL}\` is your only shell. It returns the command's
+combined output and exit code, and when you are the selected agent your command runs live in the tmux
+viewer pane so the human can watch it.`;
 
 /** Appended to every agent: keep human-facing messages terse to save tokens. */
 const BREVITY_SECTION = `### Keep messages brief

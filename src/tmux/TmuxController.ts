@@ -1,14 +1,17 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { LogEntry } from '../types.js';
+import { randomUUID } from 'node:crypto';
 import {
-  type MirrorState,
-  INITIAL_MIRROR_STATE,
-  computeMirrorAppend,
-} from '../ui/logFormat.js';
+  buildDriverScript,
+  encodeRunLine,
+  writeRunLine,
+  waitForDone,
+  capOutput,
+  decidePaneVsFallback,
+} from './paneRun.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,6 +36,31 @@ export function viewerTailCommand(logPath: string): string {
   // never break out of the quotes. A quote-free path is unchanged by this escaping.
   const escaped = logPath.replace(/'/g, `'\\''`);
   return `exec tail -n +1 -F '${escaped}'`;
+}
+
+/** The named-pipe the pane driver reads commands from, for an agent. */
+export function paneFifoPath(logsDir: string, id: string): string {
+  return join(logsDir, paneSlug(id) + '.fifo');
+}
+
+/** The directory the pane driver writes per-command done-files (exit codes) into. */
+export function paneDoneDir(logsDir: string, id: string): string {
+  return join(logsDir, paneSlug(id) + '.done');
+}
+
+/** The directory the pane driver writes per-command captured output into. */
+export function paneIdsDir(logsDir: string, id: string): string {
+  return join(logsDir, paneSlug(id) + '.ids');
+}
+
+/** Capture a pane's output to a shell command (`-o` = only while a program is running). */
+export function argvPipePane(paneId: string, cmd: string): string[] {
+  return ['pipe-pane', '-o', '-t', paneId, cmd];
+}
+
+/** Send Ctrl+C to a pane (cancels only the command currently running in it). */
+export function argvSendInterrupt(paneId: string): string[] {
+  return ['send-keys', '-t', paneId, 'C-c'];
 }
 
 export function argvHasSession(name: string): string[] {
@@ -128,8 +156,17 @@ export function buildReexecArgv(argv: string[], entry: string): string[] {
 export interface Tmux {
   registerAgent(id: string, name: string, template: string): void;
   unregisterAgent(id: string): void;
-  mirror(id: string, events: readonly LogEntry[]): void;
   showAgent(id?: string): void;
+  /**
+   * Run a command live in the agent's viewer pane. Resolves to the captured output + exit code, or
+   * null when the command can't be driven in-pane (agent not selected / no viewer pane / FIFO not
+   * writable), signalling the caller to use its in-process fallback instead.
+   */
+  runInPane(
+    agentId: string,
+    cmd: string,
+    signal: AbortSignal,
+  ): Promise<{ output: string; rc: number } | null>;
 }
 
 const SESSION_NAME = 'orc';
@@ -138,10 +175,13 @@ export class TmuxController implements Tmux {
   private readonly run: TmuxRunner;
   private readonly logsDir: string;
   private readonly sessionName = SESSION_NAME;
-  private readonly mirrorStates = new Map<string, MirrorState>();
+  /** The agents whose FIFO + done/ids dirs we created, so we only tear down what we own. */
+  private readonly registered = new Set<string>();
 
   private orcPaneId?: string;
   private viewPaneId?: string;
+  /** The agent currently shown in the viewer pane — only it can run commands live in the pane. */
+  private selectedId?: string;
 
   constructor(opts?: { run?: TmuxRunner; logsDir?: string }) {
     this.run = opts?.run ?? ((args) => execFileAsync('tmux', args));
@@ -164,59 +204,92 @@ export class TmuxController implements Tmux {
     }
   }
 
-  /** Create/truncate an agent's pane-log file so the viewer always has something to tail. */
+  /** Provision an agent's pane IPC: a FIFO the driver reads from, plus done/ids output dirs. */
   registerAgent(id: string, _name: string, _template: string): void {
-    const path = paneLogPath(this.logsDir, id);
-    // Create/truncate to an empty file so the viewer has something to tail and a relaunch starts
-    // the mirror fresh. (Kept empty so the mirror's appends are the file's entire content.)
+    const fifo = paneFifoPath(this.logsDir, id);
+    const doneDir = paneDoneDir(this.logsDir, id);
+    const idsDir = paneIdsDir(this.logsDir, id);
     try {
-      writeFileSync(path, '');
+      mkdirSync(doneDir, { recursive: true });
+      mkdirSync(idsDir, { recursive: true });
+      // mkfifo via the system binary (node has no direct API). Remove any stale node first.
+      rmSync(fifo, { force: true });
+      execFileSync('mkfifo', [fifo]);
     } catch {
-      // Best-effort: a disk error here must not throw out of the AgentManager create/restore path.
+      // Best-effort: a disk/mkfifo error here must not throw out of the AgentManager create path;
+      // runInPane will simply fall back to the in-process runner when the FIFO isn't writable.
     }
-    this.mirrorStates.set(id, { ...INITIAL_MIRROR_STATE });
+    this.registered.add(id);
   }
 
-  /** Remove an agent's pane-log file and drop its mirror state. */
+  /** Remove an agent's FIFO and its done/ids dirs. */
   unregisterAgent(id: string): void {
-    const path = paneLogPath(this.logsDir, id);
-    try {
-      rmSync(path, { force: true });
-    } catch {
-      // Best-effort: a missing file is fine.
-    }
-    this.mirrorStates.delete(id);
-  }
-
-  /** Append the newly-rendered tail of an agent's events to its pane log (idempotent per id). */
-  mirror(id: string, events: readonly LogEntry[]): void {
-    const prev = this.mirrorStates.get(id) ?? { ...INITIAL_MIRROR_STATE };
-    const { text, state } = computeMirrorAppend(prev, events);
-    if (text) {
+    for (const p of [paneFifoPath(this.logsDir, id), paneDoneDir(this.logsDir, id), paneIdsDir(this.logsDir, id)]) {
       try {
-        appendFileSync(paneLogPath(this.logsDir, id), text);
+        rmSync(p, { recursive: true, force: true });
       } catch {
-        // Best-effort on the hot path: a disk error on 'update' must not crash the session. Leave
-        // the mirror state unadvanced so the unwritten tail is retried on the next mirror() call.
-        return;
+        // Best-effort: a missing path is fine.
       }
     }
-    this.mirrorStates.set(id, state);
+    this.registered.delete(id);
   }
 
-  /** Re-point the single viewer pane at the selected agent's pane log. No-op until panes are known. */
+  /**
+   * Point the single viewer pane at the selected agent by respawning it running that agent's driver
+   * loop (which services the agent's FIFO). No-op until the viewer pane is known.
+   */
   showAgent(id?: string): void {
-    if (!this.viewPaneId) return;
-    const path = id ? paneLogPath(this.logsDir, id) : join(this.logsDir, '_none.log');
-    if (!id) {
-      try {
-        writeFileSync(path, '');
-      } catch {
-        // Placeholder is best-effort.
-      }
-    }
-    const cmd = viewerTailCommand(path);
+    this.selectedId = id;
+    if (!this.viewPaneId || !id) return;
+    const cmd = buildDriverScript({
+      fifo: paneFifoPath(this.logsDir, id),
+      doneDir: paneDoneDir(this.logsDir, id),
+      idsDir: paneIdsDir(this.logsDir, id),
+    });
     void this.run(argvRespawnViewer(this.viewPaneId, cmd)).catch(() => {});
+  }
+
+  /**
+   * Run a command live in the selected agent's viewer pane: hand it to the pane driver via the FIFO,
+   * then wait for the driver's done-file and read back the captured output. Returns null when the
+   * command can't be driven in-pane (not selected / no viewer / FIFO not writable) so the caller
+   * uses its in-process fallback.
+   */
+  async runInPane(
+    agentId: string,
+    cmd: string,
+    signal: AbortSignal,
+  ): Promise<{ output: string; rc: number } | null> {
+    const fifo = paneFifoPath(this.logsDir, agentId);
+    const where = decidePaneVsFallback({
+      tmuxOn: Boolean(this.viewPaneId),
+      isSelected: this.selectedId === agentId,
+      fifoWritable: existsSync(fifo),
+    });
+    if (where === 'fallback') return null;
+
+    const runId = randomUUID();
+    const wrote = writeRunLine(fifo, encodeRunLine(runId, cmd));
+    if (!wrote) return null; // No driver reading the FIFO → fall back.
+
+    let rc: number;
+    try {
+      rc = await waitForDone(paneDoneDir(this.logsDir, agentId), runId, signal);
+    } catch {
+      // Aborted (or watch failure) → signal a cancel via the pane, then report a non-zero rc.
+      if (this.viewPaneId) await this.run(argvSendInterrupt(this.viewPaneId)).catch(() => {});
+      return { output: this.readPaneOutput(agentId, runId), rc: 130 };
+    }
+    return { output: this.readPaneOutput(agentId, runId), rc };
+  }
+
+  /** Read (and cap) a finished command's captured output from its per-id file. */
+  private readPaneOutput(agentId: string, runId: string): string {
+    try {
+      return capOutput(readFileSync(join(paneIdsDir(this.logsDir, agentId), runId), 'utf8'));
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -292,6 +365,7 @@ export class TmuxController implements Tmux {
 
   /** Tear down what we own: the whole session when we bootstrapped, else just our viewer pane. */
   async shutdown(): Promise<void> {
+    this.cleanupPaneIpc();
     if (this.orcPaneId || this.viewPaneId) {
       if (this.viewPaneId) await this.run(argvKillPane(this.viewPaneId)).catch(() => {});
     } else {
@@ -301,6 +375,7 @@ export class TmuxController implements Tmux {
 
   /** Synchronous teardown for signal handlers (a never-attached controller is a no-op). */
   shutdownSync(): void {
+    this.cleanupPaneIpc();
     try {
       if (this.viewPaneId) {
         execFileSync('tmux', argvKillPane(this.viewPaneId), { stdio: 'ignore' });
@@ -310,5 +385,10 @@ export class TmuxController implements Tmux {
     } catch {
       // Best-effort on exit.
     }
+  }
+
+  /** Remove every agent's FIFO + done/ids dirs we created. Best-effort. */
+  private cleanupPaneIpc(): void {
+    for (const id of [...this.registered]) this.unregisterAgent(id);
   }
 }

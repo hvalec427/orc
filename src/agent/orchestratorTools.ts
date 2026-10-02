@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { isReadOnlyBashCommand } from './readOnlyCommands.js';
 
 /**
  * A tool definition on the in-process "orc" MCP server. `tool()` returns a `SdkMcpToolDefinition`
@@ -333,6 +334,60 @@ export function buildSpawnSubagentTool(spawn: SpawnSubagent) {
             isError: true,
           };
         }
+      },
+    ),
+  ];
+}
+
+/**
+ * Run a shell command for this agent and resolve with its combined output and exit code. Supplied by
+ * the AgentSession (a closure into the AgentManager): when this agent is the one live in the shared
+ * tmux viewer pane the command runs there as a real terminal; otherwise it runs in-process. Either
+ * way the agent sees only the final output, never the live pane.
+ */
+export type RunInPane = (cmd: string, signal: AbortSignal) => Promise<{ output: string; rc: number }>;
+
+/**
+ * Build the custom shell tool (server name "orc" → fully-qualified `mcp__orc__run`). This replaces the
+ * built-in Bash tool: instead of running commands in the SDK subprocess, it hands them to `runInPane`
+ * so the currently-selected agent's commands execute live in the shared tmux viewer pane. A non-zero
+ * exit code is surfaced as `isError` so the model notices failures. When `readOnly` is set (a
+ * read-only template agent), a state-changing command is refused up front — never run — with a hint to
+ * delegate it to a full-access subagent, matching the PreToolUse guard.
+ */
+export function buildRunTool(runInPane: RunInPane, readOnly = false) {
+  return [
+    tool(
+      'run',
+      'Run a shell command and get back its combined output and exit code. This is your shell: use ' +
+        'it for builds, tests, git, file inspection, and any other command-line work. The command ' +
+        'runs live in your tmux viewer pane when your agent is selected, otherwise in-process; either ' +
+        'way you receive only the final output. A non-zero exit code is reported as an error.',
+      {
+        command: z
+          .string()
+          .min(1)
+          .describe('The shell command to run (passed to `bash -c`). Keep it self-contained.'),
+      },
+      async (args) => {
+        const command = args.command;
+        if (readOnly && !isReadOnlyBashCommand(command)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  "This command isn't allowed for a read-only agent: it may change state. You can run " +
+                  'read-only commands (git log/diff/show/status/blame, ls, cat, grep/rg, find, and ' +
+                  'test/lint/typecheck scripts). To run a state-changing command, spawn a full-access ' +
+                  '"feature"/"fix"/"worker" subagent.',
+              },
+            ],
+            isError: true,
+          };
+        }
+        const { output, rc } = await runInPane(command, new AbortController().signal);
+        return { content: [{ type: 'text', text: output }], isError: rc !== 0 };
       },
     ),
   ];
