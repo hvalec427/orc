@@ -206,6 +206,19 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
             if (!existing) setNotice(`integrating ${branch}`);
           })
           .catch((err) => setNotice(`integrate failed: ${(err as Error).message}`));
+      } else if (input === 'C' && selected) {
+        // Spawn a cleanup worker nested under the selected agent to tear down its worktree + branch.
+        // The worker runs in the base repo (no worktree of its own), so it can safely remove the
+        // source agent's worktree — something the agent itself can't do to its own working directory.
+        const id = selected.id;
+        const { branch, worktree } = selected.getInfo();
+        if (!branch || !worktree) return;
+        const existing = manager.cleanupChildOf(id);
+        setNotice(existing ? `cleanup agent for ${branch} already running` : `cleaning up ${branch}…`);
+        manager
+          .cleanupAgent(id)
+          .then((s) => setSelectedId(s.id))
+          .catch((err) => setNotice(`cleanup failed: ${(err as Error).message}`));
       } else if (input === 'P' && selected) {
         // Show orc's generated "how to run/test this branch" instructions inside the agent window.
         setMode('preview');
@@ -390,6 +403,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           hasParent={!!selected?.getInfo().parentId}
           hasChild={!!selected && !!manager.firstChildOf(selected.id)}
           hasWaiting={!!manager.firstWaiting()}
+          hasWorktree={!!selected?.getInfo().worktree}
           selectedStatus={selected?.getInfo().status}
           selectedArchived={!!selected?.getInfo().archived}
           hasArchived={archivedInfos.length > 0}
@@ -429,6 +443,7 @@ function HelpBar({
   hasParent,
   hasChild,
   hasWaiting,
+  hasWorktree,
   selectedStatus,
   selectedArchived,
   hasArchived,
@@ -442,6 +457,7 @@ function HelpBar({
   hasParent: boolean;
   hasChild: boolean;
   hasWaiting: boolean;
+  hasWorktree: boolean;
   selectedStatus: AgentStatus | undefined;
   selectedArchived: boolean;
   hasArchived: boolean;
@@ -471,6 +487,8 @@ function HelpBar({
   if (hasSession) agent.push('i:ask', 'c:subagent');
   if (isDead) agent.push('r:resume');
   if (canMerge) agent.push('m:integrate');
+  // C spawns a cleanup worker to remove the agent's worktree + branch; only useful once it has one.
+  if (hasWorktree) agent.push('C:cleanup');
   if (hasSession && !isDead) agent.push('x:stop');
   // P shows orc's generated "how to run/test this branch" instructions inside the agent window.
   if (hasSession) agent.push(previewing ? 'P:close preview' : 'P:preview');

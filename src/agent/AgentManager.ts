@@ -260,6 +260,11 @@ export class AgentManager extends EventEmitter {
     return [...this.agents.values()].find((a) => a.parentId === id && a.template === 'merge');
   }
 
+  /** A given agent's child cleanup session, if one has already been spawned. */
+  cleanupChildOf(id: string): AgentSession | undefined {
+    return [...this.agents.values()].find((a) => a.parentId === id && a.template === 'worker');
+  }
+
   /** A given agent's first child session (e.g. a launcher's first spawned feature agent), if any. */
   firstChildOf(id: string): AgentSession | undefined {
     return [...this.agents.values()].find((a) => a.parentId === id);
@@ -540,6 +545,35 @@ export class AgentManager extends EventEmitter {
         `with ${NEEDS_INPUT}) BEFORE integrating. `;
     const prompt = `${target}${worktreeNote}${cleanupNote}`;
     return this.create(source.project, 'merge', `merge ${branch}`, '', prompt, undefined, id);
+  }
+
+  /**
+   * Spawn a cleanup worker nested under the given agent to tear down its worktree and branch. Like a
+   * merge agent, the cleanup worker is a child session that runs in the base repo — NOT in the source
+   * agent's worktree — because an agent can't remove its own working directory without killing its own
+   * session. A `worker` template starts with no worktree of its own, so it stays in the base repo and
+   * can safely run `git worktree remove` / `git branch -D` against the source. The source's branch and
+   * worktree path are woven into the prompt so the worker acts immediately. Only one cleanup child is
+   * kept per parent: a repeat request reselects the existing child instead of spawning a duplicate.
+   */
+  async cleanupAgent(id: string): Promise<AgentSession> {
+    const source = this.agents.get(id);
+    if (!source) throw new Error(`Unknown agent: ${id}`);
+    const branch = source.branch;
+    const worktree = source.worktree;
+    if (!branch || !worktree) {
+      throw new Error(`Agent "${source.name}" has no worktree to clean up.`);
+    }
+    const existing = this.cleanupChildOf(id);
+    if (existing) return existing;
+    const prompt =
+      `Clean up the worktree and branch left behind by another agent. Its worktree is at ` +
+      `\`${worktree}\` on branch \`${branch}\`. You are running in the base repository, NOT inside that ` +
+      `worktree, so you can safely remove it. Remove the worktree with \`git worktree remove ${worktree} ` +
+      `--force\`, then delete the branch with \`git branch -D ${branch}\`. Never touch any other agent's ` +
+      `worktree or branch, and never remove your own working directory. Confirm both are gone ` +
+      `(\`git worktree list\` / \`git branch\`) and report what you removed.`;
+    return this.create(source.project, 'worker', `cleanup ${branch}`, '', prompt, undefined, id);
   }
 
   /**
