@@ -110,7 +110,7 @@ export interface PromptParams {
  * than duplicated into each template builder.
  */
 export function buildAppendPrompt(params: PromptParams): string {
-  return `${buildTemplatePrompt(params)}\n\n${COORDINATION_SECTION}`;
+  return `${buildTemplatePrompt(params)}\n\n${COORDINATION_SECTION}\n\n${BREVITY_SECTION}`;
 }
 
 /** The template-specific body of the append prompt (before the shared coordination section). */
@@ -185,6 +185,14 @@ Avoiding collisions on shared code:
 
 These coordination tools only pass messages within your group; they never modify the codebase, so you
 may use them even when you are a read-only agent.`;
+
+/** Appended to every agent: keep human-facing messages terse to save tokens. */
+const BREVITY_SECTION = `### Keep messages brief
+
+Keep every message to the human as short and concise as possible to minimize token use.
+Mention only what matters; skip filler and restating the task. Do NOT list which files you
+will change. When you need human approval, give a short bullet list of the questions plus
+your proposed solution for each — nothing more.`;
 
 /** How the human ends their turn with a no-sentinel template so the TUI keeps waiting. */
 const HUMAN_PROTOCOL = `### Talking to the human
