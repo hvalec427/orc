@@ -314,6 +314,10 @@ ${targetGuidance}
   \`agent/merge\` worktree or your own working directory.
 - Do NOT push to any remote unless the human explicitly asks.
 - You may run git commands, read files, and search — but do not make unrelated code edits.
+- Keep your orchestrator in the loop: post a SHORT progress note with \`${REPORT_TO_ORCHESTRATOR_TOOL}\`
+  at each milestone (e.g. "picked target <target>", "rebased cleanly, fast-forwarding", "hit a
+  conflict in <file>", "integrated and cleaned up <branch>") so the human can track you by watching
+  the parent instead of seeing the integration happen silently.
 
 ${HUMAN_PROTOCOL}
 `.trim();

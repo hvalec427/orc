@@ -243,6 +243,18 @@ test('merge prompt defaults to rebase and bakes in the chosen strategy', () => {
   }
 });
 
+test('merge prompt tells the agent to report progress milestones to its orchestrator', () => {
+  const prompt = buildAppendPrompt({ name: 'm', template: 'merge' });
+  assert.ok(
+    prompt.includes('Keep your orchestrator in the loop'),
+    'merge prompt should explicitly instruct the agent to report progress milestones',
+  );
+  assert.ok(
+    prompt.includes(`\`${REPORT_TO_ORCHESTRATOR_TOOL}\`\n  at each milestone`),
+    'merge prompt should point the milestone instruction at report_to_orchestrator',
+  );
+});
+
 test('merge prompt integrates straight into a configured baseBranch without asking', () => {
   const configured = buildAppendPrompt({ name: 'm', template: 'merge', baseBranch: 'master' });
   assert.ok(
