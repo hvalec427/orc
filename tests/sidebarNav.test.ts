@@ -155,6 +155,50 @@ test('l enters subagents and j/k then navigate within the group; h returns to th
   unmount();
 });
 
+test('launching a subagent keeps focus on the parent, not the new child', async () => {
+  const manager = makeManager();
+
+  // Model createSubagent: append a new child under the parent, announce the change, and resolve
+  // with the new session — mirroring AgentManager so App's onSubmit handler runs its real path.
+  let created: any;
+  manager.ordered = manager.list();
+  manager.createSubagent = async (parentId: string) => {
+    created = session({ id: 'c3', name: 'child-new', parentId, template: 'feature', status: 'working' });
+    manager.ordered.push(created);
+    manager.list = () => manager.ordered;
+    manager.active = () => manager.ordered.filter((s: any) => !s.getInfo().archived);
+    manager.childrenOf = (id: string) => manager.ordered.filter((s: any) => s.getInfo().parentId === id);
+    manager.emit('update');
+    return created;
+  };
+
+  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
+
+  // c opens the new-agent form scoped to the selected agent's group.
+  stdin.write('c');
+  await delay();
+
+  // Drive the form: choose the first template, reuse the parent name, skip ticket, add a prompt.
+  stdin.write('\r'); // template
+  await delay();
+  stdin.write('\r'); // name (reuse parent)
+  await delay();
+  stdin.write('\r'); // ticket (skip)
+  await delay();
+  stdin.write('do the thing');
+  await delay();
+  stdin.write('\r'); // submit
+  await delay();
+
+  assert.ok(created, 'createSubagent should have been invoked');
+  // Focus must remain on the parent; it must NOT jump to the freshly launched child.
+  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one', 'focus stays on the parent after launching a subagent');
+
+  unmount();
+});
+
 test('l does nothing on a parent with no subagents', async () => {
   const manager = makeManager();
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));

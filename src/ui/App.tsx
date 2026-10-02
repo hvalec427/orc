@@ -276,7 +276,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
             : manager.create(project, template, name, ticket, prompt, magicLink);
           launched
             .then((s) => {
-              setSelectedId(s.id);
+              // Only move focus for top-level agents. When launching a subagent, stay on the
+              // parent so the orchestrator view keeps its place instead of jumping to the child.
+              if (!parentId) setSelectedId(s.id);
               setNotice(`launched "${name}"`);
             })
             .catch((err) => setNotice(`failed: ${(err as Error).message}`));
