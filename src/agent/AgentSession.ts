@@ -325,6 +325,20 @@ export class AgentSession extends EventEmitter {
     }
   }
 
+  /**
+   * Reconstruct a session from persisted state instead of launching it. Seeds the prior Claude
+   * `sessionId` so a later send()/retry() resumes that session (via `resume: sessionId`), and parks
+   * the agent as 'stopped' (resumable) — NOT 'working', even if orc was killed mid-turn. Does NOT
+   * start a turn or resend the original prompt: the human resumes it explicitly. A one-line system
+   * entry marks it as restored. Idempotent-ish; intended to be called once right after construction.
+   */
+  hydrate(state: { sessionId?: string }): void {
+    this.sessionId = state.sessionId;
+    this.status = 'stopped';
+    this.addLog('system', '↻ restored from previous session (press retry/send to resume)');
+    this.emitNow();
+  }
+
   /** Start the session with the prompt as the first user message. */
   start(): void {
     this.queue.push(this.prompt);
@@ -552,6 +566,7 @@ export class AgentSession extends EventEmitter {
       ticket: this.ticket,
       branch: this.branch,
       worktree: this.worktree,
+      ownsWorktree: this._ownsWorktree,
       metroPort: this.metroPort,
       status: this.status,
       question: this.question,

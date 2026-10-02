@@ -1,8 +1,8 @@
 import { EventEmitter } from 'node:events';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
+import type { AgentStatus, AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { needsWorktree, isWorkerTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
@@ -24,6 +24,34 @@ import { NEEDS_INPUT } from '../agentPrompt.js';
 const ORCHESTRATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const STATE_PATH = join(homedir(), '.orc', 'state.json');
+
+/**
+ * One agent as persisted to `~/.orc/state.json` between orc runs. This is the minimal shape needed
+ * to reconstruct a paused, resumable session on next launch (see {@link AgentManager.restore}): the
+ * identity/placement fields, its worktree/branch/port + ownership, the Claude `sessionId` to resume,
+ * and its archived flag. The live `status` is persisted too but is clamped to 'stopped' on restore
+ * (a resumable, non-running state), so an agent killed mid-turn never comes back claiming to work.
+ */
+interface PersistedAgent {
+  id: string;
+  name: string;
+  template: AgentTemplate;
+  parentId?: string;
+  project: string;
+  ticket: string;
+  branch?: string;
+  worktree?: string;
+  ownsWorktree?: boolean;
+  metroPort?: number;
+  sessionId?: string;
+  status: AgentStatus;
+  archived?: boolean;
+}
+
+/** The whole persisted state file: the agent list, in sidebar order (parents before their children). */
+interface PersistedState {
+  agents: PersistedAgent[];
+}
 
 /** Owns all agent sessions (across projects) plus their worktree/port lifecycle. Emits 'update'. */
 export class AgentManager extends EventEmitter {
@@ -139,8 +167,10 @@ export class AgentManager extends EventEmitter {
     const id = this.uniqueId(slugify(name));
 
     // Decide this agent's worktree/branch/port. A pipeline role step reuses the pipeline's shared
-    // worktree (and does not own its cleanup). Otherwise, worktree templates cut a fresh isolated
-    // worktree + branch and allocate a port; everything else runs in the base repo with none.
+    // worktree (and does not own its cleanup). A pipeline owns ONE shared worktree/branch up front
+    // (cut here, keyed off its id) that its role children reuse, but gets no port (it's read-only).
+    // Other worktree templates cut a fresh isolated worktree + branch and allocate a port; everything
+    // else runs in the base repo with none.
     let worktree: Worktree | undefined;
     let ownsWorktree = false;
     let metroPort: number | undefined;
@@ -149,6 +179,9 @@ export class AgentManager extends EventEmitter {
       // full-access roles actually write there; read-only roles just read the in-progress work.
       worktree = sharedWorktree;
       ownsWorktree = false;
+    } else if (template === 'pipeline') {
+      worktree = await createWorktree(project.repo, project.worktreeDir, id);
+      ownsWorktree = true;
     } else if (needsWorktree(template)) {
       worktree = await createWorktree(project.repo, project.worktreeDir, id);
       ownsWorktree = true;
@@ -156,55 +189,100 @@ export class AgentManager extends EventEmitter {
       metroPort = allocator ? await allocator.allocate() : undefined;
     }
 
+    const session = this.buildSession({
+      id,
+      project,
+      template,
+      name,
+      ticket,
+      prompt,
+      magicLink: magicLink ?? project.magicLink,
+      parentId,
+      branch: worktree?.branch,
+      worktree: worktree?.path,
+      ownsWorktree,
+      metroPort,
+    });
+    session.start();
+    this.persist();
+    this.emit('update');
+    return session;
+  }
+
+  /**
+   * Build an {@link AgentSession} with all its per-template and group callbacks wired, register it in
+   * `this.agents`, and forward its 'update' events — WITHOUT launching it. This is the shared
+   * construction both {@link create} (which then calls `session.start()`) and {@link restore} (which
+   * calls `session.hydrate()` instead) use, so the callback wiring lives in exactly one place.
+   *
+   * The caller has already decided the worktree/branch/port/ownership. The per-template callbacks are
+   * rebuilt here from the (id, template, project) alone, so a restored agent regains the same tools a
+   * freshly created one had:
+   *   - launcher → launchFeature (spawn feature agents nested under it)
+   *   - pipeline → runStep (run one role step on its shared worktree). NOTE: unlike create(), this
+   *     does NOT cut a fresh pipeline worktree — a restored pipeline reuses its persisted worktree;
+   *     role children reuse it via `sharedWorktree` exactly as before.
+   *   - worker   → cutWorktreeOnDemand (cut+adopt a worktree the first time it must edit)
+   *   - every agent → the group orchestration callbacks (scoped to its id).
+   */
+  private buildSession(args: {
+    id: string;
+    project: ProjectConfig;
+    template: AgentTemplate;
+    name: string;
+    ticket: string;
+    prompt: string;
+    magicLink?: string;
+    parentId?: string;
+    branch?: string;
+    worktree?: string;
+    ownsWorktree: boolean;
+    metroPort?: number;
+  }): AgentSession {
+    const { id, project, template, name } = args;
+    const projectName = project.name;
+
     // A launcher agent is handed a callback its in-process spawn tool uses to create agents. The
     // launcher chooses the template per group (feature/fix/explorer/pipeline); create() then applies
     // that template's own worktree/port rules. Each spawned agent is nested beneath this launcher
     // (parentId = id) so it shows up indented under the launcher in the sidebar.
     const launchFeature =
       template === 'launcher'
-        ? async (args: { template: LaunchTemplate; name: string; prompt: string; ticket: string }) => {
-            const child = await this.create(
-              projectName,
-              args.template,
-              args.name,
-              args.ticket,
-              args.prompt,
-              undefined,
-              id,
-            );
+        ? async (a: { template: LaunchTemplate; name: string; prompt: string; ticket: string }) => {
+            const child = await this.create(projectName, a.template, a.name, a.ticket, a.prompt, undefined, id);
             return { id: child.id, name: child.name };
           }
         : undefined;
 
-    // A pipeline agent owns ONE shared worktree/branch up front (cut here, keyed off the pipeline's
-    // id) and is handed a callback its run-step tool uses to spawn role agents on it. Each role is
-    // nested beneath the pipeline (parentId = id) and reuses `pipelineWorktree`, so Tester's tests,
-    // Implementer's code and Refactorer's cleanup all land on the same branch. The pipeline session
-    // owns the worktree's cleanup; the role children do not (ownsWorktree=false via sharedWorktree).
-    let pipelineWorktree: Worktree | undefined;
-    let runStep: RunPipelineStep | undefined;
-    if (template === 'pipeline') {
-      pipelineWorktree = await createWorktree(project.repo, project.worktreeDir, id);
-      worktree = pipelineWorktree;
-      ownsWorktree = true;
-      runStep = async (args) => {
-        const child = await this.create(
-          projectName,
-          args.role,
-          `${args.role} ${name}`,
-          args.ticket,
-          args.prompt,
-          undefined,
-          id,
-          pipelineWorktree,
-        );
-        // Block the pipeline's run-step tool call until the role reaches a terminal state, so the
-        // sequence is genuinely sequential and the tool can hand the role's summary back for the
-        // pipeline to review before deciding the next step (or going back).
-        const outcome = await child.waitUntilFinished();
-        return { id: child.id, name: child.name, status: outcome.status, summary: outcome.text };
-      };
-    }
+    // A pipeline agent is handed a callback its run-step tool uses to spawn role agents on its shared
+    // worktree. Each role is nested beneath the pipeline (parentId = id) and reuses the pipeline's
+    // worktree, so Tester's tests, Implementer's code and Refactorer's cleanup all land on the same
+    // branch. The pipeline session owns the worktree's cleanup; the role children do not. create()
+    // cuts the pipeline worktree up front and passes it in; restore() passes the persisted worktree.
+    const pipelineWorktree: Worktree | undefined =
+      template === 'pipeline' && args.worktree && args.branch
+        ? { path: args.worktree, branch: args.branch }
+        : undefined;
+    const runStep: RunPipelineStep | undefined =
+      template === 'pipeline'
+        ? async (a) => {
+            const child = await this.create(
+              projectName,
+              a.role,
+              `${a.role} ${name}`,
+              a.ticket,
+              a.prompt,
+              undefined,
+              id,
+              pipelineWorktree,
+            );
+            // Block the pipeline's run-step tool call until the role reaches a terminal state, so the
+            // sequence is genuinely sequential and the tool can hand the role's summary back for the
+            // pipeline to review before deciding the next step (or going back).
+            const outcome = await child.waitUntilFinished();
+            return { id: child.id, name: child.name, status: outcome.status, summary: outcome.text };
+          }
+        : undefined;
 
     // A general-purpose worker starts with no worktree and cuts+adopts one ON DEMAND the first time
     // a task needs code changes. Its `create_worktree` tool calls back here: we cut a worktree keyed
@@ -236,14 +314,14 @@ export class AgentManager extends EventEmitter {
       id,
       name,
       template,
-      parentId,
-      ticket,
-      prompt,
-      magicLink: magicLink ?? project.magicLink,
-      branch: worktree?.branch,
-      worktree: worktree?.path,
-      ownsWorktree,
-      metroPort,
+      parentId: args.parentId,
+      ticket: args.ticket,
+      prompt: args.prompt,
+      magicLink: args.magicLink,
+      branch: args.branch,
+      worktree: args.worktree,
+      ownsWorktree: args.ownsWorktree,
+      metroPort: args.metroPort,
       config: project,
       launchFeature,
       runStep,
@@ -252,9 +330,6 @@ export class AgentManager extends EventEmitter {
     });
     session.on('update', () => this.emit('update'));
     this.agents.set(id, session);
-    session.start();
-    this.persist();
-    this.emit('update');
     return session;
   }
 
@@ -703,7 +778,10 @@ export class AgentManager extends EventEmitter {
   private persist(): void {
     try {
       mkdirSync(join(homedir(), '.orc'), { recursive: true });
-      const state = this.list().map((a) => {
+      // list() yields sidebar order: within each project, parents are followed immediately by their
+      // children. Persisting in this order lets restore() rebuild the same grouping (and guarantees a
+      // parent is written — and so restored — before its children).
+      const agents: PersistedAgent[] = this.list().map((a) => {
         const info = a.getInfo();
         return {
           id: info.id,
@@ -714,15 +792,94 @@ export class AgentManager extends EventEmitter {
           ticket: info.ticket,
           branch: info.branch,
           worktree: info.worktree,
+          ownsWorktree: info.ownsWorktree,
           metroPort: info.metroPort,
           sessionId: info.sessionId,
           status: info.status,
           archived: info.archived,
         };
       });
-      writeFileSync(STATE_PATH, JSON.stringify({ agents: state }, null, 2));
+      const state: PersistedState = { agents };
+      writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
     } catch {
       /* persistence is best-effort */
     }
+  }
+
+  /**
+   * Read the persisted agent list back from `~/.orc/state.json`. Best-effort, mirroring {@link
+   * persist}: a missing or corrupt file (or one without an agents array) yields an empty list rather
+   * than throwing, so a bad state file can never crash startup.
+   */
+  private loadState(): PersistedState {
+    try {
+      const raw = readFileSync(STATE_PATH, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        Array.isArray((parsed as { agents?: unknown }).agents)
+      ) {
+        return { agents: (parsed as PersistedState).agents };
+      }
+    } catch {
+      /* missing/corrupt state is treated as "no prior agents" */
+    }
+    return { agents: [] };
+  }
+
+  /**
+   * Reload agents persisted by a previous orc run and reconstruct each as a PAUSED, resumable session
+   * — agents do NOT keep running while orc is closed, so there is nothing to reattach to; we rebuild
+   * them in a 'stopped' state and let the human resume one (r / sending a message) which picks the
+   * underlying Claude session back up via `resume: sessionId`. Call this ONCE at startup, after the
+   * manager is constructed and BEFORE the UI renders.
+   *
+   * For each persisted agent (in persisted/sidebar order, so a parent is restored before its
+   * children): skip it if its project is no longer in config (we can't rebuild its ProjectConfig or
+   * callbacks); otherwise reserve its persisted port so a new agent won't reuse it, rebuild the
+   * session via {@link buildSession} (same callback wiring as {@link create}), and seed its prior
+   * sessionId via {@link AgentSession.hydrate}. The original prompt is NOT resent and no turn starts.
+   * Worktrees that are gone are left to {@link AgentSession.ensureWorktree} to recreate on resume.
+   */
+  restore(): void {
+    const { agents } = this.loadState();
+    for (const a of agents) {
+      const project = this.config.projects.find((p) => p.name === a.project);
+      if (!project) {
+        // The project was removed from config since this agent was persisted; we can't rebuild its
+        // ProjectConfig or per-template callbacks, so drop it rather than crash.
+        this.emit('log', `skipped restoring "${a.id}": project "${a.project}" is no longer configured`);
+        continue;
+      }
+      if (this.agents.has(a.id)) continue; // defensive: never double-register an id
+
+      // Reserve the persisted port so a freshly created agent can't be handed the same one.
+      if (a.metroPort !== undefined) this.ports.get(project.name)?.reserve(a.metroPort);
+
+      // ownsWorktree was added later; older state files omit it. Derive a safe default: an agent owns
+      // its worktree when it has one and isn't a child (children share their group/pipeline worktree).
+      const ownsWorktree = a.ownsWorktree ?? (a.worktree !== undefined && !a.parentId);
+
+      const session = this.buildSession({
+        id: a.id,
+        project,
+        template: a.template,
+        name: a.name,
+        ticket: a.ticket,
+        // We never resend the prompt on restore, but keep it non-empty for display/consistency.
+        prompt: '',
+        magicLink: project.magicLink,
+        parentId: a.parentId,
+        branch: a.branch,
+        worktree: a.worktree,
+        ownsWorktree,
+        metroPort: a.metroPort,
+      });
+      // Seed the prior Claude session id and park the agent as 'stopped' (resumable) — even if it was
+      // persisted as 'working'/'booting' because orc was killed mid-turn.
+      session.hydrate({ sessionId: a.sessionId });
+    }
+    this.emit('update');
   }
 }

@@ -162,6 +162,11 @@ export interface AgentInfo {
   branch?: string;
   /** Worktree path, or undefined for no-worktree templates (merge/read-only roles). */
   worktree?: string;
+  /**
+   * Whether this agent owns its worktree's lifecycle (recreate on launch, remove on delete). False
+   * for a child sharing its group's worktree. Persisted so a restored agent keeps the right rule.
+   */
+  ownsWorktree?: boolean;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
   status: AgentStatus;

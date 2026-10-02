@@ -109,6 +109,9 @@ async function main(): Promise<void> {
 
   enterAltScreen();
   const manager = new AgentManager(config);
+  // Reload agents persisted by the previous run as paused, resumable sessions before the UI renders,
+  // so a quit-and-relaunch shows the prior agents (as 'stopped') instead of starting empty.
+  manager.restore();
   const app = render(createElement(App, { manager, config }));
 
   await app.waitUntilExit();

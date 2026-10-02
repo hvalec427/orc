@@ -25,6 +25,17 @@ export class PortAllocator {
   release(port: number): void {
     this.assigned.delete(port);
   }
+
+  /**
+   * Mark a specific port as already taken so {@link allocate} won't hand it out again. Used when
+   * restoring persisted agents: a reloaded agent keeps its prior port, so we reserve it up front to
+   * stop a freshly created agent from colliding with it. Ports outside this allocator's range are
+   * ignored (they belong to no allocator).
+   */
+  reserve(port: number): void {
+    if (port < this.range.start || port > this.range.end) return;
+    this.assigned.add(port);
+  }
 }
 
 function isFree(port: number): Promise<boolean> {
