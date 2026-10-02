@@ -121,29 +121,3 @@ test('j/k walk every archived agent flatly, including former children', async ()
   unmount();
 });
 
-test('l/h are no-ops inside the flat Done section', async () => {
-  const manager = makeManager();
-  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
-  await delay();
-
-  stdin.write('t'); // expand Done
-  await delay();
-  stdin.write('j'); // select arch-one (was a parent)
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
-
-  // l does nothing — archived agents have no group to enter.
-  stdin.write('l');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
-
-  // Move onto the former child, then h must NOT jump back to its old parent.
-  stdin.write('j');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
-  stdin.write('h');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
-
-  unmount();
-});

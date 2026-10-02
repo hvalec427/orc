@@ -106,14 +106,14 @@ test('frame height stays constant when switching between a parent and its child'
 
   const parentHeight = frameHeight(lastFrame());
 
-  stdin.write('l'); // descend into the first child
+  stdin.write('j'); // step onto the first child
   await delay();
   const childHeight = frameHeight(lastFrame());
 
   assert.equal(childHeight, parentHeight, 'frame height must not change when entering a subagent');
   assert.ok(childHeight <= ROWS_FALLBACK, 'frame must still fit within the terminal');
 
-  stdin.write('h'); // back up to the parent
+  stdin.write('k'); // step back up to the parent
   await delay();
   assert.equal(frameHeight(lastFrame()), parentHeight, 'frame height must not change when leaving a subagent');
 
@@ -126,8 +126,9 @@ test('the selected agent stays visible in the sidebar after scrolling down the l
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
   await delay();
 
-  // Walk to the last top-level agent; its caret row must be present in the clipped sidebar.
-  for (let i = 0; i < 11; i++) {
+  // Walk to the last agent (flat list: p1, c1, c2, then parent-2..parent-12 — 14 rows, so 13 steps
+  // reach the bottom); its caret row must be present in the clipped sidebar.
+  for (let i = 0; i < 13; i++) {
     stdin.write('j');
     await delay();
   }

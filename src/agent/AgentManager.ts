@@ -376,65 +376,6 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
-   * A parent's direct children that are still ACTIVE (non-archived), oldest-first — i.e. exactly the
-   * subagents the sidebar nests under the parent. Sidebar navigation (l to enter a group, j/k within
-   * it) uses this so it never steps onto a child that's been archived into the Done section; archived
-   * children are reached only through the flat Done list, not under their old parent.
-   */
-  activeChildrenOf(id: string): AgentSession[] {
-    return this.childrenOf(id).filter((a) => !a.getInfo().archived);
-  }
-
-  /** A parent's first still-active child, if any. The target of `l` when entering a group. */
-  firstActiveChildOf(id: string): AgentSession | undefined {
-    return this.activeChildrenOf(id)[0];
-  }
-
-  /**
-   * Top-level agents in sidebar order (same ordering as {@link list}, children filtered out). This is
-   * the row of "main" agents j/k steps through while the selection is on a parent — archived ones
-   * included, so j/k also walks the collapsible Done section once it's expanded.
-   */
-  topLevel(): AgentSession[] {
-    return this.list().filter((a) => !a.parentId);
-  }
-
-  /**
-   * The top-level agent `delta` steps from the given agent, clamped to the ends (no wrap). `id` may be
-   * a child: it resolves to that child's group root first, so pressing j/k while nested still lands on
-   * the adjacent PARENT. Returns the agent itself when there is nowhere to move.
-   *
-   * Archived agents are only navigable when `includeArchived` is set (the Done section is expanded);
-   * otherwise they're hidden in the sidebar, so j/k must not step onto them.
-   */
-  topLevelSibling(id: string, delta: number, includeArchived = false): AgentSession | undefined {
-    const tops = this.topLevel().filter((a) => includeArchived || !a.getInfo().archived);
-    if (tops.length === 0) return undefined;
-    const root = this.groupRootOf(id);
-    const idx = tops.findIndex((a) => a.id === root.id);
-    if (idx === -1) return root;
-    const next = Math.max(0, Math.min(idx + delta, tops.length - 1));
-    return tops[next];
-  }
-
-  /**
-   * The child `delta` steps from the given child among its parent's children, clamped to the ends (no
-   * wrap). Returns undefined if the agent is not a child. Used by j/k once the selection has descended
-   * into a parent's subagents, so navigation stays within that group.
-   */
-  siblingOf(id: string, delta: number): AgentSession | undefined {
-    const agent = this.agents.get(id);
-    if (!agent?.parentId) return undefined;
-    // Only the still-active siblings: archived children have left the group for the flat Done section,
-    // so j/k under a parent must skip them (reaching them via the Done list instead).
-    const siblings = this.activeChildrenOf(agent.parentId);
-    const idx = siblings.findIndex((a) => a.id === id);
-    if (idx === -1) return undefined;
-    const next = Math.max(0, Math.min(idx + delta, siblings.length - 1));
-    return siblings[next];
-  }
-
-  /**
    * The group root (top-level orchestrator) for an agent: walk up parentId links to the agent with
    * no parent. The hierarchy is at most two levels deep — a top-level agent and its direct children —
    * so this resolves a child to its parent and a parent to itself.

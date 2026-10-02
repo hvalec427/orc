@@ -99,7 +99,7 @@ function selectedName(frame: string): string | undefined {
   return undefined;
 }
 
-test('j/k move only between top-level agents when a parent is selected', async () => {
+test('j/k step through the flat list, crossing freely between parents and their subagents', async () => {
   const manager = makeManager();
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
   await delay();
@@ -107,7 +107,17 @@ test('j/k move only between top-level agents when a parent is selected', async (
   // Defaults to the first agent in the list (parent-one).
   assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
 
-  // j skips the children and lands on the next PARENT.
+  // j descends into the parent's first child (no separate "enter group" step).
+  stdin.write('j');
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'child-one');
+
+  // j continues through the siblings in display order.
+  stdin.write('j');
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'child-two');
+
+  // j crosses out of the group onto the next parent.
   stdin.write('j');
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'parent-two');
@@ -117,42 +127,21 @@ test('j/k move only between top-level agents when a parent is selected', async (
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'parent-two');
 
-  // k goes back up to the previous parent.
+  // k walks back up through the same flat order.
   stdin.write('k');
   await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
-
-  unmount();
-});
-
-test('l enters subagents and j/k then navigate within the group; h returns to the parent', async () => {
-  const manager = makeManager();
-  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
-
-  // l descends into the first child.
-  stdin.write('l');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'child-one');
-
-  // j moves to the next sibling, not out to parent-two.
-  stdin.write('j');
-  await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'child-two');
 
-  // j at the last sibling clamps inside the group (does NOT jump to parent-two).
-  stdin.write('j');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'child-two');
-
-  // k goes back to the first child.
   stdin.write('k');
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'child-one');
 
-  // h exits back to the parent (the main list).
-  stdin.write('h');
+  stdin.write('k');
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
+
+  // k at the top clamps (no wrap).
+  stdin.write('k');
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'parent-one');
 
@@ -238,23 +227,6 @@ test('integrating an agent (m) keeps focus on the source, not the merge child', 
   assert.ok(created, 'mergeAgent should have been invoked');
   // Focus must remain on the source; it must NOT jump to the freshly spawned merge child.
   assert.equal(selectedName(lastFrame() ?? ''), 'parent-one', 'focus stays on the source after integrating');
-
-  unmount();
-});
-
-test('l does nothing on a parent with no subagents', async () => {
-  const manager = makeManager();
-  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
-  await delay();
-
-  // Move to parent-two, which has no children.
-  stdin.write('j');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'parent-two');
-
-  stdin.write('l');
-  await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'parent-two', 'l is inert with no subagents');
 
   unmount();
 });
