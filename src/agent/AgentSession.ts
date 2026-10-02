@@ -1319,7 +1319,7 @@ export class AgentSession extends EventEmitter {
 }
 
 /** Build a one-line summary of a tool call from its (possibly partial) JSON input. */
-function summarizeTool(name: string | undefined, rawJson: string): string {
+export function summarizeTool(name: string | undefined, rawJson: string): string {
   const label = name ?? 'tool';
   let input: Record<string, unknown> = {};
   try {

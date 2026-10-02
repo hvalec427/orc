@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentSession, type AgentSessionInit } from '../src/agent/AgentSession.js';
+import { AgentSession, summarizeTool, type AgentSessionInit } from '../src/agent/AgentSession.js';
 import type { ProjectConfig } from '../src/types.js';
 
 const CONFIG: ProjectConfig = {
@@ -159,4 +159,41 @@ test('a mid-turn approval pause keeps the live path for replies', () => {
   // the input queue, so replies must stay on the live push path, not relaunch.
   (session as unknown as { setStatus(s: string): void }).setStatus('needs_approval');
   assert.equal(turnEnded(session), false);
+});
+
+// --- summarizeTool for mcp__orc__run (NEW intent line) ---------------------------------------------
+// Expected RED until the implementer adds a dedicated mcp__orc__run branch to summarizeTool that
+// prints the BARE command (`▸ mcp__orc__run <command>`), not the generic `key=value` rendering
+// (today a mcp__* tool renders as `▸ mcp__orc__run command=<command>`).
+
+test('summarizeTool renders mcp__orc__run as a bare command intent line', () => {
+  const out = summarizeTool('mcp__orc__run', JSON.stringify({ command: 'ls -la' }));
+  assert.match(out, /mcp__orc__run/);
+  assert.match(out, /ls -la/);
+  // The dedicated branch shows the command verbatim, with no `command=` key prefix.
+  assert.doesNotMatch(out, /command=/, 'no generic key=value rendering for mcp__orc__run');
+  assert.equal(out, '▸ mcp__orc__run ls -la');
+});
+
+test('summarizeTool truncates a very long mcp__orc__run command with an ellipsis', () => {
+  const longCmd = 'echo ' + 'x'.repeat(400);
+  const out = summarizeTool('mcp__orc__run', JSON.stringify({ command: longCmd }));
+  assert.ok(out.includes('…'), 'long command is truncated with an ellipsis');
+  assert.ok(out.length < longCmd.length, 'output is shorter than the raw command');
+});
+
+// --- buildOptions sets disallowedTools including Bash ----------------------------------------------
+// Expected RED until the implementer makes buildOptions set opts.disallowedTools to include 'Bash'
+// (the built-in Bash tool is disabled in favour of the custom mcp__orc__run pane tool).
+
+// Reach the private buildOptions() without the real SDK, mirroring the decide()/feed() pattern.
+function buildOptions(session: AgentSession): { disallowedTools?: string[] } {
+  return (session as unknown as { buildOptions(resume?: string): { disallowedTools?: string[] } }).buildOptions();
+}
+
+test("buildOptions disables the built-in Bash tool via disallowedTools", () => {
+  const session = makeSession();
+  const opts = buildOptions(session);
+  assert.ok(Array.isArray(opts.disallowedTools), 'disallowedTools is set');
+  assert.ok(opts.disallowedTools!.includes('Bash'), "'Bash' is disallowed (replaced by mcp__orc__run)");
 });

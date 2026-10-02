@@ -214,3 +214,57 @@ test('report_to_orchestrator notes when there is no orchestrator to receive it',
   assert.match(textOf(res), /no orchestrator/i);
   assert.ok(!res.isError);
 });
+
+// --- buildRunTool (NEW: the custom mcp__orc__run tool) ---------------------------------------------
+// Expected RED until the implementer adds buildRunTool(runInPane, readOnly?) to orchestratorTools.ts.
+// It returns a tool('run', …) whose fully-qualified name is mcp__orc__run; its handler runs the
+// command in the agent's pane (or the injected fallback) and maps the real rc to isError.
+// Dynamic import so the missing export fails ONLY these tests, not the whole file.
+
+test('buildRunTool success: rc 0 returns the output text with isError false', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  assert.equal(typeof mod.buildRunTool, 'function', 'buildRunTool is exported');
+  const tools = mod.buildRunTool(async () => ({ output: 'hi', rc: 0 })) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'echo hi' });
+  assert.deepEqual(res.content, [{ type: 'text', text: 'hi' }]);
+  assert.ok(!res.isError, 'rc 0 → not an error');
+});
+
+test('buildRunTool non-zero rc surfaces as isError true (output still returned)', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const tools = mod.buildRunTool(async () => ({ output: 'boom', rc: 2 })) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'false' });
+  assert.equal(res.isError, true, 'rc 2 → isError');
+  assert.match(textOf(res), /boom/);
+});
+
+test('buildRunTool denies a state-changing command for a read-only agent', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  // readOnly=true → a state-changing command must be refused with a deny message, never run.
+  let ran = false;
+  const tools = mod.buildRunTool(
+    async () => {
+      ran = true;
+      return { output: '', rc: 0 };
+    },
+    true,
+  ) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'rm -rf /' });
+  assert.equal(res.isError, true, 'state-changing command is refused');
+  assert.equal(ran, false, 'the command was never executed in the pane');
+  assert.match(textOf(res), /spawn a full-access|read-only/i);
+});
+
+test('buildRunTool allows a read-only command for a read-only agent', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const tools = mod.buildRunTool(async () => ({ output: 'log output', rc: 0 }), true) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'git log' });
+  assert.ok(!res.isError, 'read-only command runs fine for a read-only agent');
+  assert.match(textOf(res), /log output/);
+});
+
+test('the run tool is named "run" (fully-qualified mcp__orc__run on the orc server)', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const tools = mod.buildRunTool(async () => ({ output: '', rc: 0 })) as unknown as AnyTool[];
+  assert.ok(toolByName(tools, 'run'), 'exposes a tool literally named "run"');
+});

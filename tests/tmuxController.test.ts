@@ -370,3 +370,119 @@ describe('TmuxController.adoptInside (fake runner)', () => {
     }
   });
 });
+
+// ===================================================================================================
+// NEW (tmux-as-real-terminal) behaviors — these target code the IMPLEMENTER has NOT written yet, so
+// they are expected to be RED. They use DYNAMIC import() of the new symbols so a missing export only
+// fails THESE tests, leaving the statically-imported existing tests above green. The implementer
+// should make these green (adding argvPipePane/argvSendInterrupt, paneFifoPath/paneDoneDir/paneIdsDir,
+// the driver-based showAgent, runInPane, and FIFO/dir lifecycle in registerAgent/unregisterAgent).
+//
+// NOTE FOR THE IMPLEMENTER: the plan REMOVES `mirror` from the Tmux interface and controller and the
+// `tail -F` viewer. The existing "file mirroring" and "showAgent tails the log" tests above will be
+// DELETED by the implementer once mirror/tail are gone. They are intentionally left intact for now so
+// the pre-implementation build stays green; do not treat their later removal as a regression.
+// ===================================================================================================
+
+describe('new argv builders (pipe-pane + interrupt)', () => {
+  test('argvPipePane captures pane output to a command with -o', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    assert.equal(typeof mod.argvPipePane, 'function', 'argvPipePane is exported');
+    assert.deepEqual(mod.argvPipePane('%2', "cat >> '/tmp/x'"), [
+      'pipe-pane', '-o', '-t', '%2', "cat >> '/tmp/x'",
+    ]);
+  });
+
+  test('argvSendInterrupt sends C-c to the pane', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    assert.equal(typeof mod.argvSendInterrupt, 'function', 'argvSendInterrupt is exported');
+    assert.deepEqual(mod.argvSendInterrupt('%2'), ['send-keys', '-t', '%2', 'C-c']);
+  });
+});
+
+describe('new pane path builders (fifo/done/ids)', () => {
+  test('paneFifoPath/paneDoneDir/paneIdsDir derive slug-based paths under logsDir', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    assert.equal(typeof mod.paneFifoPath, 'function', 'paneFifoPath exported');
+    assert.equal(typeof mod.paneDoneDir, 'function', 'paneDoneDir exported');
+    assert.equal(typeof mod.paneIdsDir, 'function', 'paneIdsDir exported');
+    // They share paneSlug with paneLogPath: all three start with the slugged id under logsDir.
+    const slugBase = join('/logs', paneSlug('My Agent'));
+    assert.ok((mod.paneFifoPath('/logs', 'My Agent') as string).startsWith(slugBase), 'fifo path slug-based');
+    assert.ok((mod.paneDoneDir('/logs', 'My Agent') as string).startsWith(slugBase), 'done dir slug-based');
+    assert.ok((mod.paneIdsDir('/logs', 'My Agent') as string).startsWith(slugBase), 'ids dir slug-based');
+    // The three are distinct from each other and from the .log file.
+    const fifo = mod.paneFifoPath('/logs', 'a1');
+    const done = mod.paneDoneDir('/logs', 'a1');
+    const ids = mod.paneIdsDir('/logs', 'a1');
+    assert.notEqual(fifo, done);
+    assert.notEqual(done, ids);
+    assert.notEqual(fifo, ids);
+  });
+});
+
+describe('registerAgent / unregisterAgent FIFO + dir lifecycle', () => {
+  test('registerAgent creates the FIFO and the done/ids dirs; unregisterAgent removes them', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    const logsDir = tmpLogsDir();
+    try {
+      const { run } = fakeRunner();
+      const c = new mod.TmuxController({ run, logsDir });
+      c.registerAgent('a1', 'alpha', 'feature');
+      assert.ok(existsSync(mod.paneFifoPath(logsDir, 'a1')), 'FIFO created on register');
+      assert.ok(existsSync(mod.paneDoneDir(logsDir, 'a1')), 'done dir created on register');
+      assert.ok(existsSync(mod.paneIdsDir(logsDir, 'a1')), 'ids dir created on register');
+      c.unregisterAgent('a1');
+      assert.ok(!existsSync(mod.paneFifoPath(logsDir, 'a1')), 'FIFO removed on unregister');
+      assert.ok(!existsSync(mod.paneDoneDir(logsDir, 'a1')), 'done dir removed on unregister');
+      assert.ok(!existsSync(mod.paneIdsDir(logsDir, 'a1')), 'ids dir removed on unregister');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('showAgent respawns the DRIVER (not tail -F)', () => {
+  test('respawns the viewer pane running the driver script, and records the selected id', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    const logsDir = tmpLogsDir();
+    try {
+      const { run, calls } = fakeRunner(['%1 0\n%2 1']);
+      const c = new mod.TmuxController({ run, logsDir });
+      c.registerAgent('a1', 'alpha', 'feature');
+
+      const discover = c.adopt ?? c.attach ?? c.discoverPanes;
+      if (discover) await discover.call(c);
+
+      await c.showAgent('a1');
+
+      const respawn = calls.find((a: string[]) => a[0] === 'respawn-pane' && a.includes('-k'));
+      assert.ok(respawn, 'a respawn-pane -k call was issued');
+      const cmd = respawn![respawn!.length - 1] as string;
+      // The respawn command is the DRIVER, not a tail.
+      assert.ok(!cmd.includes('tail -F'), 'the viewer no longer tails the log');
+      assert.ok(cmd.includes('while :') || cmd.includes("trap '' INT"), 'the viewer runs the driver loop');
+      assert.ok(respawn!.includes('%2'), 'respawns the discovered viewer pane');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('runInPane fallback-to-null guards', () => {
+  test('runInPane returns null when the agent is not the selected one / no viewer pane', async () => {
+    const mod = (await import('../src/tmux/TmuxController.js')) as any;
+    const logsDir = tmpLogsDir();
+    try {
+      const { run } = fakeRunner();
+      const c = new mod.TmuxController({ run, logsDir });
+      assert.equal(typeof c.runInPane, 'function', 'runInPane exists on the controller');
+      c.registerAgent('a1', 'alpha', 'feature');
+      // No viewPaneId discovered and nothing selected → not drivable in-pane → null.
+      const res = await c.runInPane('a1', 'echo hi', new AbortController().signal);
+      assert.equal(res, null, 'not selected / no viewer pane → null (caller uses the in-process fallback)');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});

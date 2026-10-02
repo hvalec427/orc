@@ -10,6 +10,14 @@ import {
 } from '../src/ui/logFormat.js';
 import type { LogEntry, LogKind } from '../src/types.js';
 
+// IMPLEMENTER NOTE: the tmux-as-real-terminal plan DELETES the ANSI-mirroring machinery —
+// formatLogLineAnsi, computeMirrorAppend, INITIAL_MIRROR_STATE, MirrorState and SGR — because the
+// viewer pane no longer tails a mirrored transcript (it runs the command driver instead). When you
+// remove those exports, delete the corresponding `describe` blocks below (SGR, formatLogLineAnsi,
+// INITIAL_MIRROR_STATE, computeMirrorAppend) along with the now-unused imports. KEEP the
+// LOG_KIND_COLOR describe block — that color map survives. These tests are left intact for now so the
+// pre-implementation build stays green; do not treat their later removal as a regression.
+
 /** Build a LogEntry with sensible defaults; override whatever the case needs. */
 function entry(over: Partial<LogEntry> & { id: number }): LogEntry {
   return { kind: 'text', text: '', done: true, ...over };

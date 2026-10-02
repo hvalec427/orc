@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentSession, isReadOnlyBashCommand, type AgentSessionInit } from '../src/agent/AgentSession.js';
+import { ORCHESTRATION_TOOLS } from '../src/agentPrompt.js';
 import type { AgentTemplate, ProjectConfig } from '../src/types.js';
 
 const CONFIG: ProjectConfig = {
@@ -151,4 +152,30 @@ test('orchestration tools are always allowed for a read-only agent', () => {
 test('launcher gets its own launch tool allowed', () => {
   const session = makeSession('launcher');
   assert.equal(decide(session, 'mcp__orc__launch_feature_agents', {}).behavior, 'allow');
+});
+
+// --- mcp__orc__run gating (NEW: gated exactly like Bash) -------------------------------------------
+// Expected RED until the implementer teaches decideReadOnlyTool to treat mcp__orc__run like Bash:
+// allow read-only commands, deny state-changing ones with the full-access-subagent delegation hint.
+
+test('read-only mcp__orc__run command is allowed for a read-only agent', () => {
+  const session = makeSession('explorer');
+  assert.equal(decide(session, 'mcp__orc__run', { command: 'git log' }).behavior, 'allow');
+});
+
+test('state-changing mcp__orc__run command is denied with the delegation hint', () => {
+  const session = makeSession('explorer');
+  const out = decide(session, 'mcp__orc__run', { command: 'rm -rf /' });
+  assert.equal(out.behavior, 'deny');
+  assert.match((out as { message: string }).message, /spawn a full-access/);
+});
+
+test('an install via mcp__orc__run is denied for a read-only agent', () => {
+  const session = makeSession('explorer');
+  const out = decide(session, 'mcp__orc__run', { command: 'npm install' });
+  assert.equal(out.behavior, 'deny');
+});
+
+test('mcp__orc__run is NOT an orchestration (auto-allow) tool — it must be command-gated', () => {
+  assert.ok(!ORCHESTRATION_TOOLS.has('mcp__orc__run'));
 });
