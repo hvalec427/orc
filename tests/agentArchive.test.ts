@@ -111,7 +111,7 @@ test('active()/archived() partition the agents', async () => {
   assert.deepEqual(manager.archived().map((s) => s.id), ['b1'], 'archived lists only archived');
 });
 
-test('topLevel() and firstWaiting() exclude archived agents', async () => {
+test('topLevel() includes archived agents (so j/k can walk the Done section); firstWaiting() excludes them', async () => {
   const a = makeSession('a1');
   const b = makeSession('b1');
   const manager = managerWith([a, b]);
@@ -122,7 +122,22 @@ test('topLevel() and firstWaiting() exclude archived agents', async () => {
 
   await manager.archive('a1');
 
-  assert.deepEqual(manager.topLevel().map((s) => s.id), ['b1'], 'archived agent not in topLevel');
+  assert.deepEqual(
+    manager.topLevel().map((s) => s.id).sort(),
+    ['a1', 'b1'],
+    'archived agents stay in topLevel so navigation can reach the Done section',
+  );
+  // topLevelSibling gates archived agents behind includeArchived (the Done section's expanded state).
+  assert.deepEqual(
+    manager.topLevelSibling('b1', -1, false)?.id,
+    'b1',
+    'with the Done section collapsed, k off the only active agent stays put',
+  );
+  assert.deepEqual(
+    manager.topLevelSibling('b1', 1, true)?.id,
+    'a1',
+    'with the Done section expanded, j steps onto the archived agent',
+  );
   assert.equal(manager.firstWaiting()?.id, 'b1', 'firstWaiting skips the archived agent');
 });
 

@@ -280,19 +280,23 @@ export class AgentManager extends EventEmitter {
 
   /**
    * Top-level agents in sidebar order (same ordering as {@link list}, children filtered out). This is
-   * the row of "main" agents j/k steps through while the selection is on a parent.
+   * the row of "main" agents j/k steps through while the selection is on a parent — archived ones
+   * included, so j/k also walks the collapsible Done section once it's expanded.
    */
   topLevel(): AgentSession[] {
-    return this.list().filter((a) => !a.parentId && !a.getInfo().archived);
+    return this.list().filter((a) => !a.parentId);
   }
 
   /**
    * The top-level agent `delta` steps from the given agent, clamped to the ends (no wrap). `id` may be
    * a child: it resolves to that child's group root first, so pressing j/k while nested still lands on
    * the adjacent PARENT. Returns the agent itself when there is nowhere to move.
+   *
+   * Archived agents are only navigable when `includeArchived` is set (the Done section is expanded);
+   * otherwise they're hidden in the sidebar, so j/k must not step onto them.
    */
-  topLevelSibling(id: string, delta: number): AgentSession | undefined {
-    const tops = this.topLevel();
+  topLevelSibling(id: string, delta: number, includeArchived = false): AgentSession | undefined {
+    const tops = this.topLevel().filter((a) => includeArchived || !a.getInfo().archived);
     if (tops.length === 0) return undefined;
     const root = this.groupRootOf(id);
     const idx = tops.findIndex((a) => a.id === root.id);

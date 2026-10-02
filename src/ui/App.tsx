@@ -139,12 +139,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         // j/k are context-sensitive: they step through the MAIN (top-level) agents while the
         // selection is on a parent, and through the selected parent's SUBAGENTS once you've
         // descended into one with `l`. l enters a group, h leaves it — j/k never cross that
-        // boundary, so each list stays self-contained.
+        // boundary, so each list stays self-contained. Archived agents join the top-level walk only
+        // while the Done section is expanded (showDone), matching what the sidebar shows.
         if (!selected) return;
         const delta = key.downArrow || input === 'j' || key.tab ? 1 : -1;
         const target = selected.getInfo().parentId
           ? manager.siblingOf(selected.id, delta)
-          : manager.topLevelSibling(selected.id, delta);
+          : manager.topLevelSibling(selected.id, delta, showDone);
         if (target) setSelectedId(target.id);
       } else if (input === 'l') {
         // Enter the selected parent's subagents: land on its first child, if any. Once inside,
