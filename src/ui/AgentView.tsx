@@ -11,6 +11,9 @@ const COLOR: Record<LogKind, { color?: string; dim?: boolean }> = {
   result: { color: 'green' },
   error: { color: 'red' },
   input: { color: 'yellow' },
+  // Cross-agent messages (a subagent's report/question) — magenta so they stand apart from the
+  // human's yellow "you: …" input and from dim-gray system lines.
+  subagent: { color: 'magenta' },
 };
 
 interface DLine {

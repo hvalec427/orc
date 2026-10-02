@@ -13,6 +13,7 @@ import {
   ASK_SUBAGENT_TOOL,
   ANSWER_SUBAGENT_TOOL,
   ASK_ORCHESTRATOR_TOOL,
+  REPORT_TO_ORCHESTRATOR_TOOL,
   ORCHESTRATION_TOOLS,
 } from '../src/agentPrompt.js';
 import {
@@ -177,7 +178,7 @@ test('coordination section tells shared-worktree subagents to check in before ed
   assert.match(prompt, /BEFORE you start editing/i, 'missing check-in-before-editing rule');
 });
 
-test('every template prompt carries the group-coordination section with all four tools', () => {
+test('every template prompt carries the group-coordination section with all coordination tools', () => {
   for (const t of ALL_TEMPLATES) {
     const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
     assert.match(prompt, /Coordinating with your group/, `${t} missing coordination section`);
@@ -185,13 +186,20 @@ test('every template prompt carries the group-coordination section with all four
     assert.ok(prompt.includes(ASK_SUBAGENT_TOOL), `${t} missing ask_subagent`);
     assert.ok(prompt.includes(ANSWER_SUBAGENT_TOOL), `${t} missing answer_subagent`);
     assert.ok(prompt.includes(ASK_ORCHESTRATOR_TOOL), `${t} missing ask_orchestrator`);
+    assert.ok(prompt.includes(REPORT_TO_ORCHESTRATOR_TOOL), `${t} missing report_to_orchestrator`);
   }
 });
 
-test('ORCHESTRATION_TOOLS is exactly the four fully-qualified coordination tool names', () => {
+test('ORCHESTRATION_TOOLS is exactly the fully-qualified coordination tool names', () => {
   assert.deepEqual(
     new Set(ORCHESTRATION_TOOLS),
-    new Set([LIST_SUBAGENTS_TOOL, ASK_SUBAGENT_TOOL, ANSWER_SUBAGENT_TOOL, ASK_ORCHESTRATOR_TOOL]),
+    new Set([
+      LIST_SUBAGENTS_TOOL,
+      ASK_SUBAGENT_TOOL,
+      ANSWER_SUBAGENT_TOOL,
+      ASK_ORCHESTRATOR_TOOL,
+      REPORT_TO_ORCHESTRATOR_TOOL,
+    ]),
   );
   // Every coordination tool is namespaced on the in-process "orc" MCP server.
   for (const name of ORCHESTRATION_TOOLS) {

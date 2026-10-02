@@ -116,12 +116,15 @@ test('answer_subagent reports a fallback message when the child was not waiting'
   assert.match(textOf(res), /not waiting/i);
 });
 
+/** A no-op report callback for tests that only exercise ask_orchestrator. */
+const noopReport = () => ({ delivered: true });
+
 test('ask_orchestrator returns the parent answer', async () => {
   const seen: string[] = [];
   const tools = buildSubagentTools(async (args) => {
     seen.push(args.question);
     return { answer: 'go with option B' };
-  }) as unknown as AnyTool[];
+  }, noopReport) as unknown as AnyTool[];
   const res = await call(toolByName(tools, 'ask_orchestrator'), { question: 'A or B?' });
   assert.deepEqual(seen, ['A or B?']);
   assert.match(textOf(res), /go with option B/);
@@ -131,8 +134,30 @@ test('ask_orchestrator returns the parent answer', async () => {
 test('ask_orchestrator surfaces a thrown error as an isError result', async () => {
   const tools = buildSubagentTools(async () => {
     throw new Error('boom');
-  }) as unknown as AnyTool[];
+  }, noopReport) as unknown as AnyTool[];
   const res = await call(toolByName(tools, 'ask_orchestrator'), { question: 'x' });
   assert.equal(res.isError, true);
   assert.match(textOf(res), /boom/);
+});
+
+test('report_to_orchestrator forwards the note and confirms delivery', async () => {
+  const notes: string[] = [];
+  const tools = buildSubagentTools(async () => ({ answer: '' }), (args) => {
+    notes.push(args.note);
+    return { delivered: true };
+  }) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'report_to_orchestrator'), { note: 'tests green' });
+  assert.deepEqual(notes, ['tests green']);
+  assert.match(textOf(res), /reported/i);
+  assert.ok(!res.isError);
+});
+
+test('report_to_orchestrator notes when there is no orchestrator to receive it', async () => {
+  const tools = buildSubagentTools(
+    async () => ({ answer: '' }),
+    () => ({ delivered: false }),
+  ) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'report_to_orchestrator'), { note: 'hi' });
+  assert.match(textOf(res), /no orchestrator/i);
+  assert.ok(!res.isError);
 });

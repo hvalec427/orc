@@ -56,6 +56,14 @@ export type AnswerSubagent = (args: {
  */
 export type AskOrchestrator = (args: { question: string }) => Promise<{ answer: string }>;
 
+/**
+ * Post a one-line progress note to the orchestrator's log. Fire-and-forget: it does not block the
+ * subagent and does not drive the orchestrator's turn — it only surfaces the note in the parent's
+ * view so the human can track the whole group by watching the orchestrator. Returns whether the note
+ * reached a parent (false for a top-level agent with no orchestrator).
+ */
+export type ReportToOrchestrator = (args: { note: string }) => { delivered: boolean };
+
 export interface OrchestratorCallbacks {
   listSubagents: ListSubagents;
   askSubagent: AskSubagent;
@@ -151,10 +159,14 @@ export function buildOrchestratorTools(cb: OrchestratorCallbacks) {
 }
 
 /**
- * Build the child-side orchestration tool (server name "orc"). Given to every subagent so it can ask
- * its orchestrator for a decision or for data instead of guessing or ending its turn for the human.
+ * Build the child-side orchestration tools (server name "orc"). Given to every subagent so it can
+ * ask its orchestrator for a decision/data (`ask_orchestrator`, blocks for an answer) and post
+ * fire-and-forget progress notes to the orchestrator's log (`report_to_orchestrator`).
  */
-export function buildSubagentTools(askOrchestrator: AskOrchestrator) {
+export function buildSubagentTools(
+  askOrchestrator: AskOrchestrator,
+  reportToOrchestrator: ReportToOrchestrator,
+) {
   return [
     tool(
       'ask_orchestrator',
@@ -180,6 +192,32 @@ export function buildSubagentTools(askOrchestrator: AskOrchestrator) {
             isError: true,
           };
         }
+      },
+    ),
+    tool(
+      'report_to_orchestrator',
+      'Post a SHORT progress note (one line) to your orchestrator\u2019s log so the human can track ' +
+        'your work by watching the orchestrator. Fire-and-forget: it does NOT block you and expects ' +
+        'no answer. Call it at each important milestone and when you finish. For a question you need ' +
+        'answered, use ask_orchestrator instead.',
+      {
+        note: z
+          .string()
+          .min(1)
+          .describe('A short, self-contained progress note (e.g. "tests green, starting refactor").'),
+      },
+      async (args) => {
+        const res = reportToOrchestrator({ note: args.note });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: res.delivered
+                ? 'Reported to your orchestrator.'
+                : 'You have no orchestrator — the note was not delivered (you are a top-level agent).',
+            },
+          ],
+        };
       },
     ),
   ];

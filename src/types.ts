@@ -116,7 +116,18 @@ export type AgentStatus =
   | 'error' // the session errored
   | 'stopped'; // interrupted/closed by the human
 
-export type LogKind = 'text' | 'thinking' | 'tool' | 'system' | 'result' | 'error' | 'input';
+export type LogKind =
+  | 'text'
+  | 'thinking'
+  | 'tool'
+  | 'system'
+  | 'result'
+  | 'error'
+  | 'input'
+  // A message from another agent in the same group (a subagent's progress report, or a question
+  // it is asking its orchestrator). Rendered distinctly so the human never mistakes it for their
+  // own 'input' ("you: …") line.
+  | 'subagent';
 
 export interface LogEntry {
   id: number;

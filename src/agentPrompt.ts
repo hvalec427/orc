@@ -25,6 +25,14 @@ export const ANSWER_SUBAGENT_TOOL = 'mcp__orc__answer_subagent';
 export const ASK_ORCHESTRATOR_TOOL = 'mcp__orc__ask_orchestrator';
 
 /**
+ * The subagent-side MCP tool a subagent uses to POST a progress note (or completion summary) to its
+ * orchestrator's log. Unlike {@link ASK_ORCHESTRATOR_TOOL} it is fire-and-forget: it does not block
+ * the subagent or drive the orchestrator's turn. It exists so the human only has to watch the parent
+ * to track what every subagent is doing.
+ */
+export const REPORT_TO_ORCHESTRATOR_TOOL = 'mcp__orc__report_to_orchestrator';
+
+/**
  * The full set of group coordination tool names. They only pass messages between agents in the same
  * group (never touch the codebase), so AgentSession auto-allows them in every permission mode — a
  * read-only agent may still coordinate, and a full-access agent isn't prompted for approval on them.
@@ -34,6 +42,7 @@ export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set<string>([
   ASK_SUBAGENT_TOOL,
   ANSWER_SUBAGENT_TOOL,
   ASK_ORCHESTRATOR_TOOL,
+  REPORT_TO_ORCHESTRATOR_TOOL,
 ]);
 
 /**
@@ -172,6 +181,11 @@ As a SUBAGENT (when you were launched under an orchestrator):
 - \`${ASK_ORCHESTRATOR_TOOL}\` — ask your orchestrator a question and WAIT for its answer. Use this when
   you need a decision, context, or data your orchestrator or a sibling has, rather than guessing or
   stopping for the human. If you have no orchestrator, it tells you so and you decide yourself.
+- \`${REPORT_TO_ORCHESTRATOR_TOOL}\` — post a SHORT progress note to your orchestrator's log (one line,
+  no answer expected, does not block you). Call it as you hit each important milestone — not every
+  small step — e.g. "finished the API layer, starting tests", "tests green", and a final note when
+  you finish. This is how the human keeps track by watching only the orchestrator, so keep the
+  group's progress visible there instead of going silent until you are done.
 
 Avoiding collisions on shared code:
 - If you SHARE a worktree/branch with siblings (you were attached to a group with \`c\`, or you are a

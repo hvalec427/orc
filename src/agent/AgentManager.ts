@@ -13,6 +13,7 @@ import type {
   AskSubagent,
   AnswerSubagent,
   ListSubagents,
+  ReportToOrchestrator,
   SubagentInfo,
 } from './orchestratorTools.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
@@ -477,6 +478,20 @@ export class AgentManager extends EventEmitter {
     });
   }
 
+  /**
+   * Child → parent (fire-and-forget): surface a subagent's progress note in its orchestrator's log
+   * so the human can track the whole group by watching the parent. Unlike {@link askParent} it does
+   * NOT block the child or drive the parent's turn — it only appends a log line. Returns whether a
+   * parent existed to receive it (false for a top-level agent with no orchestrator).
+   */
+  private reportToParent(childId: string, note: string): { delivered: boolean } {
+    const child = this.agents.get(childId);
+    const parent = child?.parentId ? this.agents.get(child.parentId) : undefined;
+    if (!child || !parent) return { delivered: false };
+    parent.receiveSubagentReport(child.name, child.id, note);
+    return { delivered: true };
+  }
+
   /** Reject a promise if it doesn't settle within the orchestration timeout. */
   private withTimeout<T>(p: Promise<T>, message: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -500,12 +515,14 @@ export class AgentManager extends EventEmitter {
     askSubagent: AskSubagent;
     answerSubagent: AnswerSubagent;
     askOrchestrator: AskOrchestrator;
+    reportToOrchestrator: ReportToOrchestrator;
   } {
     return {
       listSubagents: () => this.listSubagentsOf(id),
       askSubagent: (args) => this.askChild(id, args.childId, args.question),
       answerSubagent: (args) => Promise.resolve(this.answerChild(id, args.childId, args.answer)),
       askOrchestrator: (args) => this.askParent(id, args.question),
+      reportToOrchestrator: (args) => this.reportToParent(id, args.note),
     };
   }
 

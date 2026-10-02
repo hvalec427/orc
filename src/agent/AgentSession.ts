@@ -36,6 +36,7 @@ import {
   type AskSubagent,
   type AnswerSubagent,
   type ListSubagents,
+  type ReportToOrchestrator,
 } from './orchestratorTools.js';
 import { createWorktree, type Worktree } from '../worktree.js';
 
@@ -136,6 +137,7 @@ export interface AgentSessionInit {
     askSubagent: AskSubagent;
     answerSubagent: AnswerSubagent;
     askOrchestrator: AskOrchestrator;
+    reportToOrchestrator: ReportToOrchestrator;
   };
 }
 
@@ -392,7 +394,6 @@ export class AgentSession extends EventEmitter {
    * (via `resume: sessionId`) so a crash or a finished agent can be picked back up.
    */
   send(text: string): void {
-    this.question = undefined;
     const trimmed = text.trim();
 
     // Slash commands. Control-style ones (/stop, /model, /commands) map to the SDK's
@@ -403,11 +404,23 @@ export class AgentSession extends EventEmitter {
     // supported in streaming mode", so control commands must never be enqueued.)
     if (trimmed.startsWith('/') && this.handleSlashCommand(trimmed)) return;
 
+    this.deliver(text, { kind: 'input', log: `you: ${text}` });
+  }
+
+  /**
+   * Feed a message into this agent's turn and log it. Human replies log as 'input' ("you: …"); a
+   * cross-agent injection (a subagent's question driving its orchestrator) logs as 'subagent' so it
+   * is never mistaken for the human having typed it. If the session is live it continues the current
+   * turn; if it has ended it resumes the prior Claude session so a finished/crashed agent picks back
+   * up. `log` is the exact text to show; `kind` its colour/attribution.
+   */
+  private deliver(text: string, entry: { kind: LogEntry['kind']; log: string }): void {
+    this.question = undefined;
     if (this.isDead()) {
-      this.resumeWith(text);
+      this.resumeWith(text, entry);
       return;
     }
-    this.addLog('input', `you: ${text}`);
+    this.addLog(entry.kind, entry.log);
     this.setStatus('working');
     this.queue.push(text);
   }
@@ -477,11 +490,18 @@ export class AgentSession extends EventEmitter {
     return this.status === 'done' || this.status === 'error' || this.status === 'stopped';
   }
 
-  /** Start a fresh query, resuming the prior Claude session if we have its id. */
-  private resumeWith(text: string): void {
+  /**
+   * Start a fresh query, resuming the prior Claude session if we have its id. `entry` controls how
+   * the nudge text is logged: a human retry/reply logs as 'input' ("you: …"); a cross-agent
+   * injection logs as 'subagent' so it isn't mistaken for the human.
+   */
+  private resumeWith(
+    text: string,
+    entry: { kind: LogEntry['kind']; log: string } = { kind: 'input', log: `you: ${text}` },
+  ): void {
     this.queue = new InputQueue();
     this.queue.push(text);
-    this.addLog('input', `you: ${text}`);
+    this.addLog(entry.kind, entry.log);
     this.addLog(
       'system',
       this.sessionId ? `↻ resuming session ${this.sessionId.slice(0, 8)}` : '↻ restarting session',
@@ -584,20 +604,31 @@ export class AgentSession extends EventEmitter {
    */
   receiveSubagentQuestion(childName: string, childId: string, question: string): void {
     const q = oneLine(question, 400);
-    this.addLog(
-      'system',
-      `✉ subagent "${childName}" (id: ${childId}) is asking you: ${q} — answer it with ` +
-        `answer_subagent(childId: "${childId}", answer: …).`,
-    );
-    // If this orchestrator is live, inject the question into its stream so its next turn acts on it.
-    // If it's finished/idle, send() resumes it so it can respond. Either way the child stays blocked
-    // until the orchestrator (or the human) answers.
-    this.send(
+    const driver =
       `A subagent you launched, "${childName}" (id: ${childId}), is waiting on you and asked:\n` +
-        `${question}\n\n` +
-        `Answer it by calling answer_subagent(childId: "${childId}", answer: …). If you need the ` +
-        `human to decide, ask them (ending your turn with ${NEEDS_INPUT}) and relay their answer.`,
-    );
+      `${question}\n\n` +
+      `Answer it by calling answer_subagent(childId: "${childId}", answer: …). If you need the ` +
+      `human to decide, ask them (ending your turn with ${NEEDS_INPUT}) and relay their answer.`;
+    // Inject the question to drive the orchestrator's next turn (continuing a live turn or resuming
+    // a finished one), logging it as a 'subagent' entry — NOT 'you: …' — so the human never mistakes
+    // a child's question for something they typed. The child stays blocked until answered (by the
+    // orchestrator's tool or the human).
+    this.deliver(driver, {
+      kind: 'subagent',
+      log:
+        `✉ subagent "${childName}" (id: ${childId}) is asking you: ${q} — answer it with ` +
+        `answer_subagent(childId: "${childId}", answer: …).`,
+    });
+  }
+
+  /**
+   * A subagent posted a fire-and-forget progress note via `report_to_orchestrator`. Surface it in
+   * this orchestrator's log (as a 'subagent' entry, distinct from the human's 'you: …' input) so the
+   * human can track the whole group by watching only the orchestrator. Unlike a question, this does
+   * NOT drive the orchestrator's turn — it is purely informational and never resumes/interrupts it.
+   */
+  receiveSubagentReport(childName: string, childId: string, note: string): void {
+    this.addLog('subagent', `↪ subagent "${childName}" (id: ${childId}): ${oneLine(note, 400)}`);
   }
 
   // ---- session options ----------------------------------------------------
@@ -746,7 +777,10 @@ export class AgentSession extends EventEmitter {
           askSubagent: this.orchestration.askSubagent,
           answerSubagent: this.orchestration.answerSubagent,
         }),
-        ...buildSubagentTools(this.orchestration.askOrchestrator),
+        ...buildSubagentTools(
+          this.orchestration.askOrchestrator,
+          this.orchestration.reportToOrchestrator,
+        ),
         ...(this.template === 'launcher' && this.launchFeature
           ? buildLauncherTools(this.launchFeature)
           : []),
