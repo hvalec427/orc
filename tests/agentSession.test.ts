@@ -61,6 +61,12 @@ function guardAsk(session: AgentSession, toolName: string): Promise<unknown> {
   ).guardAskUserQuestion({ tool_name: toolName, tool_input: {}, cwd: '/tmp/demo' });
 }
 
+// Reach the private turnEnded() routing predicate without the real SDK. It decides whether a reply
+// relaunches the session (resume) or is pushed onto the live input queue.
+function turnEnded(session: AgentSession): boolean {
+  return (session as unknown as { turnEnded(): boolean }).turnEnded();
+}
+
 test('a DONE result marks the session done and keeps the commit hash', () => {
   const session = makeSession();
   feed(session, successResult('all set\n\n@@DONE@@ abc123'));
@@ -101,4 +107,23 @@ test('the AskUserQuestion guard leaves other tools untouched', async () => {
   const session = makeSession();
   const out = (await guardAsk(session, 'Read')) as { continue?: boolean };
   assert.equal(out.continue, true);
+});
+
+test('a question-ending turn flips to needs_input and routes replies through resume', () => {
+  const session = makeSession();
+  // A turn that ends without a sentinel is the agent asking the human something.
+  feed(session, successResult('which database should I use?'));
+  assert.equal(session.getInfo().status, 'needs_input');
+  // The turn has ended, so a reply must relaunch (resume) rather than push onto a dead queue —
+  // this is the bug where answering silently dropped the reply unless the human did stop+retry.
+  assert.equal(turnEnded(session), true);
+});
+
+test('a mid-turn approval pause keeps the live path for replies', () => {
+  const session = makeSession();
+  feed(session, successResult('need to run a command'));
+  // Simulate the SDK pausing mid-turn for tool approval: the subprocess is still alive and reading
+  // the input queue, so replies must stay on the live push path, not relaunch.
+  (session as unknown as { setStatus(s: string): void }).setStatus('needs_approval');
+  assert.equal(turnEnded(session), false);
 });

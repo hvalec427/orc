@@ -444,7 +444,13 @@ export class AgentSession extends EventEmitter {
    */
   private deliver(text: string, entry: { kind: LogEntry['kind']; log: string }): void {
     this.question = undefined;
-    if (this.isDead()) {
+    // If the turn has ended, the SDK subprocess is no longer consuming the input queue — for
+    // 'needs_input' the turn resolved to a 'result' and the CLI typically exits — so pushing the
+    // reply onto the live queue would be silently dropped and the agent would never pick it up.
+    // Relaunch the session (resume: sessionId) instead, the same path a human retry takes, so the
+    // answer reliably starts a fresh turn. Only a genuinely mid-turn session (working /
+    // needs_approval) still has a live loop to receive a pushed message.
+    if (this.turnEnded()) {
       this.resumeWith(text, entry);
       return;
     }
@@ -506,16 +512,28 @@ export class AgentSession extends EventEmitter {
     }
   }
 
-  /** Resume a dead/finished agent and nudge it to continue. */
+  /** Resume a finished/crashed/paused agent (or one waiting for input) and nudge it to continue. */
   retry(): void {
-    if (!this.isDead()) return;
+    if (!this.turnEnded()) return;
     this.resumeWith(
       'Please continue the task where you left off. If the previous step failed, investigate the error and fix it.',
     );
   }
 
+  /** Terminal states: the session has fully ended and can only be picked back up by resuming. */
   private isDead(): boolean {
     return this.status === 'done' || this.status === 'error' || this.status === 'stopped';
+  }
+
+  /**
+   * The current turn has finished, so no live loop is reading the input queue. This is every
+   * terminal state plus 'needs_input' — where the turn resolved to a 'result' and the SDK
+   * subprocess has gone idle (and often exited) waiting for the human. Continuing from any of
+   * these requires relaunching the session (resume: sessionId), not pushing onto the live queue.
+   * 'needs_approval' is NOT included: that pauses mid-turn with the subprocess still alive.
+   */
+  private turnEnded(): boolean {
+    return this.isDead() || this.status === 'needs_input';
   }
 
   /**
