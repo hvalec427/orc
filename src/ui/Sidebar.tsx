@@ -12,6 +12,7 @@ const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
   needs_input: { glyph: '?', color: 'magenta' },
   needs_approval: { glyph: '!', color: 'yellow' },
   needs_login: { glyph: '⊘', color: 'red' },
+  paused: { glyph: '‖', color: 'yellow' },
   done: { glyph: '✓', color: 'green' },
   error: { glyph: '✗', color: 'red' },
   stopped: { glyph: '■', color: 'gray' },

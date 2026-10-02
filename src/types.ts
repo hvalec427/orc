@@ -113,6 +113,7 @@ export type AgentStatus =
   | 'needs_input' // turn ended asking the human a question
   | 'needs_approval' // a tool is waiting for human approval (canUseTool)
   | 'needs_login' // the Claude CLI is logged out; the human must re-authenticate, then retry
+  | 'paused' // the human paused the turn (interrupted) but kept the subprocess ALIVE — an alive state, NOT in isDead()
   | 'done' // agent reported the task finished
   | 'error' // the session errored
   | 'stopped'; // interrupted/closed by the human
@@ -121,6 +122,9 @@ export type LogKind =
   | 'text'
   | 'thinking'
   | 'tool'
+  // The full captured stdout/stderr output of a tool the agent ran (a tool_result block from the
+  // SDK 'user' message). Distinct from 'tool' (the one-line invocation summary).
+  | 'tool_result'
   | 'system'
   | 'result'
   | 'error'
@@ -137,6 +141,8 @@ export interface LogEntry {
   text: string;
   /** Tool name, for kind === 'tool'. */
   toolName?: string;
+  /** The SDK tool_use id this entry corresponds to, for kind === 'tool_result' / 'error'. */
+  toolUseId?: string;
   /** Whether the streaming block has finished. */
   done: boolean;
 }

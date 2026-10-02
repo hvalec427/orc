@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentSession, summarizeTool, type AgentSessionInit } from '../src/agent/AgentSession.js';
-import type { ProjectConfig } from '../src/types.js';
+import type { AgentStatus, LogEntry, ProjectConfig } from '../src/types.js';
 
 const CONFIG: ProjectConfig = {
   name: 'demo',
@@ -65,6 +65,61 @@ function guardAsk(session: AgentSession, toolName: string): Promise<unknown> {
 // relaunches the session (resume) or is pushed onto the live input queue.
 function turnEnded(session: AgentSession): boolean {
   return (session as unknown as { turnEnded(): boolean }).turnEnded();
+}
+
+/** The private internals the pause/kill/tool-result tests reach into via casts. */
+type SessionPrivates = {
+  handle(m: unknown): void;
+  status: AgentStatus;
+  pausing: boolean;
+  query: { interrupt: () => Promise<void> } | null;
+  abortController: AbortController | null;
+  queue: unknown;
+  pause(): Promise<void>;
+  resume(): void;
+};
+
+function privates(session: AgentSession): SessionPrivates {
+  return session as unknown as SessionPrivates;
+}
+
+/** Build a synthetic SDK 'user' message carrying tool_result content blocks. */
+function userMessage(blocks: unknown[]) {
+  return {
+    type: 'user' as const,
+    session_id: 's1',
+    message: { role: 'user' as const, content: blocks },
+  };
+}
+
+/** The last recorded log entry (newest event the session appended). */
+function lastEvent(session: AgentSession): LogEntry {
+  const events = session.getEvents();
+  return events[events.length - 1];
+}
+
+/**
+ * Inject a fake `query` (counting interrupt() calls) and a spied `abortController` (recording
+ * abort()) onto the never-launched session, so pause()/stop() have something to act on.
+ */
+function injectFakes(session: AgentSession): {
+  calls: { interrupt: number };
+  wasAborted: () => boolean;
+} {
+  const p = privates(session);
+  const calls = { interrupt: 0 };
+  p.query = {
+    interrupt: async () => {
+      calls.interrupt++;
+    },
+  };
+  const ac = new AbortController();
+  let aborted = false;
+  ac.abort = () => {
+    aborted = true;
+  };
+  p.abortController = ac;
+  return { calls, wasAborted: () => aborted };
 }
 
 test('a DONE result marks the session done and keeps the commit hash', () => {
@@ -196,4 +251,124 @@ test("buildOptions disables the built-in Bash tool via disallowedTools", () => {
   const opts = buildOptions(session);
   assert.ok(Array.isArray(opts.disallowedTools), 'disallowedTools is set');
   assert.ok(opts.disallowedTools!.includes('Bash'), "'Bash' is disallowed (replaced by mcp__orc__run)");
+});
+
+// ---- (a) tool_result capture: string content ----------------------------------------------
+test('a tool_result with string content is captured verbatim (multi-line preserved)', () => {
+  const session = makeSession();
+  feed(session, userMessage([{ type: 'tool_result', tool_use_id: 't1', content: 'hello\nworld' }]));
+  const entry = lastEvent(session);
+  assert.equal(entry.kind, 'tool_result');
+  assert.equal(entry.text, 'hello\nworld');
+  assert.equal(entry.toolUseId, 't1');
+});
+
+// ---- (b) tool_result capture: array content ------------------------------------------------
+test('a tool_result with array content joins its text blocks', () => {
+  const session = makeSession();
+  feed(
+    session,
+    userMessage([
+      {
+        type: 'tool_result',
+        tool_use_id: 't2',
+        content: [
+          { type: 'text', text: 'line1' },
+          { type: 'text', text: 'line2' },
+        ],
+      },
+    ]),
+  );
+  const entry = lastEvent(session);
+  assert.equal(entry.kind, 'tool_result');
+  assert.equal(entry.text, 'line1line2');
+});
+
+// ---- (c) error flag ------------------------------------------------------------------------
+test('a tool_result with is_error is logged as an error entry', () => {
+  const session = makeSession();
+  feed(
+    session,
+    userMessage([{ type: 'tool_result', tool_use_id: 't3', is_error: true, content: 'boom' }]),
+  );
+  assert.equal(lastEvent(session).kind, 'error');
+});
+
+// ---- (d) large output truncation -----------------------------------------------------------
+test('a huge tool_result is truncated into a single bounded entry', () => {
+  const session = makeSession();
+  const before = session.getEvents().length;
+  feed(
+    session,
+    userMessage([{ type: 'tool_result', tool_use_id: 't4', content: 'x'.repeat(20_000) }]),
+  );
+  const added = session.getEvents().length - before;
+  assert.equal(added, 1, 'exactly one event added');
+  const entry = lastEvent(session);
+  assert.ok(
+    entry.text.length < 20_000,
+    `expected truncated length well under 20000, got ${entry.text.length}`,
+  );
+  assert.match(entry.text, /truncated/);
+});
+
+// ---- (e) pause interrupts but does NOT kill ------------------------------------------------
+test('pause() interrupts the turn but keeps the subprocess alive', async () => {
+  const session = makeSession();
+  const p = privates(session);
+  p.status = 'working';
+  const { calls, wasAborted } = injectFakes(session);
+  const queueBefore = p.queue;
+
+  await p.pause();
+
+  assert.equal(calls.interrupt, 1, 'interrupt called exactly once');
+  assert.equal(wasAborted(), false, 'must NOT abort the subprocess');
+  assert.equal(p.status, 'paused');
+  assert.notEqual(p.query, null, 'query must stay non-null (alive)');
+  assert.equal(p.queue, queueBefore, 'queue identity unchanged (not re-created)');
+});
+
+// ---- (f) a non-success result while pausing becomes paused, not error ----------------------
+test('an error result arriving while pausing resolves to paused, not error', () => {
+  const session = makeSession();
+  const p = privates(session);
+  p.status = 'working';
+  p.pausing = true;
+
+  feed(session, errorResult('error_during_execution', ['interrupted']));
+
+  assert.equal(p.status, 'paused');
+  assert.equal(p.pausing, false, 'pausing flag cleared');
+});
+
+// ---- (g) resume pushes to the LIVE queue (no relaunch) -------------------------------------
+test('resume() continues the live session without re-creating the queue or query', () => {
+  const session = makeSession();
+  const p = privates(session);
+  p.status = 'paused';
+  injectFakes(session);
+  const queueBefore = p.queue;
+  const queryBefore = p.query;
+
+  p.resume();
+
+  assert.equal(p.status, 'working');
+  assert.equal(p.queue, queueBefore, 'queue identity unchanged (pushed to live queue)');
+  assert.equal(p.query, queryBefore, 'query identity unchanged (no relaunch/resumeWith)');
+});
+
+// ---- (h) hard-kill still aborts + closes ----------------------------------------------------
+test('stop() hard-kills: interrupts, aborts and drops the query', async () => {
+  const session = makeSession();
+  const p = privates(session);
+  p.status = 'working';
+  const { calls, wasAborted } = injectFakes(session);
+
+  await session.stop();
+
+  assert.equal(calls.interrupt, 1, 'interrupt called');
+  assert.equal(wasAborted(), true, 'subprocess aborted');
+  assert.equal(p.query, null, 'query nulled');
+  assert.equal(p.status, 'stopped');
 });
