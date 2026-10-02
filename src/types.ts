@@ -239,4 +239,9 @@ export interface ProjectConfig {
 export interface OrcConfig {
   /** The projects agents can be launched into. */
   projects: ProjectConfig[];
+  /**
+   * Whether to drive the tmux viewer pane. Undefined = auto-detect (on when available); false =
+   * force today's plain Ink UI; true = opt in explicitly.
+   */
+  tmux?: boolean;
 }

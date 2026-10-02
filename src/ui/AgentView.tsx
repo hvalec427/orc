@@ -2,19 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { AgentSession } from '../agent/AgentSession.js';
 import type { LogKind } from '../types.js';
-
-const COLOR: Record<LogKind, { color?: string; dim?: boolean }> = {
-  text: {},
-  thinking: { color: 'gray', dim: true },
-  tool: { color: 'cyan' },
-  system: { color: 'gray', dim: true },
-  result: { color: 'green' },
-  error: { color: 'red' },
-  input: { color: 'yellow' },
-  // Cross-agent messages (a subagent's report/question) — magenta so they stand apart from the
-  // human's yellow "you: …" input and from dim-gray system lines.
-  subagent: { color: 'magenta' },
-};
+import { LOG_KIND_COLOR } from './logFormat.js';
 
 interface DLine {
   kind: LogKind;
@@ -151,7 +139,7 @@ export function AgentView({
       )}
       <Box flexDirection="column" height={bodyRows}>
         {windowLines.map((l, i) => {
-          const c = COLOR[l.kind];
+          const c = LOG_KIND_COLOR[l.kind];
           return (
             <Text key={i} color={c.color} dimColor={c.dim} wrap="truncate">
               {l.text || ' '}

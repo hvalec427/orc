@@ -47,6 +47,7 @@ const GlobalConfigSchema = z
   .object({
     ...OverridableSchema,
     projects: z.array(ProjectSchema).min(1),
+    tmux: z.boolean().optional(),
   })
   .strict();
 
@@ -54,6 +55,9 @@ export interface CliFlags {
   config?: string;
   model?: string;
   noMaestro?: boolean;
+  tmux?: boolean;
+  noTmux?: boolean;
+  tmuxChild?: boolean;
 }
 
 const DEFAULTS = {
@@ -143,7 +147,9 @@ export function loadConfig(flags: CliFlags): OrcConfig {
     names.add(p.name);
   }
 
-  return { projects };
+  const tmux = flags.noTmux ? false : flags.tmux ?? parsed.tmux;
+
+  return { projects, tmux };
 }
 
 // --- Raw config editing (used by `orc setup`) ---

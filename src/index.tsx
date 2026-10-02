@@ -5,6 +5,7 @@ import { loadConfig, resolveConfigPath, DEFAULT_CONFIG_PATH, type CliFlags } fro
 import { AgentManager } from './agent/AgentManager.js';
 import { App } from './ui/App.js';
 import { SetupApp } from './ui/SetupApp.js';
+import { TmuxController, detectMode, buildReexecArgv } from './tmux/TmuxController.js';
 
 type Command = 'run' | 'setup';
 
@@ -17,6 +18,8 @@ function parseArgs(argv: string[]): { command: Command; flags: CliFlags } {
     else if (a === '--config') flags.config = argv[++i];
     else if (a === '--model') flags.model = argv[++i];
     else if (a === '--no-maestro') flags.noMaestro = true;
+    else if (a === '--no-tmux') flags.noTmux = true;
+    else if (a === '--tmux-child') flags.tmuxChild = true;
     else if (a === '-h' || a === '--help') {
       printHelp();
       process.exit(0);
@@ -30,7 +33,7 @@ function printHelp(): void {
     [
       'orc — TUI orchestrator for parallel Claude Code mobile agents',
       '',
-      'Usage: orc [command] [--config <path>] [--model <id>] [--no-maestro]',
+      'Usage: orc [command] [--config <path>] [--model <id>] [--no-maestro] [--no-tmux]',
       '',
       'Commands:',
       '  (default)        Launch the orchestrator TUI',
@@ -40,6 +43,7 @@ function printHelp(): void {
       `  --config <path>  Central config file (default: ${DEFAULT_CONFIG_PATH})`,
       '  --model <id>     Override the model for all agents',
       '  --no-maestro     Do not attach the Maestro MCP server',
+      '  --no-tmux        Do not drive the tmux viewer pane (plain TUI)',
       '',
       'The config lists your projects (nice name + repo path). Run `orc setup` to add',
       'projects and install CLAUDE.md, then pick a project when starting each agent.',
@@ -63,11 +67,18 @@ function leaveAltScreen(): void {
   altActive = false;
   process.stdout.write(ALT_OFF);
 }
+// Tear the tmux session/viewer pane down on any exit path (set once a controller is attached).
+let tmuxForSignals: TmuxController | undefined;
+
 // Always restore the normal screen, even on crash/kill. Ctrl+C (SIGINT) is left to Ink so
 // it can unmount and let main() stop agents gracefully before we restore the screen.
-process.on('exit', leaveAltScreen);
+process.on('exit', () => {
+  tmuxForSignals?.shutdownSync();
+  leaveAltScreen();
+});
 for (const sig of ['SIGTERM', 'SIGHUP'] as const) {
   process.on(sig, () => {
+    tmuxForSignals?.shutdownSync();
     leaveAltScreen();
     process.exit(0);
   });
@@ -107,8 +118,36 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Decide whether to drive tmux BEFORE touching the alt-screen: a bootstrap re-exec must happen on
+  // the plain terminal so attaching tmux owns the screen cleanly.
+  const disabled = config.tmux === false || flags.noTmux === true;
+  const binaryAvailable = await TmuxController.isAvailable();
+  const mode = detectMode({
+    disabled,
+    isTTY: !!process.stdout.isTTY,
+    binaryAvailable,
+    inTmux: !!process.env.TMUX,
+    isChild: !!flags.tmuxChild,
+  });
+
+  let tmux: TmuxController | undefined;
+  if (mode === 'bootstrap' && !flags.tmuxChild) {
+    // Launch our own tmux session and re-exec orc inside its left pane; this process is replaced.
+    await new TmuxController().bootstrapAndReexec(buildReexecArgv(process.argv, process.argv[1]));
+    return;
+  } else if (mode === 'inside' || (mode === 'bootstrap' && flags.tmuxChild)) {
+    try {
+      tmux = new TmuxController();
+      await tmux.adopt();
+    } catch {
+      // A tmux hiccup must never stop orc from coming up — fall back to the plain UI.
+      tmux = undefined;
+    }
+    tmuxForSignals = tmux;
+  }
+
   enterAltScreen();
-  const manager = new AgentManager(config);
+  const manager = new AgentManager(config, tmux);
   // Reload agents persisted by the previous run as paused, resumable sessions before the UI renders,
   // so a quit-and-relaunch shows the prior agents (as 'stopped') instead of starting empty.
   manager.restore();
@@ -116,6 +155,7 @@ async function main(): Promise<void> {
 
   await app.waitUntilExit();
   await manager.stopAll();
+  await tmux?.shutdown();
   leaveAltScreen();
 }
 

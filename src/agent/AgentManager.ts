@@ -20,6 +20,7 @@ import type {
   SubagentInfo,
 } from './orchestratorTools.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
+import type { Tmux } from '../tmux/TmuxController.js';
 
 /** How long a cross-agent orchestration request waits before giving up (ms). */
 const ORCHESTRATION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -70,7 +71,10 @@ export class AgentManager extends EventEmitter {
    */
   private readonly pendingParentAsks = new Map<string, (answer: string) => void>();
 
-  constructor(private readonly config: OrcConfig) {
+  constructor(
+    private readonly config: OrcConfig,
+    private readonly tmux?: Tmux,
+  ) {
     super();
     for (const project of config.projects) {
       if (project.portRange) this.ports.set(project.name, new PortAllocator(project.portRange));
@@ -88,6 +92,11 @@ export class AgentManager extends EventEmitter {
   /** The projects agents can be launched into. */
   projects(): ProjectConfig[] {
     return this.config.projects;
+  }
+
+  /** Re-point the tmux viewer pane at the given agent's log (inert when tmux is off). */
+  showAgentInPane(id?: string): void {
+    this.tmux?.showAgent(id);
   }
 
   list(): AgentSession[] {
@@ -350,7 +359,12 @@ export class AgentManager extends EventEmitter {
       cutWorktreeOnDemand,
       orchestration,
     });
-    session.on('update', () => this.emit('update'));
+    // Mirror this agent's rendered log into its tmux pane file on every update (inert when tmux off).
+    this.tmux?.registerAgent(id, name, template);
+    session.on('update', () => {
+      this.emit('update');
+      this.tmux?.mirror(id, session.getEvents());
+    });
     this.agents.set(id, session);
     return session;
   }
@@ -726,6 +740,7 @@ export class AgentManager extends EventEmitter {
 
     await session.stop();
     this.agents.delete(id);
+    this.tmux?.unregisterAgent(id);
     // If this child was blocked on its orchestrator, release the waiter so nothing dangles.
     const waiter = this.pendingParentAsks.get(id);
     if (waiter) {

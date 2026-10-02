@@ -98,6 +98,12 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     }
   }, [selectedId, infos]);
 
+  // Re-point the tmux viewer pane at whichever agent is selected (no-op when tmux is off, or when a
+  // mock manager in tests lacks the method).
+  useEffect(() => {
+    manager.showAgentInPane?.(selectedId);
+  }, [manager, selectedId]);
+
   const approvalPending = selected?.pendingApproval;
 
   // Global keys — active in list mode when no approval modal is up. Quit
