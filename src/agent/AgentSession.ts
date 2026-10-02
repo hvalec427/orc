@@ -147,20 +147,151 @@ export interface AgentSessionInit {
 }
 
 /**
- * Tools a read-only agent is never allowed to use. Covers the file-mutating
- * tools plus Bash (which can run arbitrary state-changing commands). The agent can still
- * investigate with Read/Grep/Glob/Task and other read-only tools.
+ * File-mutating tools a read-only agent is never allowed to use, no matter what. Bash is handled
+ * separately ({@link isReadOnlyBashCommand}) because read-only agents legitimately need to run
+ * investigation commands (git log/diff, ls, grep, tests) — denying Bash wholesale was the single
+ * biggest reason these agents couldn't do their jobs.
  */
-const READONLY_DENIED_TOOLS = new Set([
-  'Edit',
-  'Write',
-  'NotebookEdit',
-  'MultiEdit',
-  'Bash',
-  'BashOutput',
-  'KillShell',
-  'KillBash',
+const READONLY_DENIED_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+
+/**
+ * Read-only binaries a read-only agent may run via Bash: investigation/inspection only, never
+ * anything that writes files, changes git state, installs packages, or launches long-lived servers.
+ * A command is allowed only when EVERY simple command in it (split on pipes and &&/||/;) is in this
+ * set — see {@link isReadOnlyBashCommand}.
+ */
+const READONLY_BASH_COMMANDS = new Set([
+  // Filesystem inspection
+  'ls', 'cat', 'head', 'tail', 'wc', 'file', 'stat', 'du', 'tree', 'pwd', 'realpath', 'basename',
+  'dirname', 'readlink',
+  // Search
+  'grep', 'egrep', 'fgrep', 'rg', 'ag', 'find', 'fd', 'locate',
+  // Text viewing / transforms that don't write (no redirection is allowed anyway)
+  'echo', 'printf', 'sort', 'uniq', 'cut', 'tr', 'column', 'diff', 'comm', 'nl', 'tee', 'xargs',
+  'date', 'env', 'whoami', 'hostname', 'uname', 'which', 'type', 'command', 'true', 'false',
+  'jq', 'yq',
+  // Package/tooling introspection (read-only subcommands only; see per-command checks)
+  'node', 'npm', 'npx', 'pnpm', 'yarn', 'python', 'python3', 'pip', 'cargo', 'go', 'make',
 ]);
+
+/**
+ * Whether a Bash command is safe for a read-only agent: pure investigation, no state changes.
+ *
+ * Conservative by design — when in doubt it returns false so the agent is told to delegate. It
+ * rejects any output redirection (`>`/`>>`), command substitution feeding a writer, and process
+ * substitution, then requires every simple command (across pipes and `&&`/`||`/`;`) to be a known
+ * read-only binary. `git` is allowed only for read-only subcommands; `npm`/`yarn`/etc. only for
+ * their read-only subcommands (test/lint/typecheck/run script inspection) — never install/add.
+ */
+export function isReadOnlyBashCommand(raw: string): boolean {
+  const cmd = raw.trim();
+  if (!cmd) return false;
+
+  // Any output redirection or file-descriptor write is a mutation. (`2>&1` is fine; `>`/`>>` are not.)
+  if (/(^|[^0-9&])>>?/.test(cmd)) return false;
+  // Process substitution and here-docs can smuggle in writes.
+  if (/<\(|>\(|<<</.test(cmd)) return false;
+  // Backgrounding would leave a process running past the turn.
+  if (/(^|[^&])&\s*$/.test(cmd)) return false;
+
+  // Split into simple commands across pipes and sequencing operators. Each segment must be read-only.
+  const segments = cmd.split(/\|\||&&|[;|]/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return false;
+
+  return segments.every(isReadOnlySimpleCommand);
+}
+
+/** Classify one simple command (already split off its pipeline) as read-only or not. */
+function isReadOnlySimpleCommand(segment: string): boolean {
+  // Strip leading VAR=val environment assignments.
+  let rest = segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, '').trim();
+  if (!rest) return false;
+
+  const tokens = rest.split(/\s+/);
+  const name = tokens[0].replace(/^.*\//, ''); // drop any leading path
+  const args = tokens.slice(1);
+
+  switch (name) {
+    case 'git':
+      return isReadOnlyGit(args);
+    case 'sed':
+      // Only `sed -n` (print mode) with no in-place `-i` is read-only.
+      return args.includes('-n') && !args.some((a) => a === '-i' || a.startsWith('-i'));
+    case 'awk':
+      // awk that doesn't write to files is fine; redirection is already rejected above.
+      return true;
+    case 'npm':
+    case 'pnpm':
+    case 'yarn':
+      return isReadOnlyPackageScript(args);
+    case 'npx':
+      // Allow running local tooling (tsc/eslint/jest/vitest) read-only; reject obvious installers.
+      return !args.some((a) => /^(i|install|add|create|init)$/.test(a));
+    case 'node':
+      // `node --version`, `node -e "..."` read-only snippets, running a script that only reads — we
+      // can't fully prove the script is read-only, so only allow explicit version/eval/print flags.
+      return args.length === 0 || args.some((a) => /^(-v|--version|-e|--eval|-p|--print|--help|-h)$/.test(a));
+    case 'python':
+    case 'python3':
+      return args.some((a) => /^(-V|--version|-c|-m|--help|-h)$/.test(a)) || args.length === 0;
+    case 'pip':
+      return args[0] === 'list' || args[0] === 'show' || args[0] === 'freeze' || args.includes('--version');
+    case 'cargo':
+      return ['check', 'test', 'tree', 'metadata', 'fmt', 'clippy', '--version'].includes(args[0] ?? '');
+    case 'go':
+      return ['test', 'vet', 'list', 'version', 'env', 'doc'].includes(args[0] ?? '');
+    case 'make':
+      // Only the dry-run / list targets are provably read-only.
+      return args.some((a) => a === '-n' || a === '--dry-run' || a === '-p' || a === '--print-data-base');
+    default:
+      return READONLY_BASH_COMMANDS.has(name);
+  }
+}
+
+/** git subcommands that only read repository state. */
+const READONLY_GIT_SUBCOMMANDS = new Set([
+  'log', 'diff', 'show', 'status', 'blame', 'ls-files', 'ls-tree', 'cat-file', 'rev-parse',
+  'rev-list', 'branch', 'tag', 'describe', 'shortlog', 'reflog', 'grep', 'whatchanged',
+  'remote', 'config', 'show-ref', 'symbolic-ref', 'merge-base', 'name-rev', 'for-each-ref',
+  'count-objects',
+]);
+
+function isReadOnlyGit(args: string[]): boolean {
+  // Skip leading global flags like `-C <path>`, `--no-pager`, `-c key=val`.
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    if (args[i] === '-C' || args[i] === '-c') i += 2;
+    else i += 1;
+  }
+  const sub = args[i];
+  if (!sub) return true; // bare `git` / `git --version`
+  // `git config` is read-only only when not setting a value: a set has a value arg after the key.
+  if (sub === 'config') {
+    const after = args.slice(i + 1).filter((a) => !a.startsWith('-'));
+    return after.length <= 1 || args.slice(i + 1).some((a) => a === '--get' || a === '--list' || a === '-l');
+  }
+  // `git branch`/`git tag`/`git remote` mutate when given a create/delete action.
+  if (sub === 'branch' || sub === 'tag') {
+    return !args.slice(i + 1).some((a) => /^-(d|D|m|M|f)$/.test(a)) && args.slice(i + 1).filter((a) => !a.startsWith('-')).length === 0;
+  }
+  if (sub === 'remote') return ['', '-v', 'show', 'get-url'].includes(args[i + 1] ?? '');
+  return READONLY_GIT_SUBCOMMANDS.has(sub);
+}
+
+/** npm/pnpm/yarn invocations that run read-only scripts (test/lint/typecheck) or inspect, never install. */
+function isReadOnlyPackageScript(args: string[]): boolean {
+  const sub = args[0] ?? '';
+  if (/^(install|i|add|remove|rm|uninstall|update|up|ci|link|unlink|publish|exec|dlx|create|init)$/.test(sub)) {
+    return false;
+  }
+  if (sub === 'ls' || sub === 'list' || sub === 'outdated' || sub === 'why' || sub === 'view' || sub === 'info') {
+    return true;
+  }
+  if (sub === '--version' || sub === '-v') return true;
+  // `npm run <script>` / `npm test` / `yarn test` etc. Only allow clearly read-only script names.
+  const script = sub === 'run' || sub === 'run-script' ? args[1] ?? '' : sub;
+  return /^(test|tests|lint|typecheck|type-check|tsc|check|coverage)$/.test(script);
+}
 
 /**
  * One Claude Code agent = one streaming query() session.
@@ -751,30 +882,13 @@ export class AgentSession extends EventEmitter {
 
     if (readOnly) {
       // A read-only agent is read-only no matter the project's permission mode: never bypass
-      // permissions, and hard-deny every mutating tool. Read-only tools are auto-allowed so the
-      // agent can still investigate without pestering the human for approval on each read. The
-      // launcher and pipeline are each additionally allowed exactly their own orchestration tool
-      // (spawn feature agents / run one role step) so they can actually drive their sub-agents. The
-      // group coordination tools (mcp__orc__list/ask/answer_subagent, mcp__orc__ask_orchestrator) are
-      // always allowed — they only pass messages between agents, never touch the codebase.
-      const ownTool =
-        this.template === 'launcher'
-          ? LAUNCH_TOOL
-          : this.template === 'pipeline'
-            ? RUN_STEP_TOOL
-            : undefined;
+      // permissions. It can investigate freely (read tools auto-allowed, plus read-only Bash such as
+      // git log/diff, ls, grep, and tests) but every file-mutating tool and any state-changing Bash
+      // command is denied. The launcher/pipeline additionally get their own orchestration tool, and
+      // the group coordination tools are always allowed — they only pass messages between agents.
       opts.permissionMode = 'default';
       opts.canUseTool = (toolName, input) =>
-        Promise.resolve(
-          (ownTool && toolName === ownTool) || ORCHESTRATION_TOOLS.has(toolName)
-            ? { behavior: 'allow', updatedInput: input }
-            : READONLY_DENIED_TOOLS.has(toolName)
-              ? {
-                  behavior: 'deny',
-                  message: `"${toolName}" is disabled: this is a read-only ${this.template} agent that cannot modify the codebase.`,
-                }
-              : { behavior: 'allow', updatedInput: input },
-        );
+        Promise.resolve(this.decideReadOnlyTool(toolName, input));
     } else if (this.config.permissionMode === 'bypassPermissions') {
       opts.allowDangerouslySkipPermissions = true;
     } else if (this.config.permissionMode === 'default') {
@@ -859,6 +973,40 @@ export class AgentSession extends EventEmitter {
     if (Object.keys(mcpServers).length > 0) opts.mcpServers = mcpServers;
 
     return opts;
+  }
+
+  /**
+   * Decide whether a read-only agent may use a tool. Read/Grep/Glob/Task and the group coordination
+   * tools (plus the launcher/pipeline's own spawn/run-step tool) are auto-allowed. File-mutating
+   * tools are always denied. Bash is allowed only for provably read-only commands (git log/diff, ls,
+   * grep, tests, …) via {@link isReadOnlyBashCommand}; a state-changing command is denied with a hint
+   * to spawn a full-access subagent for that part.
+   */
+  private decideReadOnlyTool(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string } {
+    const ownTool =
+      this.template === 'launcher' ? LAUNCH_TOOL : this.template === 'pipeline' ? RUN_STEP_TOOL : undefined;
+    if ((ownTool && toolName === ownTool) || ORCHESTRATION_TOOLS.has(toolName)) {
+      return { behavior: 'allow', updatedInput: input };
+    }
+    if (READONLY_DENIED_TOOLS.has(toolName)) {
+      return {
+        behavior: 'deny',
+        message: `"${toolName}" is disabled: this is a read-only ${this.template} agent that cannot modify the codebase. If you need to change files, spawn a full-access "feature"/"fix"/"worker" subagent to do that part.`,
+      };
+    }
+    if (toolName === 'Bash') {
+      const command = typeof input.command === 'string' ? input.command : '';
+      if (!isReadOnlyBashCommand(command)) {
+        return {
+          behavior: 'deny',
+          message: `This command isn't allowed for a read-only ${this.template} agent: it may change state. You can run read-only commands (git log/diff/show/status/blame, ls, cat, grep/rg, find, and test/lint/typecheck scripts). To run a state-changing command, spawn a full-access "feature"/"fix"/"worker" subagent.`,
+        };
+      }
+    }
+    return { behavior: 'allow', updatedInput: input };
   }
 
   /**

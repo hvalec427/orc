@@ -263,7 +263,8 @@ export function buildSpawnSubagentTool(spawn: SpawnSubagent) {
         'kind of agent than you (e.g. a read-only "explorer" for deep investigation, a surgical "fix" ' +
         'agent for a bug, a "feature" agent for a separate piece of work), OR — especially — when the ' +
         'task needs something you cannot do yourself: if you are a read-only agent and the work ' +
-        'requires editing files or running commands, spawn a full-access "feature"/"fix"/"worker" ' +
+        'requires editing files or running state-changing commands (read-only commands like git ' +
+        'log/diff, ls, grep and tests you can run yourself), spawn a full-access "feature"/"fix"/"worker" ' +
         'subagent to do that part instead of giving up or asking the human. The subagent joins your ' +
         'group (it shares your worktree/branch) and shows up in the TUI nested beneath you, so the ' +
         'human can follow its progress. The subagent does NOT see your conversation, so the prompt ' +
