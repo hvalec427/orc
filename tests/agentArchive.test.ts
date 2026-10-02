@@ -141,6 +141,33 @@ test('topLevel() includes archived agents (so j/k can walk the Done section); fi
   assert.equal(manager.firstWaiting()?.id, 'b1', 'firstWaiting skips the archived agent');
 });
 
+test('sidebar child navigation skips archived siblings', async () => {
+  // Parent with three children added in order; the first two get archived, leaving only the newest
+  // (c3) active under the parent. Navigation into the group must land on c3, not on an archived one.
+  const parent = makeSession('p1');
+  const c1 = makeSession('c1', { parentId: 'p1' });
+  const c2 = makeSession('c2', { parentId: 'p1' });
+  const c3 = makeSession('c3', { parentId: 'p1' });
+  const manager = managerWith([parent, c1, c2, c3]);
+
+  await manager.archive('c1');
+  await manager.archive('c2');
+
+  assert.deepEqual(
+    manager.activeChildrenOf('p1').map((s) => s.id),
+    ['c3'],
+    'only the still-active child remains under the parent',
+  );
+  assert.equal(
+    manager.firstActiveChildOf('p1')?.id,
+    'c3',
+    'entering the group (l) lands on the active child, not an archived one',
+  );
+  // j/k among siblings stays on c3 — it is the only active sibling, so there is nowhere to step.
+  assert.equal(manager.siblingOf('c3', -1)?.id, 'c3', 'k off the only active child stays put');
+  assert.equal(manager.siblingOf('c3', 1)?.id, 'c3', 'j off the only active child stays put');
+});
+
 test('getInfo() exposes the archived flag that persist() serializes', async () => {
   // persist() writes to a fixed path under the real home, so rather than hit the filesystem we
   // assert on getInfo(), the single source persist() serializes each agent from.

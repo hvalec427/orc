@@ -44,7 +44,9 @@ function makeManager(rec: Rec) {
   m.mergeChildOf = () => undefined;
   m.cleanupChildOf = () => undefined;
   m.firstChildOf = () => undefined;
+  m.firstActiveChildOf = () => undefined;
   m.childrenOf = () => [];
+  m.activeChildrenOf = () => [];
   m.groupRootOf = (id: string) => byId.get(id);
   m.topLevel = () => ordered;
   m.topLevelSibling = (id: string) => byId.get(id);

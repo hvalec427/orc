@@ -60,6 +60,10 @@ function makeManager(topLevelCount: number) {
   };
   m.firstChildOf = (id: string) => ordered.find((s) => s.getInfo().parentId === id);
   m.childrenOf = (id: string) => ordered.filter((s) => s.getInfo().parentId === id);
+  m.activeChildrenOf = (id: string) =>
+    ordered.filter((s) => s.getInfo().parentId === id && !s.getInfo().archived);
+  m.firstActiveChildOf = (id: string) =>
+    ordered.find((s) => s.getInfo().parentId === id && !s.getInfo().archived);
   m.topLevel = () => ordered.filter((s) => !s.getInfo().parentId);
   m.topLevelSibling = (id: string, delta: number) => {
     const tops = m.topLevel();

@@ -136,28 +136,46 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       if (manager.list().length === 0) return;
 
       if (key.downArrow || input === 'j' || key.tab || key.upArrow || input === 'k') {
-        // j/k are context-sensitive: they step through the MAIN (top-level) agents while the
-        // selection is on a parent, and through the selected parent's SUBAGENTS once you've
-        // descended into one with `l`. l enters a group, h leaves it — j/k never cross that
-        // boundary, so each list stays self-contained. Archived agents join the top-level walk only
-        // while the Done section is expanded (showDone), matching what the sidebar shows.
+        // j/k are context-sensitive in the ACTIVE list: they step through the MAIN (top-level) agents
+        // while the selection is on a parent, and through the selected parent's SUBAGENTS once you've
+        // descended into one with `l`. l enters a group, h leaves it — j/k never cross that boundary,
+        // so each list stays self-contained. The archived (Done) section is instead a FLAT list: once
+        // archived, former parent/child relationships don't matter, so j/k step through every archived
+        // agent by position and l/h are no-ops there.
         if (!selected) return;
         const delta = key.downArrow || input === 'j' || key.tab ? 1 : -1;
-        const target = selected.getInfo().parentId
-          ? manager.siblingOf(selected.id, delta)
-          : manager.topLevelSibling(selected.id, delta, showDone);
-        if (target) setSelectedId(target.id);
+        if (selected.getInfo().archived) {
+          // Flat Done section: step by position through every archived agent, ignoring old hierarchy.
+          const idx = archivedAgents.findIndex((a) => a.id === selected.id);
+          const next = Math.max(0, Math.min(idx + delta, archivedAgents.length - 1));
+          const target = archivedAgents[next];
+          if (target) setSelectedId(target.id);
+        } else {
+          // Active list: hierarchy-aware. siblingOf stays within a group; topLevelSibling walks parents.
+          const target = selected.getInfo().parentId
+            ? manager.siblingOf(selected.id, delta)
+            : manager.topLevelSibling(selected.id, delta, false);
+          // Stepping down off the last active agent crosses into the flat Done section (when expanded).
+          if (delta > 0 && showDone && target?.id === selected.id && archivedAgents.length > 0) {
+            setSelectedId(archivedAgents[0].id);
+          } else if (target) {
+            setSelectedId(target.id);
+          }
+        }
       } else if (input === 'l') {
         // Enter the selected parent's subagents: land on its first child, if any. Once inside,
-        // j/k navigate between the subagents (see above).
-        if (selected && !selected.getInfo().parentId) {
-          const child = manager.firstChildOf(selected.id);
+        // j/k navigate between the subagents (see above). No-op in the flat Done section.
+        if (selected && !selected.getInfo().parentId && !selected.getInfo().archived) {
+          const child = manager.firstActiveChildOf(selected.id);
           if (child) setSelectedId(child.id);
         }
       } else if (input === 'h') {
         // Leave a parent's subagents and return to the main list by jumping back to the parent.
-        const parentId = selected?.getInfo().parentId;
-        if (parentId) setSelectedId(parentId);
+        // No-op in the flat Done section (archived children have no group to leave).
+        if (selected && !selected.getInfo().archived) {
+          const parentId = selected.getInfo().parentId;
+          if (parentId) setSelectedId(parentId);
+        }
       } else if (input === 'w') {
         const waiting = manager.firstWaiting();
         if (waiting) setSelectedId(waiting.id);
@@ -404,8 +422,12 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           notice={notice}
           hasAgents={infos.length > 0}
           hasSession={!!selected}
-          hasParent={!!selected?.getInfo().parentId}
-          hasChild={!!selected && !!manager.firstChildOf(selected.id)}
+          hasParent={!!selected?.getInfo().parentId && !selected?.getInfo().archived}
+          hasChild={
+            !!selected &&
+            !selected.getInfo().archived &&
+            !!manager.firstActiveChildOf(selected.id)
+          }
           hasWaiting={!!manager.firstWaiting()}
           hasWorktree={!!selected?.getInfo().worktree}
           selectedStatus={selected?.getInfo().status}

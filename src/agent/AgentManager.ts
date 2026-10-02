@@ -376,6 +376,21 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
+   * A parent's direct children that are still ACTIVE (non-archived), oldest-first — i.e. exactly the
+   * subagents the sidebar nests under the parent. Sidebar navigation (l to enter a group, j/k within
+   * it) uses this so it never steps onto a child that's been archived into the Done section; archived
+   * children are reached only through the flat Done list, not under their old parent.
+   */
+  activeChildrenOf(id: string): AgentSession[] {
+    return this.childrenOf(id).filter((a) => !a.getInfo().archived);
+  }
+
+  /** A parent's first still-active child, if any. The target of `l` when entering a group. */
+  firstActiveChildOf(id: string): AgentSession | undefined {
+    return this.activeChildrenOf(id)[0];
+  }
+
+  /**
    * Top-level agents in sidebar order (same ordering as {@link list}, children filtered out). This is
    * the row of "main" agents j/k steps through while the selection is on a parent — archived ones
    * included, so j/k also walks the collapsible Done section once it's expanded.
@@ -410,7 +425,9 @@ export class AgentManager extends EventEmitter {
   siblingOf(id: string, delta: number): AgentSession | undefined {
     const agent = this.agents.get(id);
     if (!agent?.parentId) return undefined;
-    const siblings = this.childrenOf(agent.parentId);
+    // Only the still-active siblings: archived children have left the group for the flat Done section,
+    // so j/k under a parent must skip them (reaching them via the Done list instead).
+    const siblings = this.activeChildrenOf(agent.parentId);
     const idx = siblings.findIndex((a) => a.id === id);
     if (idx === -1) return undefined;
     const next = Math.max(0, Math.min(idx + delta, siblings.length - 1));

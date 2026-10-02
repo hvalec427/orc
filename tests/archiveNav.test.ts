@@ -7,17 +7,18 @@ import { App } from '../src/ui/App.js';
 import { AgentManager } from '../src/agent/AgentManager.js';
 import type { OrcConfig } from '../src/types.js';
 
-// Navigation WITHIN the Done section. Two archived top-level agents, the first with one archived
+// Navigation WITHIN the Done section. Two former top-level agents, the first with one former
 // subagent, plus one active agent so the active section is non-empty:
 //
 //   active-one           (active, selected first)
 //   Done
-//     arch-one           (archived parent)
-//       arch-child       (archived child)
-//     arch-two           (archived parent)
+//     arch-one           (archived, was a parent)
+//     arch-child         (archived, was arch-one's child)
+//     arch-two           (archived, was a parent)
 //
-// With the Done section expanded (t), j/k must step between the archived parents and l/h must
-// enter/leave the archived parent's subagents — mirroring the active list's behavior.
+// Once archived, former parent/child relationships don't matter: the Done section is a FLAT list.
+// With it expanded (t), j/k step through EVERY archived agent by position (children included), and
+// l/h are no-ops there — there's no group to enter or leave.
 type Rec = {
   id: string;
   name: string;
@@ -64,11 +65,15 @@ function makeManager() {
   m.firstChildOf = (id: string) =>
     AgentManager.prototype.firstChildOf.call({ agents: byId }, id);
   m.childrenOf = (id: string) => AgentManager.prototype.childrenOf.call({ agents: byId }, id);
+  m.activeChildrenOf = (id: string) =>
+    AgentManager.prototype.activeChildrenOf.call(m, id);
+  m.firstActiveChildOf = (id: string) =>
+    AgentManager.prototype.firstActiveChildOf.call(m, id);
   m.topLevel = () => AgentManager.prototype.topLevel.call(m);
   m.topLevelSibling = (id: string, delta: number, includeArchived?: boolean) =>
     AgentManager.prototype.topLevelSibling.call(m, id, delta, includeArchived);
   m.siblingOf = (id: string, delta: number) =>
-    AgentManager.prototype.siblingOf.call({ agents: byId }, id, delta);
+    AgentManager.prototype.siblingOf.call(m, id, delta);
   return m;
 }
 
@@ -85,7 +90,7 @@ function selectedName(frame: string): string | undefined {
   return undefined;
 }
 
-test('j/k navigate between archived top-level agents in the Done section', async () => {
+test('j/k walk every archived agent flatly, including former children', async () => {
   const manager = makeManager();
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
   await delay();
@@ -93,44 +98,52 @@ test('j/k navigate between archived top-level agents in the Done section', async
   stdin.write('t'); // expand Done
   await delay();
 
-  // Step down from the active agent onto the first archived parent.
+  // Step down from the active agent onto the first archived agent.
   stdin.write('j');
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
 
-  // j skips the archived child and lands on the next archived parent.
+  // j lands on the former CHILD (no longer skipped) — the Done section is flat.
+  stdin.write('j');
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
+
+  // j continues to the next archived agent.
   stdin.write('j');
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'arch-two');
 
-  // k goes back up to the previous archived parent.
+  // k steps back up through the same flat list.
   stdin.write('k');
   await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
+  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
 
   unmount();
 });
 
-test('l/h enter and leave an archived agent’s subagents', async () => {
+test('l/h are no-ops inside the flat Done section', async () => {
   const manager = makeManager();
   const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
   await delay();
 
   stdin.write('t'); // expand Done
   await delay();
-  stdin.write('j'); // select arch-one
+  stdin.write('j'); // select arch-one (was a parent)
   await delay();
   assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
 
-  // l descends into the archived parent's first child.
+  // l does nothing — archived agents have no group to enter.
   stdin.write('l');
   await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
+  assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
 
-  // h exits back to the archived parent.
+  // Move onto the former child, then h must NOT jump back to its old parent.
+  stdin.write('j');
+  await delay();
+  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
   stdin.write('h');
   await delay();
-  assert.equal(selectedName(lastFrame() ?? ''), 'arch-one');
+  assert.equal(selectedName(lastFrame() ?? ''), 'arch-child');
 
   unmount();
 });

@@ -61,6 +61,10 @@ function makeManager() {
   };
   m.firstChildOf = (id: string) => ordered.find((s) => s.getInfo().parentId === id);
   m.childrenOf = (id: string) => ordered.filter((s) => s.getInfo().parentId === id);
+  m.activeChildrenOf = (id: string) =>
+    ordered.filter((s) => s.getInfo().parentId === id && !s.getInfo().archived);
+  m.firstActiveChildOf = (id: string) =>
+    ordered.find((s) => s.getInfo().parentId === id && !s.getInfo().archived);
   m.topLevel = () => ordered.filter((s) => !s.getInfo().parentId);
   m.topLevelSibling = (id: string, delta: number) => {
     const tops = m.topLevel();
@@ -72,7 +76,7 @@ function makeManager() {
   m.siblingOf = (id: string, delta: number) => {
     const a = byId.get(id);
     if (!a?.parentId) return undefined;
-    const sibs = m.childrenOf(a.parentId);
+    const sibs = m.activeChildrenOf(a.parentId);
     const idx = sibs.findIndex((s: any) => s.id === id);
     if (idx === -1) return undefined;
     const next = Math.max(0, Math.min(idx + delta, sibs.length - 1));

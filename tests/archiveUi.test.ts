@@ -42,7 +42,9 @@ function makeManager() {
   m.firstWaiting = () => undefined;
   m.mergeChildOf = () => undefined;
   m.firstChildOf = () => undefined;
+  m.firstActiveChildOf = () => undefined;
   m.childrenOf = () => [];
+  m.activeChildrenOf = () => [];
   m.groupRootOf = (id: string) => byId.get(id);
   m.topLevel = () => m.active();
   m.topLevelSibling = (id: string) => byId.get(id);

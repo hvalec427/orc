@@ -38,6 +38,8 @@ function makeManager(withAgent = false) {
   m.stopAll = async () => {};
   m.firstWaiting = () => undefined;
   m.firstChildOf = () => undefined;
+  m.firstActiveChildOf = () => undefined;
+  m.activeChildrenOf = () => [];
   m.groupRootOf = (id: string) => ({ id });
   m.mergeChildOf = () => undefined;
   m.create = async () => makeSession();
