@@ -14,6 +14,8 @@ import type {
   AnswerSubagent,
   ListSubagents,
   ReportToOrchestrator,
+  SpawnSubagent,
+  SpawnableTemplate,
   SubagentInfo,
 } from './orchestratorTools.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
@@ -361,6 +363,26 @@ export class AgentManager extends EventEmitter {
     return this.create(root.project, template, name, ticket, prompt, magicLink, root.id, shared);
   }
 
+  /**
+   * Back the `spawn_subagent` tool every agent has: the agent at `requesterId` spawns a subagent of
+   * the chosen (standalone) template into its group. Delegates to {@link createSubagent} so the new
+   * agent nests under the group root, shares the group's one worktree/branch, and shows up live in the
+   * TUI (create() emits 'update'). Returns the created agent's final id + name for the tool to report.
+   */
+  private async spawnSubagentFor(
+    requesterId: string,
+    args: { template: SpawnableTemplate; name: string; prompt: string; ticket: string },
+  ): Promise<{ id: string; name: string }> {
+    const child = await this.createSubagent(
+      requesterId,
+      args.template,
+      args.name,
+      args.ticket,
+      args.prompt,
+    );
+    return { id: child.id, name: child.name };
+  }
+
   // ---- orchestration message bus ------------------------------------------
   //
   // A group (one top-level orchestrator + its direct subagents) coordinates through three callbacks
@@ -516,6 +538,7 @@ export class AgentManager extends EventEmitter {
     answerSubagent: AnswerSubagent;
     askOrchestrator: AskOrchestrator;
     reportToOrchestrator: ReportToOrchestrator;
+    spawnSubagent: SpawnSubagent;
   } {
     return {
       listSubagents: () => this.listSubagentsOf(id),
@@ -523,6 +546,7 @@ export class AgentManager extends EventEmitter {
       answerSubagent: (args) => Promise.resolve(this.answerChild(id, args.childId, args.answer)),
       askOrchestrator: (args) => this.askParent(id, args.question),
       reportToOrchestrator: (args) => this.reportToParent(id, args.note),
+      spawnSubagent: (args) => this.spawnSubagentFor(id, args),
     };
   }
 

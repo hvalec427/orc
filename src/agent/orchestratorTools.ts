@@ -64,6 +64,30 @@ export type AskOrchestrator = (args: { question: string }) => Promise<{ answer: 
  */
 export type ReportToOrchestrator = (args: { note: string }) => { delivered: boolean };
 
+/**
+ * The agent templates any agent may spawn as a subagent on its own. These are the self-contained,
+ * standalone kinds that make sense to delegate a chunk of work to: a full-access `feature` agent for
+ * new work, a surgical `fix` agent for a bug, a read-only `explorer` for investigation, or a
+ * general-purpose `worker`. Orchestrator-internal templates (merge, launcher, pipeline) and the seven
+ * pipeline role templates are intentionally excluded — those are driven by their own machinery.
+ */
+export const SPAWNABLE_TEMPLATES = ['feature', 'fix', 'explorer', 'worker'] as const;
+
+/** One of the templates an agent may spawn as a subagent; the `template` arg of `spawn_subagent`. */
+export type SpawnableTemplate = (typeof SPAWNABLE_TEMPLATES)[number];
+
+/**
+ * Spawn ONE subagent in this agent's group and return its final (uniquified) id + name. Supplied by
+ * the AgentSession (a closure into the AgentManager) so the tool can create a nested agent that shares
+ * the group's worktree/branch and shows up in the TUI beneath this agent.
+ */
+export type SpawnSubagent = (args: {
+  template: SpawnableTemplate;
+  name: string;
+  prompt: string;
+  ticket: string;
+}) => Promise<{ id: string; name: string }>;
+
 export interface OrchestratorCallbacks {
   listSubagents: ListSubagents;
   askSubagent: AskSubagent;
@@ -218,6 +242,92 @@ export function buildSubagentTools(
             },
           ],
         };
+      },
+    ),
+  ];
+}
+
+/**
+ * Build the self-service spawn tool (server name "orc"). Given to EVERY agent so it can delegate a
+ * chunk of work to a fresh subagent on its own — either because the human asked it to, or because the
+ * work is better suited to a different kind of agent (e.g. a read-only explorer for deep investigation,
+ * a surgical fix agent for a bug). The spawned subagent joins this agent's group (nested beneath its
+ * group root, sharing the group's worktree/branch) and appears in the TUI so the human can follow it.
+ */
+export function buildSpawnSubagentTool(spawn: SpawnSubagent) {
+  return [
+    tool(
+      'spawn_subagent',
+      'Spawn ONE subagent to carry out a chunk of work, and get back its id + name. Use this when ' +
+        'the human asks you to start another agent, OR when a task is better handled by a different ' +
+        'kind of agent than you (e.g. a read-only "explorer" for deep investigation, a surgical "fix" ' +
+        'agent for a bug, a "feature" agent for a separate piece of work). The subagent joins your ' +
+        'group (it shares your worktree/branch) and shows up in the TUI nested beneath you, so the ' +
+        'human can follow its progress. After spawning, use list_subagents / ask_subagent to ' +
+        'coordinate it. The subagent does NOT see your conversation, so the prompt must be ' +
+        'self-contained.',
+      {
+        template: z
+          .enum(SPAWNABLE_TEMPLATES)
+          .default('feature')
+          .describe(
+            'Which kind of subagent fits this work: "feature" (full-access task agent, the default ' +
+              'for new work), "fix" (surgical bug-fix agent: reproduce, find root cause, minimal fix), ' +
+              '"explorer" (read-only investigation / "how does X work?", no code changes) or "worker" ' +
+              '(general-purpose; cuts a worktree only if it needs to edit code).',
+          ),
+        name: z
+          .string()
+          .min(1)
+          .describe(
+            'Short, nice, kebab-case subagent name (e.g. "login-flow", "dark-mode"). Becomes the ' +
+              'agent name; keep it descriptive and unique.',
+          ),
+        prompt: z
+          .string()
+          .min(1)
+          .describe(
+            'Complete, self-contained instructions for the subagent. It does not see your ' +
+              'conversation, so include all the context it needs to do the work end-to-end.',
+          ),
+        ticket: z
+          .string()
+          .default('')
+          .describe(
+            'Ticket reference for this work (e.g. "PROJ-123") if there is one; otherwise an empty ' +
+              'string.',
+          ),
+      },
+      async (args) => {
+        const template = args.template ?? 'feature';
+        try {
+          const res = await spawn({
+            template,
+            name: args.name,
+            prompt: args.prompt,
+            ticket: args.ticket ?? '',
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Spawned ${template} subagent "${res.name}" (id: ${res.id}). It is running in your ` +
+                  `group and shown in the TUI. Use ask_subagent with its id to coordinate it.`,
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Failed to spawn ${template} subagent "${args.name}": ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     ),
   ];

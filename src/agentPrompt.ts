@@ -33,9 +33,18 @@ export const ASK_ORCHESTRATOR_TOOL = 'mcp__orc__ask_orchestrator';
 export const REPORT_TO_ORCHESTRATOR_TOOL = 'mcp__orc__report_to_orchestrator';
 
 /**
+ * The in-process MCP tool EVERY agent gets to spawn a subagent on its own — when the human asks it to,
+ * or when a task is better suited to a different kind of agent. The subagent joins the agent's group
+ * (shares its worktree/branch) and shows in the TUI.
+ */
+export const SPAWN_SUBAGENT_TOOL = 'mcp__orc__spawn_subagent';
+
+/**
  * The full set of group coordination tool names. They only pass messages between agents in the same
- * group (never touch the codebase), so AgentSession auto-allows them in every permission mode — a
- * read-only agent may still coordinate, and a full-access agent isn't prompted for approval on them.
+ * group — or, for spawn_subagent, create another agent that is itself permission-constrained — so none
+ * touch the calling agent's codebase. AgentSession therefore auto-allows them in every permission mode:
+ * a read-only agent may still coordinate and delegate, and a full-access agent isn't prompted for
+ * approval on them.
  */
 export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set<string>([
   LIST_SUBAGENTS_TOOL,
@@ -43,6 +52,7 @@ export const ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set<string>([
   ANSWER_SUBAGENT_TOOL,
   ASK_ORCHESTRATOR_TOOL,
   REPORT_TO_ORCHESTRATOR_TOOL,
+  SPAWN_SUBAGENT_TOOL,
 ]);
 
 /**
@@ -151,21 +161,34 @@ function buildTemplatePrompt(params: PromptParams): string {
 }
 
 /**
- * The group-coordination section appended to EVERY agent's prompt. It explains the two directions of
- * the in-process coordination channel so a group works together without the human relaying messages:
- *   - As an ORCHESTRATOR (you may have subagents attached to you): list them, ask one for its result
- *     (blocks until it finishes its turn), and answer one that is waiting on you.
+ * The group-coordination section appended to EVERY agent's prompt. It explains the in-process
+ * coordination channel so a group works together without the human relaying messages:
+ *   - SPAWNING: any agent can spawn its own subagent (when asked, or when a task suits a different
+ *     kind of agent) so it joins the group and shows in the TUI.
+ *   - As an ORCHESTRATOR (you may have subagents attached to you or spawned by you): list them, ask one
+ *     for its result (blocks until it finishes its turn), and answer one that is waiting on you.
  *   - As a SUBAGENT (you may have been launched under an orchestrator): ask your orchestrator for a
  *     decision/context and block until it answers.
  * Deliberately phrased so it reads correctly whether or not the agent currently has subagents/parent
- * (the tools are inert no-ops otherwise), since attachment happens dynamically via the TUI's `c`.
+ * (the tools are inert no-ops otherwise), since attachment happens dynamically via the TUI's `c` and
+ * the spawn tool.
  */
 const COORDINATION_SECTION = `### Coordinating with your group
 
-You belong to a group: one top-level orchestrator plus the subagents attached to it (the human can
-attach a subagent to any agent with \`c\`; subagents share the group's one worktree/branch). You have
-in-process tools to coordinate directly, so the group works together without the human relaying every
-message. Use them instead of ending your turn when another agent in your group can unblock you.
+You belong to a group: one top-level orchestrator plus the subagents in it (the human can attach a
+subagent to any agent with \`c\`, and you can spawn your own — see below; subagents share the group's
+one worktree/branch). You have in-process tools to coordinate directly, so the group works together
+without the human relaying every message. Use them instead of ending your turn when another agent in
+your group can do the work or unblock you.
+
+Spawning your own subagents:
+- \`${SPAWN_SUBAGENT_TOOL}\` — spawn a new subagent to take on a chunk of work. Reach for this in TWO
+  situations: (1) the human asks you to start another agent, and (2) a task would be better handled by
+  a different kind of agent than you — e.g. a read-only \`explorer\` for a deep investigation, a
+  surgical \`fix\` agent for a bug, or a \`feature\`/\`worker\` for a separable piece of work. Give it a
+  short kebab-case name and a self-contained prompt (it does not see your conversation). It joins your
+  group, shares your worktree/branch, and shows up in the TUI nested beneath you so the human can
+  follow it; then coordinate it with \`${LIST_SUBAGENTS_TOOL}\` / \`${ASK_SUBAGENT_TOOL}\`.
 
 As an ORCHESTRATOR (when you have subagents):
 - \`${LIST_SUBAGENTS_TOOL}\` — list your subagents with their status and latest hand-off summary.

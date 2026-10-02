@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   buildOrchestratorTools,
   buildSubagentTools,
+  buildSpawnSubagentTool,
+  SPAWNABLE_TEMPLATES,
   type OrchestratorCallbacks,
   type SubagentInfo,
 } from '../src/agent/orchestratorTools.js';
@@ -118,6 +120,57 @@ test('answer_subagent reports a fallback message when the child was not waiting'
 
 /** A no-op report callback for tests that only exercise ask_orchestrator. */
 const noopReport = () => ({ delivered: true });
+
+test('spawn_subagent forwards template/name/prompt/ticket and reports the created id+name', async () => {
+  const seen: Array<{ template: string; name: string; prompt: string; ticket: string }> = [];
+  const tools = buildSpawnSubagentTool(async (args) => {
+    seen.push(args);
+    return { id: 'login-flow', name: 'login-flow' };
+  }) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'spawn_subagent'), {
+    template: 'explorer',
+    name: 'login-flow',
+    prompt: 'investigate the login screen',
+    ticket: 'PROJ-1',
+  });
+  assert.deepEqual(seen, [
+    { template: 'explorer', name: 'login-flow', prompt: 'investigate the login screen', ticket: 'PROJ-1' },
+  ]);
+  const text = textOf(res);
+  assert.match(text, /explorer/);
+  assert.match(text, /login-flow/);
+  assert.ok(!res.isError);
+});
+
+test('spawn_subagent passes through the chosen template and ticket to the callback', async () => {
+  const seen: Array<{ template: string; ticket: string }> = [];
+  const tools = buildSpawnSubagentTool(async (args) => {
+    seen.push({ template: args.template, ticket: args.ticket });
+    return { id: 'x', name: 'x' };
+  }) as unknown as AnyTool[];
+  // The SDK applies zod defaults before the handler runs; call the handler as the SDK would, with the
+  // parsed input (template 'feature', ticket '').
+  await call(toolByName(tools, 'spawn_subagent'), { template: 'feature', name: 'x', prompt: 'do x', ticket: '' });
+  assert.deepEqual(seen, [{ template: 'feature', ticket: '' }]);
+});
+
+test('spawn_subagent surfaces a thrown error as an isError result', async () => {
+  const tools = buildSpawnSubagentTool(async () => {
+    throw new Error('Unknown project: ghost');
+  }) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'spawn_subagent'), {
+    template: 'feature',
+    name: 'x',
+    prompt: 'do x',
+    ticket: '',
+  });
+  assert.equal(res.isError, true);
+  assert.match(textOf(res), /Unknown project: ghost/);
+});
+
+test('SPAWNABLE_TEMPLATES are the four standalone kinds (no orchestrator-internal templates)', () => {
+  assert.deepEqual(new Set(SPAWNABLE_TEMPLATES), new Set(['feature', 'fix', 'explorer', 'worker']));
+});
 
 test('ask_orchestrator returns the parent answer', async () => {
   const seen: string[] = [];

@@ -31,12 +31,14 @@ import {
 import {
   buildOrchestratorTools,
   buildSubagentTools,
+  buildSpawnSubagentTool,
   buildOrcServer,
   type AskOrchestrator,
   type AskSubagent,
   type AnswerSubagent,
   type ListSubagents,
   type ReportToOrchestrator,
+  type SpawnSubagent,
 } from './orchestratorTools.js';
 import { createWorktree, type Worktree } from '../worktree.js';
 
@@ -128,9 +130,9 @@ export interface AgentSessionInit {
   cutWorktreeOnDemand?: EnsureWorktree;
   /**
    * The group orchestration callbacks (supplied by the manager, scoped to this agent's id) that back
-   * the in-process `mcp__orc__*` coordination tools: as a parent, list/ask/answer this agent's
-   * subagents; as a child, ask this agent's orchestrator. Every agent gets these — they're inert for
-   * an agent with no subagents and no parent.
+   * the in-process `mcp__orc__*` coordination tools: spawn a subagent into this agent's group; as a
+   * parent, list/ask/answer this agent's subagents; as a child, ask this agent's orchestrator. Every
+   * agent gets these — they're inert for an agent with no subagents and no parent.
    */
   orchestration?: {
     listSubagents: ListSubagents;
@@ -138,6 +140,7 @@ export interface AgentSessionInit {
     answerSubagent: AnswerSubagent;
     askOrchestrator: AskOrchestrator;
     reportToOrchestrator: ReportToOrchestrator;
+    spawnSubagent: SpawnSubagent;
   };
 }
 
@@ -781,6 +784,10 @@ export class AgentSession extends EventEmitter {
           this.orchestration.askOrchestrator,
           this.orchestration.reportToOrchestrator,
         ),
+        // Every agent can spawn its own subagent (when the human asks, or when a task suits a
+        // different kind of agent). The spawned subagent is itself permission-constrained by its own
+        // template, so this is safe to give even to read-only agents (auto-allowed via ORCHESTRATION_TOOLS).
+        ...buildSpawnSubagentTool(this.orchestration.spawnSubagent),
         ...(this.template === 'launcher' && this.launchFeature
           ? buildLauncherTools(this.launchFeature)
           : []),

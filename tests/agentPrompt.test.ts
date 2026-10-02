@@ -14,6 +14,7 @@ import {
   ANSWER_SUBAGENT_TOOL,
   ASK_ORCHESTRATOR_TOOL,
   REPORT_TO_ORCHESTRATOR_TOOL,
+  SPAWN_SUBAGENT_TOOL,
   ORCHESTRATION_TOOLS,
 } from '../src/agentPrompt.js';
 import {
@@ -187,6 +188,18 @@ test('every template prompt carries the group-coordination section with all coor
     assert.ok(prompt.includes(ANSWER_SUBAGENT_TOOL), `${t} missing answer_subagent`);
     assert.ok(prompt.includes(ASK_ORCHESTRATOR_TOOL), `${t} missing ask_orchestrator`);
     assert.ok(prompt.includes(REPORT_TO_ORCHESTRATOR_TOOL), `${t} missing report_to_orchestrator`);
+    assert.ok(prompt.includes(SPAWN_SUBAGENT_TOOL), `${t} missing spawn_subagent`);
+  }
+});
+
+test('every template prompt explains the two triggers for spawning a subagent', () => {
+  // The spawn guidance must be on EVERY agent's prompt and cover both cases the human cares about:
+  // (1) the human asks for another agent, and (2) a task suits a different kind of agent.
+  for (const t of ALL_TEMPLATES) {
+    const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
+    assert.match(prompt, /Spawning your own subagents/, `${t} missing spawn guidance`);
+    assert.match(prompt, /the human asks you to start another agent/i, `${t} missing "when asked" trigger`);
+    assert.match(prompt, /better handled by\s+a different\s+kind of agent/i, `${t} missing "better suited" trigger`);
   }
 });
 
@@ -199,6 +212,7 @@ test('ORCHESTRATION_TOOLS is exactly the fully-qualified coordination tool names
       ANSWER_SUBAGENT_TOOL,
       ASK_ORCHESTRATOR_TOOL,
       REPORT_TO_ORCHESTRATOR_TOOL,
+      SPAWN_SUBAGENT_TOOL,
     ]),
   );
   // Every coordination tool is namespaced on the in-process "orc" MCP server.
