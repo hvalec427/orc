@@ -21,7 +21,10 @@ const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
  * The sidebar renders two sections sharing ONE selection index: the active agents (full rows, project
  * headers, cost line) followed by a collapsible "Done" section of archived agents. `selectedIndex`
  * indexes into `active.concat(showDone ? archived : [])` — exactly the flat navigable list App builds —
- * so the `›` caret lands on the right row across both sections.
+ * so the `›` caret lands on the right row across both sections. The Done section mirrors the active
+ * view: the same full AgentRow layout (project headers + children nested under their parents with a
+ * `└` connector + the template·cost line), just dimmed, so an archived group reads the same as it did
+ * while active.
  *
  * The list is unbounded (one block per agent), so with many agents it could be taller than the
  * terminal. `height` pins the box to the body height and we clip + scroll internally: the outer box
@@ -43,13 +46,16 @@ export function Sidebar({
   height: number;
 }) {
   // The flat navigable list, matching App's `active.concat(showDone ? archived : [])`.
-  const rows: AgentInfo[] = active.concat(showDone ? archived : []);
+  const shownArchived = showDone ? archived : [];
+  const rows: AgentInfo[] = active.concat(shownArchived);
   // Per-agent block heights (in terminal rows), in list order, so we can scroll by whole blocks
-  // and know exactly how many fit under the "Agents" title.
+  // and know exactly how many fit under the "Agents" title. Archived rows use the SAME full AgentRow
+  // layout as active ones, so their heights are computed the same way — against the archived list for
+  // project-header detection (an archived child's header comes from the nearest archived top-level).
   const blockHeights = rows.map((info, i) =>
-    info.archived
-      ? 1 // archived rows are a single compact line
-      : blockHeightOf(info, lastTopLevelProjectBefore(active, i)),
+    i < active.length
+      ? blockHeightOf(info, lastTopLevelProjectBefore(active, i))
+      : blockHeightOf(info, lastTopLevelProjectBefore(shownArchived, i - active.length)),
   );
   // Rows available for the list itself: the box interior (height - 2 for the round border) minus the
   // "Agents" title line. Clamp so we always render at least one row.
@@ -82,7 +88,14 @@ export function Sidebar({
             <Text dimColor>Done ({archived.length}){showDone ? '' : ' — t to show'}</Text>
             {showDone
               ? archived.map((info, i) => (
-                  <ArchivedRow key={info.id} info={info} selected={active.length + i === selectedIndex} />
+                  <AgentRow
+                    key={info.id}
+                    info={info}
+                    index={i}
+                    selected={active.length + i === selectedIndex}
+                    prevProject={lastTopLevelProjectBefore(archived, i)}
+                    dim
+                  />
                 ))
               : null}
           </Box>
@@ -116,17 +129,24 @@ function scrollOffset(blockHeights: number[], selectedIndex: number, listRows: n
   return heightFrom(0, start - 1);
 }
 
-/** A full active-agent row: status glyph, name, optional project header, and the template·cost line. */
+/**
+ * A full agent row: status glyph, name, optional project header, and the template·cost line. Used for
+ * BOTH the active list and the (expanded) Done section — archived rows pass `dim` so the whole block
+ * renders dimmed, matching the "this group is finished" treatment while keeping the same layout
+ * (project header + `└`-nested children) as the active view.
+ */
 function AgentRow({
   info,
   index,
   selected,
   prevProject,
+  dim = false,
 }: {
   info: AgentInfo;
   index: number;
   selected: boolean;
   prevProject: string | undefined;
+  dim?: boolean;
 }) {
   const { glyph, color } = STATUS_ICON[info.status];
   // A child session (e.g. a merge agent spawned from a feature agent) renders indented
@@ -137,16 +157,18 @@ function AgentRow({
   const showProjectHeader = !isChild && info.project !== prevProject;
   return (
     <Box flexDirection="column" marginTop={isChild ? 0 : 1}>
-      {showProjectHeader ? <Text bold color="blue">{truncate(info.project, 30)}</Text> : null}
-      <Text wrap="truncate">
+      {showProjectHeader ? <Text bold color="blue" dimColor={dim}>{truncate(info.project, 30)}</Text> : null}
+      <Text wrap="truncate" dimColor={dim}>
         <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
         {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{index + 1} </Text>}
         <Text
-          color={color}
+          color={dim ? undefined : color}
+          dimColor={dim}
           bold={
-            info.status === 'needs_input' ||
-            info.status === 'needs_approval' ||
-            info.status === 'needs_login'
+            !dim &&
+            (info.status === 'needs_input' ||
+              info.status === 'needs_approval' ||
+              info.status === 'needs_login')
           }
         >
           {glyph}
@@ -160,19 +182,6 @@ function AgentRow({
         {info.totalCostUsd === undefined ? '$NaN' : `$${info.totalCostUsd.toFixed(2)}`}
       </Text>
     </Box>
-  );
-}
-
-/** A compact, dimmed row for an archived agent in the Done section: caret + status glyph + name. */
-function ArchivedRow({ info, selected }: { info: AgentInfo; selected: boolean }) {
-  const { glyph } = STATUS_ICON[info.status];
-  return (
-    <Text wrap="truncate" dimColor>
-      <Text color={selected ? 'cyan' : undefined}>{selected ? '›' : ' '}</Text>
-      {' '}
-      {glyph}
-      <Text bold={selected}> {truncate(info.name, 24)}</Text>
-    </Text>
   );
 }
 

@@ -70,6 +70,14 @@ export class AgentManager extends EventEmitter {
    * note) so the bus never leaks a dangling waiter.
    */
   private readonly pendingParentAsks = new Map<string, (answer: string) => void>();
+  /**
+   * Ids of child agents already auto-archived once on completion. A finished child is auto-archived
+   * exactly once; if the human then unarchives it (to follow up), it must NOT be yanked straight back
+   * into Done on the next 'update'. This set records that the one-time auto-archive has fired, so the
+   * human's choice sticks. (Resumed work that reaches 'done' again is still left where the human put
+   * it — auto-archive is a convenience for the first completion, not a permanent policy.)
+   */
+  private readonly autoArchived = new Set<string>();
 
   constructor(
     private readonly config: OrcConfig,
@@ -366,6 +374,7 @@ export class AgentManager extends EventEmitter {
     // Mirror this agent's rendered log into its tmux pane file on every update (inert when tmux off).
     this.tmux?.registerAgent(id, name, template);
     session.on('update', () => {
+      this.autoArchiveIfDoneChild(session);
       this.emit('update');
       this.tmux?.mirror(id, session.getEvents());
     });
@@ -709,6 +718,24 @@ export class AgentManager extends EventEmitter {
     this.emit('update');
   }
 
+  /**
+   * Auto-archive a subagent the moment it finishes. When a child session (one with a parentId)
+   * reaches 'done', move just that child into the Done section so completed subagents don't pile up
+   * in the active list under their orchestrator. Only children are auto-archived — a top-level agent
+   * reaching 'done' stays active until the human archives it (d). Guarded on parentId + status +
+   * the archived flag so it fires exactly once and never cascades. Called from the per-session
+   * 'update' handler; it sets the flag directly (not archive(), which cascades) and persists, but
+   * deliberately does NOT emit its own 'update' — the handler that invoked it already does.
+   */
+  private autoArchiveIfDoneChild(session: AgentSession): void {
+    const info = session.getInfo();
+    if (!info.parentId || info.status !== 'done' || info.archived) return;
+    if (this.autoArchived.has(info.id)) return; // already auto-archived once; respect the human's choice
+    this.autoArchived.add(info.id);
+    session.setArchived(true);
+    this.persist();
+  }
+
   /** Unarchive an agent, returning it to the active list. Does not touch its children. */
   async unarchive(id: string): Promise<void> {
     const session = this.agents.get(id);
@@ -744,6 +771,7 @@ export class AgentManager extends EventEmitter {
 
     await session.stop();
     this.agents.delete(id);
+    this.autoArchived.delete(id);
     this.tmux?.unregisterAgent(id);
     // If this child was blocked on its orchestrator, release the waiter so nothing dangles.
     const waiter = this.pendingParentAsks.get(id);

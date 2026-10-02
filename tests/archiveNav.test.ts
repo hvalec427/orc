@@ -121,3 +121,22 @@ test('j/k walk every archived agent flatly, including former children', async ()
   unmount();
 });
 
+test('the expanded Done section renders the full hierarchy: project header + nested child', async () => {
+  const manager = makeManager();
+  const { stdin, lastFrame, unmount } = render(React.createElement(App, { manager, config }));
+  await delay();
+
+  stdin.write('t'); // expand Done
+  await delay();
+  const frame = lastFrame() ?? '';
+
+  // Archived agents render with the SAME full AgentRow layout as active ones: a project header for
+  // the archived group and the `└` connector for a former child nested under its parent.
+  assert.match(frame, /proj/, 'the archived group shows its project header');
+  assert.match(frame, /arch-one/, 'the archived parent is shown');
+  assert.match(frame, /└ .*arch-child/, 'the former child is nested under its parent with a connector');
+  assert.match(frame, /arch-two/, 'the second archived parent is shown');
+
+  unmount();
+});
+

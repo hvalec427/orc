@@ -135,3 +135,90 @@ test('getInfo() exposes the archived flag that persist() serializes', async () =
   await manager.archive('a1');
   assert.equal(s.getInfo().archived, true, 'reflects the archive');
 });
+
+// --- auto-archive of completed child agents --------------------------------
+//
+// When a subagent finishes (status → done), the manager archives JUST that child into the Done
+// section so completed subagents don't pile up under their orchestrator. The decision lives in the
+// private autoArchiveIfDoneChild, invoked from the per-session 'update' handler.
+
+/** Invoke the manager's private auto-archive decision for a session, as the update handler does. */
+function autoArchive(manager: AgentManager, session: AgentSession): void {
+  (manager as unknown as { autoArchiveIfDoneChild(s: AgentSession): void }).autoArchiveIfDoneChild(session);
+}
+
+/** Force a session's status (bypassing the real turn machinery) so we can test the archive decision. */
+function setStatus(session: AgentSession, status: string): void {
+  (session as unknown as { status: string }).status = status;
+}
+
+test('a child agent is auto-archived when it reaches done', () => {
+  const parent = makeSession('p1');
+  const child = makeSession('c1', { parentId: 'p1', template: 'reviewer', branch: undefined, worktree: undefined, metroPort: undefined });
+  const manager = managerWith([parent, child]);
+
+  setStatus(child, 'done');
+  autoArchive(manager, child);
+
+  assert.equal(child.getInfo().archived, true, 'the finished child is archived');
+  assert.equal(parent.getInfo().archived, false, 'its parent stays active');
+});
+
+test('a top-level agent is NOT auto-archived when it reaches done', () => {
+  const top = makeSession('t1');
+  const manager = managerWith([top]);
+
+  setStatus(top, 'done');
+  autoArchive(manager, top);
+
+  assert.equal(top.getInfo().archived, false, 'top-level agents are left for the human to archive');
+});
+
+test('a child is not auto-archived before it finishes', () => {
+  const parent = makeSession('p1');
+  const child = makeSession('c1', { parentId: 'p1' });
+  const manager = managerWith([parent, child]);
+
+  for (const status of ['working', 'needs_input', 'needs_approval', 'error', 'stopped']) {
+    setStatus(child, status);
+    autoArchive(manager, child);
+    assert.equal(child.getInfo().archived, false, `not archived while ${status}`);
+  }
+});
+
+test('auto-archive fires exactly once and the human can unarchive afterwards', async () => {
+  const parent = makeSession('p1');
+  const child = makeSession('c1', { parentId: 'p1' });
+  const manager = managerWith([parent, child]);
+
+  setStatus(child, 'done');
+  autoArchive(manager, child);
+  assert.equal(child.getInfo().archived, true, 'archived on completion');
+
+  // Human brings it back; a subsequent auto-archive pass on the still-done child must NOT re-archive.
+  await manager.unarchive('c1');
+  assert.equal(child.getInfo().archived, false, 'unarchived by the human');
+  autoArchive(manager, child);
+  assert.equal(child.getInfo().archived, false, 'does not re-archive an already-handled done child');
+});
+
+test("the per-session update handler auto-archives a done child via setArchived", () => {
+  // Faithfully wire the same handler buildSession attaches, then drive the child to done through its
+  // real message handler, and assert the child ends up archived.
+  const parent = makeSession('p1');
+  const child = makeSession('c1', { parentId: 'p1', branch: undefined, worktree: undefined, metroPort: undefined });
+  const manager = managerWith([parent, child]);
+  child.on('update', () => autoArchive(manager, child));
+
+  (child as unknown as { handle(m: unknown): void }).handle({
+    type: 'result',
+    subtype: 'success',
+    session_id: 's1',
+    total_cost_usd: 0,
+    result: 'all done\n\n@@DONE@@ abc123',
+    errors: [],
+  });
+
+  assert.equal(child.getInfo().status, 'done', 'child reached done');
+  assert.equal(child.getInfo().archived, true, 'and was auto-archived by the update handler');
+});
