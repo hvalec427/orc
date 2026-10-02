@@ -109,6 +109,8 @@ export interface AgentSessionInit {
   ownsWorktree?: boolean;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
+  /** UDID of the dedicated iOS Simulator orc provisioned for this agent, or undefined when none. */
+  simulatorUdid?: string;
   config: ProjectConfig;
   /**
    * For `launcher` agents only: the callback the launch tool uses to spawn a feature agent.
@@ -181,6 +183,8 @@ export class AgentSession extends EventEmitter {
   private _worktree?: string;
   private _ownsWorktree: boolean;
   private _metroPort?: number;
+  /** UDID of the dedicated iOS Simulator orc provisioned for this agent, or undefined when none. */
+  private _simulatorUdid?: string;
   /** Whether the human archived this agent (hidden in the Done section; excluded from integrate). */
   private _archived = false;
 
@@ -201,6 +205,10 @@ export class AgentSession extends EventEmitter {
   }
   get metroPort(): number | undefined {
     return this._metroPort;
+  }
+  /** UDID of the dedicated iOS Simulator orc provisioned for this agent, or undefined when none. */
+  get simulatorUdid(): string | undefined {
+    return this._simulatorUdid;
   }
   /** Whether the human archived this agent (hidden in the Done section; excluded from integrate). */
   get archived(): boolean {
@@ -266,6 +274,7 @@ export class AgentSession extends EventEmitter {
     // An agent with a worktree owns it unless told otherwise (a child shares its group's one).
     this._ownsWorktree = init.ownsWorktree ?? init.worktree !== undefined;
     this._metroPort = init.metroPort;
+    this._simulatorUdid = init.simulatorUdid;
     this.config = init.config;
     this.launchFeature = init.launchFeature;
     this.runStep = init.runStep;
@@ -289,16 +298,18 @@ export class AgentSession extends EventEmitter {
    *    itself is the editor, so it must move INTO the worktree before it edits. We adopt the
    *    worktree/port, then relaunch the session so its cwd (and port env) become the worktree's from
    *    the next turn — the worker's `create_worktree` tool told it edits land there "from your next
-   *    turn". `port` is the freshly allocated port (if any) so METRO_PORT/AGENT_PORT are set on relaunch.
+   *    turn". `port` is the freshly allocated port (if any) so METRO_PORT/AGENT_PORT are set on relaunch,
+   *    and `simulatorUdid` is the on-demand simulator (if any) so SIMULATOR_UDID is set on relaunch.
    *
    * No-op if this agent already has a worktree.
    */
-  adoptWorktree(wt: Worktree, port?: number, relaunch = false): void {
+  adoptWorktree(wt: Worktree, port?: number, relaunch = false, simulatorUdid?: string): void {
     if (this._worktree) return;
     this._branch = wt.branch;
     this._worktree = wt.path;
     this._ownsWorktree = true;
     if (port !== undefined) this._metroPort = port;
+    if (simulatorUdid !== undefined) this._simulatorUdid = simulatorUdid;
     const portNote = port !== undefined ? ` (port ${port})` : '';
     this.addLog(
       'system',
@@ -568,6 +579,7 @@ export class AgentSession extends EventEmitter {
       worktree: this.worktree,
       ownsWorktree: this._ownsWorktree,
       metroPort: this.metroPort,
+      simulatorUdid: this._simulatorUdid,
       status: this.status,
       question: this.question,
       sessionId: this.sessionId,
@@ -675,6 +687,7 @@ export class AgentSession extends EventEmitter {
         ...(this.metroPort !== undefined
           ? { METRO_PORT: String(this.metroPort), AGENT_PORT: String(this.metroPort) }
           : {}),
+        ...(this._simulatorUdid ? { SIMULATOR_UDID: this._simulatorUdid } : {}),
         ...(this.magicLink ? { MAGIC_LINK: this.magicLink } : {}),
       },
       model: this.config.model,
@@ -688,6 +701,7 @@ export class AgentSession extends EventEmitter {
           name: this.name,
           template: this.template,
           metroPort: this.metroPort,
+          simulatorUdid: this._simulatorUdid,
           ticket: this.ticket,
           magicLink: this.magicLink,
           project: this.project,
@@ -775,7 +789,16 @@ export class AgentSession extends EventEmitter {
         type: 'stdio',
         command: this.config.maestroMcp.command,
         args: this.config.maestroMcp.args,
-        env: this.config.maestroMcp.env,
+        // Point Maestro at this agent's dedicated simulator so it never drives a shared/"booted"
+        // device. MAESTRO_DEVICE is Maestro's device selector; SIMULATOR_UDID is passed too for
+        // tooling that reads it. A configured env wins if it set these explicitly.
+        env: this._simulatorUdid
+          ? {
+              MAESTRO_DEVICE: this._simulatorUdid,
+              SIMULATOR_UDID: this._simulatorUdid,
+              ...this.config.maestroMcp.env,
+            }
+          : this.config.maestroMcp.env,
       };
     }
     // Every agent gets the in-process "orc" MCP server. It always carries the group coordination

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AgentManager } from '../src/agent/AgentManager.js';
 import type { AgentSession } from '../src/agent/AgentSession.js';
 import { PortAllocator } from '../src/ports.js';
+import { SimulatorAllocator } from '../src/simulators.js';
 import type { OrcConfig, ProjectConfig } from '../src/types.js';
 
 const PROJECT: ProjectConfig = {
@@ -19,12 +20,22 @@ const PROJECT: ProjectConfig = {
 
 const CONFIG: OrcConfig = { projects: [PROJECT] };
 
+const RN_PROJECT: ProjectConfig = { ...PROJECT, name: 'rn', type: 'react-native' };
+const RN_CONFIG: OrcConfig = { projects: [RN_PROJECT] };
+
 /** Shape of one persisted agent, loose enough to build test fixtures. */
 type Persisted = Record<string, unknown>;
 
 /** A manager whose loadState() returns the given persisted agents (no filesystem). */
 function managerLoading(agents: Persisted[]): AgentManager {
   const manager = new AgentManager(CONFIG);
+  (manager as unknown as { loadState(): { agents: Persisted[] } }).loadState = () => ({ agents });
+  return manager;
+}
+
+/** A manager over the react-native config whose loadState() returns the given agents. */
+function rnManagerLoading(agents: Persisted[]): AgentManager {
+  const manager = new AgentManager(RN_CONFIG);
   (manager as unknown as { loadState(): { agents: Persisted[] } }).loadState = () => ({ agents });
   return manager;
 }
@@ -116,6 +127,24 @@ test('restore() over an empty persisted list is a no-op (nothing registered)', (
   const manager = managerLoading([]);
   assert.doesNotThrow(() => manager.restore());
   assert.deepEqual(manager.list(), [], 'no agents are created');
+});
+
+test('restore() round-trips a persisted simulatorUdid back onto the session', () => {
+  const manager = rnManagerLoading([
+    base({ project: 'rn', branch: 'agent/a1', worktree: '/tmp/rn/.worktrees/a1', simulatorUdid: 'SIM-1' }),
+  ]);
+  manager.restore();
+  assert.equal(manager.get('a1')!.getInfo().simulatorUdid, 'SIM-1', 'the UDID survives a restart');
+});
+
+test('restore() re-adopts the persisted simulator so release() will later tear it down', async () => {
+  const manager = rnManagerLoading([base({ project: 'rn', simulatorUdid: 'SIM-OWN' })]);
+  manager.restore();
+
+  const sims = (manager as unknown as { simulators: Map<string, SimulatorAllocator> }).simulators;
+  const allocator = sims.get('rn')!;
+  const owned = (allocator as unknown as { owned: Set<string> }).owned;
+  assert.ok(owned.has('SIM-OWN'), 'the restored UDID is re-adopted as owned');
 });
 
 test('the real loadState() never throws and returns an agents array', () => {

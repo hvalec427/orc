@@ -17,7 +17,7 @@ Booting a simulator and building the app are slow. Do NOT run them sequentially 
    - NO for docs-only edits, pure refactors fully covered by unit tests, config/tooling changes, or investigation/questions. If NO, skip the simulator and app build entirely — just do the work and run the checks that apply (typecheck, lint, tests).
 
 2. **If the task needs the app, kick off the slow work immediately and in the BACKGROUND**, before you finish planning:
-   - Create and boot your simulator (see below).
+   - Confirm your dedicated simulator is booted (see below).
    - Install dependencies and iOS deps, build the app for the simulator, install it, and start Metro on METRO_PORT.
    - Launch these as background jobs so they run while you work — do not block waiting on them.
 
@@ -39,50 +39,31 @@ You are running inside your own dedicated Git worktree.
 
 ## Your iOS Simulator
 
-**You are responsible for creating and managing your own iOS Simulator.**
+**orc has provisioned and booted a dedicated iOS Simulator exclusively for you.** Its UDID is in the
+`SIMULATOR_UDID` env var. Use ONLY this simulator — never an existing, shared, or pre-existing device.
 
-Do not use an existing shared simulator.
+- Always target your device by its explicit UDID. Pass `"$SIMULATOR_UDID"` to simctl, Maestro, and
+  every app command; never use `booted`. For example:
+  ```bash
+  xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+  xcrun simctl install "$SIMULATOR_UDID" ...
+  xcrun simctl launch "$SIMULATOR_UDID" ...
+  ```
+- Do NOT create another simulator, and do NOT shut down, erase, or delete your simulator — orc owns
+  its lifecycle and tears it down automatically when you are removed.
 
-### At the beginning of the task
+### If no simulator was provisioned
 
-1. Inspect the available iOS simulator device types and runtimes:
-   ```bash
-   xcrun simctl list devicetypes
-   xcrun simctl list runtimes
-   ```
+If `SIMULATOR_UDID` is not set (orc could not provision one on this host), fall back to creating your
+own dedicated simulator — never reuse a shared one:
 
+1. Inspect device types and runtimes (`xcrun simctl list devicetypes` / `list runtimes`).
 2. Select an appropriate iPhone device type and an installed iOS runtime.
-
-3. Create a dedicated simulator for yourself (use your injected AGENT_NAME):
-   ```bash
-   xcrun simctl create "<AGENT_NAME>" "<device type>" "<runtime>"
-   ```
-
-4. Save the returned simulator UDID and use it for the remainder of the task.
-
-5. Boot the simulator and wait until it is fully ready:
-   ```bash
-   xcrun simctl bootstatus "<SIMULATOR_UDID>" -b
-   ```
-
-6. Never use `booted` when multiple simulators may be running. Always explicitly specify your simulator UDID.
-
-For example:
-
-```bash
-xcrun simctl install "<SIMULATOR_UDID>" ...
-xcrun simctl launch "<SIMULATOR_UDID>" ...
-```
-
-### Simulator lifecycle
-
-You own the simulator you create. Keep it running while working; reset/erase it if necessary.
-
-When the task is completely finished:
-
-1. Shut down the simulator.
-2. Delete the simulator you created.
-3. Do not delete any simulator you did not create.
+3. Create a dedicated simulator named after your injected AGENT_NAME:
+   `xcrun simctl create "<AGENT_NAME>" "<device type>" "<runtime>"`.
+4. Save the returned UDID, boot it with `xcrun simctl bootstatus "<UDID>" -b`, and pass that explicit
+   UDID everywhere. When finished, shut it down and delete it; do not delete any simulator you did not
+   create.
 
 ## Metro
 
@@ -111,7 +92,7 @@ failures, and repeat until they pass. Add/update a flow for new functionality wh
 
 ## Autonomous Development
 
-Work independently. Do NOT ask permission to: create your simulator, install dependencies, run
+Work independently. Do NOT ask permission to: install dependencies, run
 builds, start Metro, install the app, run tests, run Maestro, fix build/lint/TypeScript errors,
 make normal implementation decisions, or retry failed commands.
 

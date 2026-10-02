@@ -106,6 +106,8 @@ export interface PromptParams {
   template: AgentTemplate;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
+  /** UDID of the dedicated iOS Simulator orc provisioned for this agent, or undefined when none. */
+  simulatorUdid?: string;
   /** Optional ticket reference to weave into commit messages. */
   ticket?: string;
   /** Optional magic sign-in link the agent opens on its simulator to log in. */
@@ -393,6 +395,19 @@ function portLine(metroPort?: number): string {
     : `\n- No port was allocated for you. If your task genuinely needs a local port (dev server, Metro, etc.), stop and ask the human to add a \`portRange\` for this project in the orc config, using the ${NEEDS_INPUT} sentinel.`;
 }
 
+/**
+ * The simulator identity line shared by every full-access (worktree) agent. When orc has provisioned
+ * a dedicated simulator (react-native project on a capable host) it reports the UDID and tells the
+ * agent to use ONLY that device — never `booted`, never a shared one, and not to create/delete its
+ * own. When none was provisioned (non-RN project, or the host lacks the simulator toolchain) it falls
+ * back to the old "create your own, named after you" guidance so non-provisioned flows still work.
+ */
+function simulatorLine(name: string, simulatorUdid?: string): string {
+  return simulatorUdid
+    ? `\n- orc has created and booted a dedicated iOS simulator exclusively for you. Its UDID is in the SIMULATOR_UDID env var (${simulatorUdid}). Use ONLY this simulator: always pass this explicit UDID (e.g. \`xcrun simctl … "$SIMULATOR_UDID"\`), never \`booted\`, never a shared or pre-existing device. Do NOT create another simulator, and do NOT shut down or delete this one — orc owns its lifecycle and tears it down when you're removed.`
+    : `\n- Your unique agent name is "${name}". Use it when creating your iOS simulator. No simulator was pre-provisioned for you, so create your own dedicated one named "${name}" (do not reuse an existing shared simulator) and pass its explicit UDID, never \`booted\`.`;
+}
+
 /** The "- Your ticket reference is …" line, or empty when no ticket was supplied. */
 function ticketLine(ticket?: string): string {
   return ticket
@@ -444,8 +459,8 @@ for autonomy: investigate and fix problems yourself before asking anything.`;
  * its port, the "stay inside your worktree" rule and the "don't merge/delete your own branch" rule.
  * Factored out so the feature agent and the full-access roles don't copy-paste the whole block.
  */
-function featureIdentityBullets({ name, metroPort, ticket }: PromptParams): string {
-  return `- Your unique agent name is "${name}". Use it when creating your iOS simulator.${portLine(metroPort)}
+function featureIdentityBullets({ name, metroPort, simulatorUdid, ticket }: PromptParams): string {
+  return `- Your unique agent name is "${name}".${simulatorLine(name, simulatorUdid)}${portLine(metroPort)}
 - You are in your own git worktree. Never touch files, branches, worktrees, or simulators outside it.
 - Do NOT merge your branch into master, delete your own branch, or remove your own worktree. Merging is the orchestrator's job, run from the main repo — doing it yourself would delete the directory you're running in and break your session. Just commit and report ${DONE}; the human merges you.${ticketLine(ticket)}`;
 }
@@ -514,14 +529,19 @@ ${FEATURE_HUMAN_PROTOCOL}
  * base repo (that would mutate the main checkout).
  */
 function buildWorkerPrompt(params: PromptParams): string {
-  const { name, ticket, magicLink } = params;
+  const { name, ticket, magicLink, simulatorUdid } = params;
+  // A worker has no simulator until it adopts a worktree on demand; once it does, orc provisions one
+  // and SIMULATOR_UDID appears in its env (RN projects on a capable host). Reflect whichever is true.
+  const simulatorNote = simulatorUdid
+    ? `orc has created and booted a dedicated iOS simulator for you (UDID in SIMULATOR_UDID: ${simulatorUdid}). Use ONLY it, always via the explicit UDID — never \`booted\` or a shared device — and do not create or delete a simulator yourself; orc tears it down when you're removed.`
+    : `If a task needs an iOS simulator, orc provisions a dedicated one for you when you adopt a worktree (its UDID appears in SIMULATOR_UDID); use that explicit UDID exclusively, never \`booted\` or a shared device. Until then, do not create or reuse a simulator.`;
   return `
 ## Orchestration context (injected by orc)
 
 You are agent "${name}", a general-purpose WORKER agent running under an orchestrator that supervises
 several agents in parallel. Do whatever the human asks — there is no fixed workflow.
 
-- Your unique agent name is "${name}". Use it when creating any per-agent resource (e.g. an iOS simulator).
+- Your unique agent name is "${name}". ${simulatorNote}
 - You start in the project's BASE repository with NO git worktree, branch or port. This is deliberate:
   tasks that change no code (answering a question, deleting/inspecting a branch, running read-only git,
   reporting on state) need no worktree, so don't create one for them.

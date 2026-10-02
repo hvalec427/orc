@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import type { AgentStatus, AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
 import { needsWorktree, isWorkerTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
+import { SimulatorAllocator } from '../simulators.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
 import { AgentSession } from './AgentSession.js';
 import type { LaunchTemplate, RunPipelineStep, EnsureWorktree } from './launcherTools.js';
@@ -43,6 +44,7 @@ interface PersistedAgent {
   worktree?: string;
   ownsWorktree?: boolean;
   metroPort?: number;
+  simulatorUdid?: string;
   sessionId?: string;
   status: AgentStatus;
   archived?: boolean;
@@ -58,6 +60,8 @@ export class AgentManager extends EventEmitter {
   private readonly agents = new Map<string, AgentSession>();
   /** One port allocator per project that defines a range (keyed by project name). */
   private readonly ports = new Map<string, PortAllocator>();
+  /** One simulator allocator per react-native project (keyed by project name). */
+  private readonly simulators = new Map<string, SimulatorAllocator>();
   /**
    * Subagents currently blocked in `ask_orchestrator`, keyed by the asking child's id. The value
    * resolves the child's pending promise with the orchestrator's (or human's) answer text. A child
@@ -70,6 +74,14 @@ export class AgentManager extends EventEmitter {
     super();
     for (const project of config.projects) {
       if (project.portRange) this.ports.set(project.name, new PortAllocator(project.portRange));
+      // Only react-native projects drive an iOS simulator; the allocator is best-effort and silently
+      // no-ops when the host lacks the simulator toolchain (see SimulatorAllocator).
+      if (project.type === 'react-native') {
+        this.simulators.set(
+          project.name,
+          new SimulatorAllocator(undefined, (msg) => this.emit('log', msg)),
+        );
+      }
     }
   }
 
@@ -174,6 +186,7 @@ export class AgentManager extends EventEmitter {
     let worktree: Worktree | undefined;
     let ownsWorktree = false;
     let metroPort: number | undefined;
+    let simulatorUdid: string | undefined;
     if (sharedWorktree) {
       // Pipeline role step: point this agent at the pipeline's existing worktree/branch. Only
       // full-access roles actually write there; read-only roles just read the in-progress work.
@@ -187,6 +200,9 @@ export class AgentManager extends EventEmitter {
       ownsWorktree = true;
       const allocator = this.ports.get(project.name);
       metroPort = allocator ? await allocator.allocate() : undefined;
+      // Provision a dedicated iOS simulator (react-native projects only) so the agent works on its
+      // own device and never reuses an existing/shared one. Best-effort: undefined if unavailable.
+      simulatorUdid = await this.provisionSimulator(project.name, id);
     }
 
     const session = this.buildSession({
@@ -202,6 +218,7 @@ export class AgentManager extends EventEmitter {
       worktree: worktree?.path,
       ownsWorktree,
       metroPort,
+      simulatorUdid,
     });
     session.start();
     this.persist();
@@ -238,6 +255,7 @@ export class AgentManager extends EventEmitter {
     worktree?: string;
     ownsWorktree: boolean;
     metroPort?: number;
+    simulatorUdid?: string;
   }): AgentSession {
     const { id, project, template, name } = args;
     const projectName = project.name;
@@ -299,7 +317,10 @@ export class AgentManager extends EventEmitter {
           const wt = await createWorktree(project.repo, project.worktreeDir, id);
           const allocator = this.ports.get(project.name);
           const port = allocator ? await allocator.allocate() : undefined;
-          session.adoptWorktree(wt, port, true);
+          // The worker is now going to edit/build code, so give it a dedicated simulator too (RN
+          // projects only; best-effort). Relaunch picks up SIMULATOR_UDID along with the new cwd/port.
+          const udid = await this.provisionSimulator(project.name, id);
+          session.adoptWorktree(wt, port, true, udid);
           this.persist();
           return { branch: wt.branch, path: wt.path, port, alreadyHad: false };
         }
@@ -322,6 +343,7 @@ export class AgentManager extends EventEmitter {
       worktree: args.worktree,
       ownsWorktree: args.ownsWorktree,
       metroPort: args.metroPort,
+      simulatorUdid: args.simulatorUdid,
       config: project,
       launchFeature,
       runStep,
@@ -720,6 +742,20 @@ export class AgentManager extends EventEmitter {
     this.emit('update');
   }
 
+  /**
+   * Create and boot a dedicated iOS simulator for the agent `id` in `projectName`, returning its UDID
+   * (or undefined when the project isn't react-native or the host can't provision one). The device is
+   * named after the agent id so it is recognisable in Simulator.app and `simctl list`. Best-effort:
+   * the allocator swallows toolchain/availability failures and logs via the manager's 'log' event.
+   */
+  private async provisionSimulator(projectName: string, id: string): Promise<string | undefined> {
+    const allocator = this.simulators.get(projectName);
+    if (!allocator) return undefined;
+    const udid = await allocator.allocate(id);
+    if (udid) await allocator.boot(udid);
+    return udid;
+  }
+
   /** Stop and remove an agent, cleaning up its worktree and releasing its port. */
   async remove(id: string): Promise<void> {
     const session = this.agents.get(id);
@@ -740,6 +776,10 @@ export class AgentManager extends EventEmitter {
     }
     if (session.metroPort !== undefined) {
       this.ports.get(session.project)?.release(session.metroPort);
+    }
+    // Shut down and delete this agent's dedicated simulator (best-effort; only its own device).
+    if (session.simulatorUdid) {
+      await this.simulators.get(session.project)?.release(session.simulatorUdid);
     }
     // Clean up the worktree only if this agent owns it. Pipeline role children share their
     // pipeline's worktree (ownsWorktree=false), so they must NOT remove it — the pipeline parent
@@ -794,6 +834,7 @@ export class AgentManager extends EventEmitter {
           worktree: info.worktree,
           ownsWorktree: info.ownsWorktree,
           metroPort: info.metroPort,
+          simulatorUdid: info.simulatorUdid,
           sessionId: info.sessionId,
           status: info.status,
           archived: info.archived,
@@ -856,6 +897,8 @@ export class AgentManager extends EventEmitter {
 
       // Reserve the persisted port so a freshly created agent can't be handed the same one.
       if (a.metroPort !== undefined) this.ports.get(project.name)?.reserve(a.metroPort);
+      // Re-adopt the persisted simulator UDID so removing this agent later tears its device down.
+      if (a.simulatorUdid) this.simulators.get(project.name)?.reserve(a.simulatorUdid);
 
       // ownsWorktree was added later; older state files omit it. Derive a safe default: an agent owns
       // its worktree when it has one and isn't a child (children share their group/pipeline worktree).
@@ -875,6 +918,7 @@ export class AgentManager extends EventEmitter {
         worktree: a.worktree,
         ownsWorktree,
         metroPort: a.metroPort,
+        simulatorUdid: a.simulatorUdid,
       });
       // Seed the prior Claude session id and park the agent as 'stopped' (resumable) — even if it was
       // persisted as 'working'/'booting' because orc was killed mid-turn.

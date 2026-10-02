@@ -18,7 +18,7 @@ Booting a simulator and building the app are slow. Do NOT run them sequentially 
    - NO for docs-only edits, pure refactors fully covered by unit tests, config/tooling changes, or investigation/questions. If NO, skip the simulator and app build entirely — just do the work and run the checks that apply (typecheck, lint, tests).
 
 2. **If the task needs the app, kick off the slow work immediately and in the BACKGROUND**, before you finish planning:
-   - Create and boot your simulator (see below).
+   - Confirm your dedicated simulator is booted (see below).
    - Install dependencies and iOS deps, build the app for the simulator, install it, and start Metro on METRO_PORT.
    - Launch these as background jobs so they run while you work — do not block waiting on them.
 
@@ -40,19 +40,11 @@ You are running inside your own dedicated Git worktree.
 
 ## Your iOS Simulator
 
-**You are responsible for creating and managing your own iOS Simulator.** Do not use an existing shared simulator.
+**orc has provisioned and booted a dedicated iOS Simulator exclusively for you.** Its UDID is in the \`SIMULATOR_UDID\` env var. Use ONLY this simulator — never an existing, shared, or pre-existing device.
 
-At the beginning of the task:
-
-1. Inspect available device types and runtimes (\`xcrun simctl list devicetypes\` / \`list runtimes\`).
-2. Select an appropriate iPhone device type and an installed iOS runtime.
-3. Create a dedicated simulator using your injected AGENT_NAME:
-   \`xcrun simctl create "<AGENT_NAME>" "<device type>" "<runtime>"\`
-4. Save the returned UDID and use it for the remainder of the task.
-5. Boot and wait: \`xcrun simctl bootstatus "<SIMULATOR_UDID>" -b\`.
-6. Never use \`booted\` when multiple simulators may run — always pass your explicit UDID.
-
-You own the simulator you create: keep it running while working; reset/erase if needed. When the task is completely finished, shut it down and delete it. Do not delete any simulator you did not create.
+- Always target your device by its explicit UDID: pass \`"$SIMULATOR_UDID"\` to simctl, Maestro, and every app command (e.g. \`xcrun simctl bootstatus "$SIMULATOR_UDID" -b\`). Never use \`booted\`.
+- Do NOT create another simulator, and do NOT shut down, erase, or delete your simulator — orc owns its lifecycle and tears it down automatically when you are removed.
+- If \`SIMULATOR_UDID\` is not set (orc could not provision one on this host), create your own dedicated simulator named after your \`AGENT_NAME\` (\`xcrun simctl create "<AGENT_NAME>" "<device type>" "<runtime>"\`), save its UDID, boot it with \`bootstatus … -b\`, and pass that explicit UDID everywhere — never reuse a shared simulator.
 
 ## Metro
 
@@ -72,7 +64,7 @@ Use Maestro (via the attached Maestro MCP server) to interact with and verify th
 
 ## Autonomous Development
 
-Work independently. Do NOT ask permission to: create your simulator, install dependencies, run builds, start Metro, install the app, run tests, run Maestro, fix build/lint/TypeScript errors, make normal implementation decisions, or retry failed commands.
+Work independently. Do NOT ask permission to: install dependencies, run builds, start Metro, install the app, run tests, run Maestro, fix build/lint/TypeScript errors, make normal implementation decisions, or retry failed commands.
 
 Before asking the user a question: inspect the code, search for existing patterns, inspect tests, check git history, and try reasonable solutions yourself. Only ask on a genuine product/design decision, missing information, or where multiple reasonable implementations differ materially.
 

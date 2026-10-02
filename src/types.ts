@@ -169,6 +169,11 @@ export interface AgentInfo {
   ownsWorktree?: boolean;
   /** Allocated port, or undefined when the project has no port range. */
   metroPort?: number;
+  /**
+   * UDID of the dedicated iOS Simulator orc provisioned for this agent, or undefined when none was
+   * provisioned (non-react-native project, no simulator toolchain, or a no-worktree agent).
+   */
+  simulatorUdid?: string;
   status: AgentStatus;
   /** The agent's last question (when status === 'needs_input'). */
   question?: string;

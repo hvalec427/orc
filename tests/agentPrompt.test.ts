@@ -139,6 +139,34 @@ test('fix prompt is full-access (worktree identity + DONE <hash>) with a surgica
   assert.match(prompt, /smallest change/, 'fix prompt missing minimal-change guidance');
 });
 
+test('full-access prompts reference the orc-provisioned SIMULATOR_UDID when one is provisioned', () => {
+  for (const t of ['feature', 'fix', ...FULL_ACCESS_ROLES] as AgentTemplate[]) {
+    const prompt = buildAppendPrompt({ name: 'simd', template: t, simulatorUdid: 'UDID-123' });
+    assert.match(prompt, /SIMULATOR_UDID/, `${t} prompt should mention SIMULATOR_UDID`);
+    assert.ok(prompt.includes('UDID-123'), `${t} prompt should embed the provisioned UDID`);
+    assert.match(prompt, /dedicated iOS simulator/i, `${t} prompt should call it a dedicated simulator`);
+    assert.match(prompt, /do NOT create another simulator/i, `${t} prompt should forbid creating another`);
+  }
+});
+
+test('full-access prompts fall back to "create your own" guidance without a provisioned simulator', () => {
+  for (const t of ['feature', 'fix', ...FULL_ACCESS_ROLES] as AgentTemplate[]) {
+    const prompt = buildAppendPrompt({ name: 'nosim', template: t });
+    assert.match(prompt, /creating your iOS simulator/i, `${t} prompt missing fallback create guidance`);
+    assert.ok(!prompt.includes('do NOT create another simulator'), `${t} fallback must not forbid creating one`);
+  }
+});
+
+test('worker prompt references SIMULATOR_UDID both when provisioned and on-demand', () => {
+  const provisioned = buildAppendPrompt({ name: 'odd-job', template: 'worker', simulatorUdid: 'UDID-W' });
+  assert.ok(provisioned.includes('UDID-W'), 'provisioned worker prompt embeds the UDID');
+  assert.match(provisioned, /SIMULATOR_UDID/, 'provisioned worker prompt mentions SIMULATOR_UDID');
+
+  const onDemand = buildAppendPrompt({ name: 'odd-job', template: 'worker' });
+  assert.match(onDemand, /SIMULATOR_UDID/, 'on-demand worker prompt still mentions SIMULATOR_UDID');
+  assert.match(onDemand, /when you adopt a worktree/i, 'on-demand worker prompt explains provisioning timing');
+});
+
 test('every role prompt requires a hand-off summary', () => {
   for (const role of [...READ_ONLY_ROLES, ...FULL_ACCESS_ROLES]) {
     const prompt = buildAppendPrompt({ name: 'r', template: role });
