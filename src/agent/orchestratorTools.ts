@@ -369,7 +369,7 @@ export function buildRunTool(runInPane: RunInPane, readOnly = false) {
           .min(1)
           .describe('The shell command to run (passed to `bash -c`). Keep it self-contained.'),
       },
-      async (args) => {
+      async (args, extra) => {
         const command = args.command;
         if (readOnly && !isReadOnlyBashCommand(command)) {
           return {
@@ -386,8 +386,19 @@ export function buildRunTool(runInPane: RunInPane, readOnly = false) {
             isError: true,
           };
         }
-        const { output, rc } = await runInPane(command, new AbortController().signal);
-        return { content: [{ type: 'text', text: output }], isError: rc !== 0 };
+        // The SDK passes a per-call AbortSignal on `extra` (aborted when the tool call is cancelled),
+        // so SDK-initiated cancellation reaches runInPane's pane wait / fallback spawn. Fall back to a
+        // never-aborted signal only when none is supplied (e.g. a direct unit-test call).
+        const signal = (extra as { signal?: AbortSignal } | undefined)?.signal ?? new AbortController().signal;
+        try {
+          const { output, rc } = await runInPane(command, signal);
+          return { content: [{ type: 'text', text: output }], isError: rc !== 0 };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Command failed: ${(err as Error).message}` }],
+            isError: true,
+          };
+        }
       },
     ),
   ];

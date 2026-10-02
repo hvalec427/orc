@@ -251,7 +251,8 @@ const SHELL_SECTION = `### Running shell commands
 Run EVERY shell command through the \`${RUN_TOOL}\` tool (builds, tests, git, file inspection — all of
 it). The built-in Bash tool is disabled; \`${RUN_TOOL}\` is your only shell. It returns the command's
 combined output and exit code, and when you are the selected agent your command runs live in the tmux
-viewer pane so the human can watch it.`;
+viewer pane so the human can watch it. It is non-interactive — it receives no stdin, so pass flags
+like \`-m\` and avoid launching interactive or long-lived foreground programs that wait for input.`;
 
 /** Appended to every agent: keep human-facing messages terse to save tokens. */
 const BREVITY_SECTION = `### Keep messages brief

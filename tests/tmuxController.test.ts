@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import {
   paneSlug,
   paneLogPath,
-  viewerTailCommand,
   argvHasSession,
   argvKillSession,
   argvNewSession,
@@ -59,22 +58,6 @@ describe('paneSlug', () => {
 describe('paneLogPath', () => {
   test('joins logsDir with the slug and a .log suffix', () => {
     assert.equal(paneLogPath('/logs', 'My Agent'), join('/logs', 'my-agent.log'));
-  });
-});
-
-describe('viewerTailCommand', () => {
-  test('is an exec tail -F on the single-quoted path', () => {
-    assert.equal(
-      viewerTailCommand('/logs/a.log'),
-      "exec tail -n +1 -F '/logs/a.log'",
-    );
-  });
-
-  test("escapes an embedded single quote as '\\'' so the path can't break out of the quotes", () => {
-    assert.equal(
-      viewerTailCommand("/logs/o'brien.log"),
-      "exec tail -n +1 -F '/logs/o'\\''brien.log'",
-    );
   });
 });
 

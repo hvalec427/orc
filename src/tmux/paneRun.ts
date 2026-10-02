@@ -83,7 +83,13 @@ export function decidePaneVsFallback(opts: {
   return opts.tmuxOn && opts.isSelected && opts.fifoWritable ? 'pane' : 'fallback';
 }
 
-/** Synchronous sleep (ms) so writeRunLine can briefly retry without going async. */
+/**
+ * Synchronous sleep (ms) so writeRunLine can briefly retry without going async. `Atomics.wait`
+ * blocks the whole event loop — but only for the ENXIO driver-startup race, where the driver comes
+ * up within milliseconds, so the real wait is tiny; a genuine no-reader returns false promptly
+ * (ENXIO is retried only up to the ~1s budget). The synchronous form keeps writeRunLine callable
+ * from non-async code, which is why we accept the brief block rather than rewriting to async.
+ */
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

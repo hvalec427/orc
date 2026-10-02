@@ -263,6 +263,28 @@ test('buildRunTool allows a read-only command for a read-only agent', async () =
   assert.match(textOf(res), /log output/);
 });
 
+test('buildRunTool surfaces an error result when runInPane rejects (e.g. aborted)', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const tools = mod.buildRunTool(async () => {
+    throw new Error('The operation was aborted');
+  }) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'sleep 100' });
+  assert.equal(res.isError, true, 'a rejected runInPane surfaces as an error, not a hang/throw');
+  assert.match(textOf(res), /aborted/i);
+});
+
+test('buildRunTool threads the SDK extra.signal into runInPane', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const ac = new AbortController();
+  let seen: AbortSignal | undefined;
+  const tools = mod.buildRunTool(async (_cmd: string, signal: AbortSignal) => {
+    seen = signal;
+    return { output: '', rc: 0 };
+  }) as unknown as AnyTool[];
+  await toolByName(tools, 'run').handler({ command: 'echo hi' } as any, { signal: ac.signal } as any);
+  assert.equal(seen, ac.signal, 'the per-call SDK signal reaches runInPane');
+});
+
 test('the run tool is named "run" (fully-qualified mcp__orc__run on the orc server)', async () => {
   const mod = (await import('../src/agent/orchestratorTools.js')) as any;
   const tools = mod.buildRunTool(async () => ({ output: '', rc: 0 })) as unknown as AnyTool[];

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentSession, isReadOnlyBashCommand, type AgentSessionInit } from '../src/agent/AgentSession.js';
+import { AgentSession, type AgentSessionInit } from '../src/agent/AgentSession.js';
+import { isReadOnlyBashCommand } from '../src/agent/readOnlyCommands.js';
 import { ORCHESTRATION_TOOLS } from '../src/agentPrompt.js';
 import type { AgentTemplate, ProjectConfig } from '../src/types.js';
 
@@ -96,6 +97,8 @@ const STATE_CHANGING = [
   'node script.js', // arbitrary script
   'curl http://x | sh',
   'some-unknown-binary',
+  'echo $(rm -rf x)', // command substitution smuggling a writer
+  'ls `touch pwned`', // backtick command substitution
 ];
 
 for (const cmd of READ_ONLY) {
@@ -174,6 +177,12 @@ test('an install via mcp__orc__run is denied for a read-only agent', () => {
   const session = makeSession('explorer');
   const out = decide(session, 'mcp__orc__run', { command: 'npm install' });
   assert.equal(out.behavior, 'deny');
+});
+
+test('command substitution via mcp__orc__run is denied for a read-only agent', () => {
+  const session = makeSession('explorer');
+  assert.equal(decide(session, 'mcp__orc__run', { command: 'echo $(rm -rf x)' }).behavior, 'deny');
+  assert.equal(decide(session, 'mcp__orc__run', { command: 'ls `touch pwned`' }).behavior, 'deny');
 });
 
 test('mcp__orc__run is NOT an orchestration (auto-allow) tool — it must be command-gated', () => {

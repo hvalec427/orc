@@ -30,15 +30,18 @@ const READONLY_BASH_COMMANDS = new Set([
  * Whether a Bash command is safe for a read-only agent: pure investigation, no state changes.
  *
  * Conservative by design — when in doubt it returns false so the agent is told to delegate. It
- * rejects any output redirection (`>`/`>>`), command substitution feeding a writer, and process
- * substitution, then requires every simple command (across pipes and `&&`/`||`/`;`) to be a known
- * read-only binary. `git` is allowed only for read-only subcommands; `npm`/`yarn`/etc. only for
- * their read-only subcommands (test/lint/typecheck/run script inspection) — never install/add.
+ * rejects any output redirection (`>`/`>>`), command substitution (`$(…)` or backticks), process
+ * substitution, and here-strings, then requires every simple command (across pipes and `&&`/`||`/`;`)
+ * to be a known read-only binary. `git` is allowed only for read-only subcommands; `npm`/`yarn`/etc.
+ * only for their read-only subcommands (test/lint/typecheck/run script inspection) — never install/add.
  */
 export function isReadOnlyBashCommand(raw: string): boolean {
   const cmd = raw.trim();
   if (!cmd) return false;
 
+  // Command substitution can smuggle in an arbitrary writer (e.g. `echo $(rm -rf x)` / `ls \`touch y\``),
+  // and we don't classify its inner command, so reject it outright.
+  if (cmd.includes('$(') || cmd.includes('`')) return false;
   // Any output redirection or file-descriptor write is a mutation. (`2>&1` is fine; `>`/`>>` are not.)
   if (/(^|[^0-9&])>>?/.test(cmd)) return false;
   // Process substitution and here-docs can smuggle in writes.

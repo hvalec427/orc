@@ -650,7 +650,9 @@ export class AgentManager extends EventEmitter {
       };
       append(`$ ${cmd}\n`);
       let out = '';
-      const child = spawn('bash', ['-c', cmd], { signal });
+      // stdin from /dev/null: the fallback has no tty/interactivity, so a command that reads stdin
+      // would otherwise block forever with no way to cancel it. (The pane driver keeps its tty.)
+      const child = spawn('bash', ['-c', cmd], { signal, stdio: ['ignore', 'pipe', 'pipe'] });
       child.stdout?.on('data', (d: Buffer) => {
         out += d.toString();
       });

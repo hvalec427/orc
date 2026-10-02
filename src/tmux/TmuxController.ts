@@ -30,14 +30,6 @@ export function paneLogPath(logsDir: string, id: string): string {
   return join(logsDir, paneSlug(id) + '.log');
 }
 
-/** The shell command the viewer pane runs to follow an agent's pane log from the top. */
-export function viewerTailCommand(logPath: string): string {
-  // Single-quote the whole path, escaping any embedded `'` as `'\''`, so an unusual logsDir can
-  // never break out of the quotes. A quote-free path is unchanged by this escaping.
-  const escaped = logPath.replace(/'/g, `'\\''`);
-  return `exec tail -n +1 -F '${escaped}'`;
-}
-
 /** The named-pipe the pane driver reads commands from, for an agent. */
 export function paneFifoPath(logsDir: string, id: string): string {
   return join(logsDir, paneSlug(id) + '.fifo');
@@ -278,9 +270,13 @@ export class TmuxController implements Tmux {
     } catch {
       // Aborted (or watch failure) → signal a cancel via the pane, then report a non-zero rc.
       if (this.viewPaneId) await this.run(argvSendInterrupt(this.viewPaneId)).catch(() => {});
-      return { output: this.readPaneOutput(agentId, runId), rc: 130 };
+      const output = this.readPaneOutput(agentId, runId);
+      this.cleanupRunFiles(agentId, runId);
+      return { output, rc: 130 };
     }
-    return { output: this.readPaneOutput(agentId, runId), rc };
+    const output = this.readPaneOutput(agentId, runId);
+    this.cleanupRunFiles(agentId, runId);
+    return { output, rc };
   }
 
   /** Read (and cap) a finished command's captured output from its per-id file. */
@@ -289,6 +285,23 @@ export class TmuxController implements Tmux {
       return capOutput(readFileSync(join(paneIdsDir(this.logsDir, agentId), runId), 'utf8'));
     } catch {
       return '';
+    }
+  }
+
+  /** Best-effort removal of a command's per-id output + done files; they only bridge one command. */
+  private cleanupRunFiles(agentId: string, runId: string): void {
+    const doneDir = paneDoneDir(this.logsDir, agentId);
+    const paths = [
+      join(paneIdsDir(this.logsDir, agentId), runId),
+      join(doneDir, runId),
+      join(doneDir, `.${runId}.tmp`),
+    ];
+    for (const p of paths) {
+      try {
+        rmSync(p, { force: true });
+      } catch {
+        // Best-effort: a missing file is fine.
+      }
     }
   }
 

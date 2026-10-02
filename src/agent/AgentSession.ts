@@ -190,11 +190,6 @@ export interface AgentSessionInit {
  */
 const READONLY_DENIED_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
-// Re-exported so existing importers (and tests) keep resolving it from AgentSession; the classifier
-// itself lives in its own module (imported above) so the mcp__orc__run tool can share it without an
-// import cycle.
-export { isReadOnlyBashCommand };
-
 /**
  * One Claude Code agent = one streaming query() session.
  * Emits 'update' (throttled) whenever status/events/cost change, and 'approval'
