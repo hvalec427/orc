@@ -196,7 +196,7 @@ export function NewAgentForm({
       </Text>
 
       <Box flexDirection="column" marginTop={1}>
-        <Text>{step === 'template' ? '› ' : '  '}template:</Text>
+        <Text>{step === 'template' ? '› ' : '  '}Agents:</Text>
         {step === 'template' ? (
           <Box flexDirection="column" marginLeft={2}>
             {TEMPLATES.map((t, i) => (
