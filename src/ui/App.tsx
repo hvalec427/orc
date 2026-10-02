@@ -182,8 +182,9 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         }
       } else if (input === 'm' && selected) {
         const id = selected.id;
-        const { branch, status, archived } = selected.getInfo();
-        if (!branch || archived) {
+        const { branch, status, archived, parentId } = selected.getInfo();
+        // Child agents share their parent's worktree/branch, so integrating them makes no sense.
+        if (!branch || archived || parentId) {
           return;
         }
         // Don't integrate a branch the agent is still actively editing. Only allow
@@ -407,6 +408,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
           canMerge={
             !!selected?.getInfo().branch &&
             !selected.getInfo().archived &&
+            !selected.getInfo().parentId &&
             selected.getInfo().status !== 'working' &&
             selected.getInfo().status !== 'booting'
           }
