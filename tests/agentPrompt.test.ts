@@ -220,14 +220,37 @@ test('every template prompt carries the group-coordination section with all coor
   }
 });
 
-test('every template prompt explains the two triggers for spawning a subagent', () => {
-  // The spawn guidance must be on EVERY agent's prompt and cover both cases the human cares about:
-  // (1) the human asks for another agent, and (2) a task suits a different kind of agent.
+test('every template prompt explains the three triggers for spawning a subagent', () => {
+  // The spawn guidance must be on EVERY agent's prompt and cover the three cases the human cares about:
+  // (1) the human asks for another agent, (2) a task suits a different kind of agent, and
+  // (3) — especially — delegating work the agent cannot do itself (e.g. a read-only agent that must
+  // edit code spawns a full-access subagent).
   for (const t of ALL_TEMPLATES) {
     const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
     assert.match(prompt, /Spawning your own subagents/, `${t} missing spawn guidance`);
     assert.match(prompt, /the human asks you to start another agent/i, `${t} missing "when asked" trigger`);
     assert.match(prompt, /better handled by\s+a different\s+kind of agent/i, `${t} missing "better suited" trigger`);
+    assert.match(prompt, /the task needs something you cannot do yourself/i, `${t} missing "can't do it" trigger`);
+    assert.match(
+      prompt,
+      /spawn a full-access/i,
+      `${t} missing guidance to spawn a full-access subagent for inaccessible work`,
+    );
+  }
+});
+
+test('every template prompt tells the spawner to have its subagent report back', () => {
+  // The task requires spawned subagents to report back to the agent that launched them, so the spawn
+  // guidance must point the spawner at report_to_orchestrator for the subagent's progress/result.
+  for (const t of ALL_TEMPLATES) {
+    const prompt = buildAppendPrompt({ name: `agent-${t}`, template: t, project: 'demo' });
+    assert.match(
+      prompt,
+      /report its progress and final result back to you/i,
+      `${t} missing report-back instruction for spawned subagents`,
+    );
+    // The instruction must name the report_to_orchestrator tool within the spawn guidance.
+    assert.ok(prompt.includes(REPORT_TO_ORCHESTRATOR_TOOL), `${t} missing report_to_orchestrator reference`);
   }
 });
 

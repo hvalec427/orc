@@ -165,8 +165,10 @@ function buildTemplatePrompt(params: PromptParams): string {
 /**
  * The group-coordination section appended to EVERY agent's prompt. It explains the in-process
  * coordination channel so a group works together without the human relaying messages:
- *   - SPAWNING: any agent can spawn its own subagent (when asked, or when a task suits a different
- *     kind of agent) so it joins the group and shows in the TUI.
+ *   - SPAWNING: any agent can spawn its own subagent (when asked, when a task suits a different
+ *     kind of agent, or — especially — to delegate work it cannot do itself, e.g. a read-only agent
+ *     spawning a full-access subagent to edit code) so it joins the group and shows in the TUI; the
+ *     subagent reports its progress/result back via report_to_orchestrator.
  *   - As an ORCHESTRATOR (you may have subagents attached to you or spawned by you): list them, ask one
  *     for its result (blocks until it finishes its turn), and answer one that is waiting on you.
  *   - As a SUBAGENT (you may have been launched under an orchestrator): ask your orchestrator for a
@@ -184,13 +186,19 @@ without the human relaying every message. Use them instead of ending your turn w
 your group can do the work or unblock you.
 
 Spawning your own subagents:
-- \`${SPAWN_SUBAGENT_TOOL}\` — spawn a new subagent to take on a chunk of work. Reach for this in TWO
-  situations: (1) the human asks you to start another agent, and (2) a task would be better handled by
+- \`${SPAWN_SUBAGENT_TOOL}\` — spawn a new subagent to take on a chunk of work. Reach for this in THREE
+  situations: (1) the human asks you to start another agent; (2) a task would be better handled by
   a different kind of agent than you — e.g. a read-only \`explorer\` for a deep investigation, a
-  surgical \`fix\` agent for a bug, or a \`feature\`/\`worker\` for a separable piece of work. Give it a
-  short kebab-case name and a self-contained prompt (it does not see your conversation). It joins your
-  group, shares your worktree/branch, and shows up in the TUI nested beneath you so the human can
-  follow it; then coordinate it with \`${LIST_SUBAGENTS_TOOL}\` / \`${ASK_SUBAGENT_TOOL}\`.
+  surgical \`fix\` agent for a bug, or a \`feature\`/\`worker\` for a separable piece of work; and (3) —
+  ESPECIALLY — the task needs something you cannot do yourself. If you are a read-only agent
+  (explorer, reviewer, planner, architect, launcher, pipeline) and the work requires editing files or
+  running commands, do NOT give up or ask the human to do it — spawn a full-access \`feature\`,
+  \`fix\`, or \`worker\` subagent to carry out that part, then collect its result. Give it a short
+  kebab-case name and a self-contained prompt (it does not see your conversation); tell the subagent in
+  that prompt to report its progress and final result back to you via \`${REPORT_TO_ORCHESTRATOR_TOOL}\`
+  (it already knows how). It joins your group, shares your worktree/branch, and shows up in the TUI
+  nested beneath you so the human can follow it; then coordinate it with \`${LIST_SUBAGENTS_TOOL}\` /
+  \`${ASK_SUBAGENT_TOOL}\` and read its reports in your log.
 
 As an ORCHESTRATOR (when you have subagents):
 - \`${LIST_SUBAGENTS_TOOL}\` — list your subagents with their status and latest hand-off summary.

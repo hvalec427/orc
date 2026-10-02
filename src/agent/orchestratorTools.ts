@@ -259,13 +259,17 @@ export function buildSpawnSubagentTool(spawn: SpawnSubagent) {
     tool(
       'spawn_subagent',
       'Spawn ONE subagent to carry out a chunk of work, and get back its id + name. Use this when ' +
-        'the human asks you to start another agent, OR when a task is better handled by a different ' +
+        'the human asks you to start another agent, when a task is better handled by a different ' +
         'kind of agent than you (e.g. a read-only "explorer" for deep investigation, a surgical "fix" ' +
-        'agent for a bug, a "feature" agent for a separate piece of work). The subagent joins your ' +
+        'agent for a bug, a "feature" agent for a separate piece of work), OR — especially — when the ' +
+        'task needs something you cannot do yourself: if you are a read-only agent and the work ' +
+        'requires editing files or running commands, spawn a full-access "feature"/"fix"/"worker" ' +
+        'subagent to do that part instead of giving up or asking the human. The subagent joins your ' +
         'group (it shares your worktree/branch) and shows up in the TUI nested beneath you, so the ' +
-        'human can follow its progress. After spawning, use list_subagents / ask_subagent to ' +
-        'coordinate it. The subagent does NOT see your conversation, so the prompt must be ' +
-        'self-contained.',
+        'human can follow its progress. The subagent does NOT see your conversation, so the prompt ' +
+        'must be self-contained; include in it an instruction to report its progress and final result ' +
+        'back to you via report_to_orchestrator. After spawning, use list_subagents / ask_subagent to ' +
+        'coordinate it and read its reports in your log.',
       {
         template: z
           .enum(SPAWNABLE_TEMPLATES)
