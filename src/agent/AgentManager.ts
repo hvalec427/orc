@@ -143,11 +143,15 @@ export class AgentManager extends EventEmitter {
     return this.list().filter((a) => a.getInfo().archived);
   }
 
-  /** First active agent currently asking for input/approval, if any (archived agents are skipped). */
+  /**
+   * First active agent currently needing the human, if any (archived agents are skipped):
+   * asking for input/approval, or blocked on a logged-out CLI ('needs_login') that the human
+   * must re-authenticate before it can resume.
+   */
   firstWaiting(): AgentSession | undefined {
     return this.active().find((a) => {
       const s = a.getInfo().status;
-      return s === 'needs_input' || s === 'needs_approval';
+      return s === 'needs_input' || s === 'needs_approval' || s === 'needs_login';
     });
   }
 

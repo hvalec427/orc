@@ -11,6 +11,7 @@ const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
   working: { glyph: '●', color: 'cyan' },
   needs_input: { glyph: '?', color: 'magenta' },
   needs_approval: { glyph: '!', color: 'yellow' },
+  needs_login: { glyph: '⊘', color: 'red' },
   done: { glyph: '✓', color: 'green' },
   error: { glyph: '✗', color: 'red' },
   stopped: { glyph: '■', color: 'gray' },
@@ -142,7 +143,11 @@ function AgentRow({
         {isChild ? <Text dimColor>  └ </Text> : <Text dimColor>{index + 1} </Text>}
         <Text
           color={color}
-          bold={info.status === 'needs_input' || info.status === 'needs_approval'}
+          bold={
+            info.status === 'needs_input' ||
+            info.status === 'needs_approval' ||
+            info.status === 'needs_login'
+          }
         >
           {glyph}
         </Text>

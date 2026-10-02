@@ -94,6 +94,39 @@ test('an error result before completion still surfaces as error', () => {
   assert.equal(session.getInfo().status, 'error');
 });
 
+test('an auth-failure result flips to needs_login instead of a generic error', () => {
+  const session = makeSession();
+  feed(session, errorResult('error_during_execution', ['API Error: 401 Unauthorized']));
+  assert.equal(session.getInfo().status, 'needs_login');
+});
+
+test('a "not logged in" result is detected as needs_login', () => {
+  const session = makeSession();
+  feed(session, errorResult('error_during_execution', ['Error: not logged in. Run `claude login`.']));
+  assert.equal(session.getInfo().status, 'needs_login');
+});
+
+test('an invalid-api-key result is detected as needs_login', () => {
+  const session = makeSession();
+  feed(session, errorResult('error', ['authentication_error: invalid API key']));
+  assert.equal(session.getInfo().status, 'needs_login');
+});
+
+test('an ordinary task error is NOT mistaken for a login problem', () => {
+  const session = makeSession();
+  feed(session, errorResult('error_during_execution', ['TypeError: cannot read property of undefined']));
+  assert.equal(session.getInfo().status, 'error');
+});
+
+test('a needs_login turn has ended, so a reply/retry resumes the session', () => {
+  const session = makeSession();
+  feed(session, errorResult('error_during_execution', ['401 Unauthorized']));
+  assert.equal(session.getInfo().status, 'needs_login');
+  // The CLI exited on the auth failure, so there is no live loop — continuing must relaunch
+  // (resume) rather than push onto a dead queue.
+  assert.equal(turnEnded(session), true);
+});
+
 test('AskUserQuestion is denied and redirected to the NEEDS_INPUT sentinel', async () => {
   const session = makeSession();
   const out = (await guardAsk(session, 'AskUserQuestion')) as {

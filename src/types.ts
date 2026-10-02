@@ -112,6 +112,7 @@ export type AgentStatus =
   | 'working' // actively processing a turn
   | 'needs_input' // turn ended asking the human a question
   | 'needs_approval' // a tool is waiting for human approval (canUseTool)
+  | 'needs_login' // the Claude CLI is logged out; the human must re-authenticate, then retry
   | 'done' // agent reported the task finished
   | 'error' // the session errored
   | 'stopped'; // interrupted/closed by the human

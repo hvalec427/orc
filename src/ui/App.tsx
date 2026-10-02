@@ -171,7 +171,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       } else if (input === 'x') {
         // stop() no-ops once the agent is dead, so only act while it's alive.
         const status = selected?.getInfo().status;
-        if (selected && status !== 'done' && status !== 'error' && status !== 'stopped') {
+        if (
+          selected &&
+          status !== 'done' &&
+          status !== 'error' &&
+          status !== 'stopped' &&
+          status !== 'needs_login'
+        ) {
           void selected.stop();
         }
       } else if (input === 'r') {
@@ -460,8 +466,13 @@ function HelpBar({
 }) {
   // An agent is "dead" (retryable) when its last turn ended; stop() only does
   // something while it is still alive. Mirror AgentSession.isDead()/stop().
+  // 'needs_login' is dead too: the CLI exited on an auth failure, so the human
+  // re-authenticates and then resumes it like any other ended session.
   const isDead =
-    selectedStatus === 'done' || selectedStatus === 'error' || selectedStatus === 'stopped';
+    selectedStatus === 'done' ||
+    selectedStatus === 'error' ||
+    selectedStatus === 'stopped' ||
+    selectedStatus === 'needs_login';
 
   // Only list a command when pressing its key would actually do something.
   const global: string[] = ['n:new'];

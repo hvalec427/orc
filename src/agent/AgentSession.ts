@@ -69,6 +69,34 @@ function oneLine(text: string, max = 200): string {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+/**
+ * Patterns that mark an SDK/CLI failure as "the Claude Code login is gone" rather than an
+ * ordinary task error. When the underlying `claude` CLI has no valid credentials (the OAuth
+ * token expired, the user logged out, or the API key was revoked) the subprocess fails before
+ * the agent can do any work, surfacing as an authentication error in the result's `errors`
+ * (or as a thrown error in the run loop). These need a different remedy from a normal error —
+ * the human must re-authenticate the CLI and only then is a retry meaningful — so we detect
+ * them and flip to the dedicated 'needs_login' status instead of the generic 'error'.
+ */
+const LOGIN_REQUIRED_PATTERNS: readonly RegExp[] = [
+  /\bunauthorized\b/i,
+  /\b401\b/,
+  /authentication[_\s-]?error/i,
+  /invalid\s+api\s+key/i,
+  /\bnot\s+logged\s+in\b/i,
+  /\b(?:please\s+)?log\s*in\b/i,
+  /\blogin\s+required\b/i,
+  /\bsession\s+expired\b/i,
+  /\b(?:oauth\s+)?token\s+(?:expired|revoked|invalid)\b/i,
+  /credentials?\s+(?:expired|invalid|missing|not\s+found)/i,
+  /run\s+`?claude\s+login`?/i,
+];
+
+/** Whether a diagnostic string indicates the Claude CLI needs the human to re-authenticate. */
+function isLoginRequired(detail: string): boolean {
+  return LOGIN_REQUIRED_PATTERNS.some((re) => re.test(detail));
+}
+
 /** Loose shape of the raw Anthropic stream events we care about. */
 type StreamEvent =
   | {
@@ -651,9 +679,18 @@ export class AgentSession extends EventEmitter {
     );
   }
 
-  /** Terminal states: the session has fully ended and can only be picked back up by resuming. */
+  /**
+   * Terminal states: the session has fully ended and can only be picked back up by resuming.
+   * 'needs_login' belongs here — the CLI exited and closed the queue on an auth failure, so once
+   * the human re-authenticates a retry()/send() must relaunch (resume) rather than push.
+   */
   private isDead(): boolean {
-    return this.status === 'done' || this.status === 'error' || this.status === 'stopped';
+    return (
+      this.status === 'done' ||
+      this.status === 'error' ||
+      this.status === 'stopped' ||
+      this.status === 'needs_login'
+    );
   }
 
   /**
@@ -751,7 +788,11 @@ export class AgentSession extends EventEmitter {
    */
   waitUntilFinished(): Promise<{ status: AgentStatus; text: string }> {
     const isTerminal = (s: AgentStatus) =>
-      s === 'done' || s === 'error' || s === 'stopped' || s === 'needs_input';
+      s === 'done' ||
+      s === 'error' ||
+      s === 'stopped' ||
+      s === 'needs_input' ||
+      s === 'needs_login';
     if (isTerminal(this.status)) {
       return Promise.resolve({ status: this.status, text: this.lastResultText });
     }
@@ -1095,8 +1136,15 @@ export class AgentSession extends EventEmitter {
       // subprocess often exits non-zero on its way down ("Claude Code process exited with
       // code 1"); that's post-completion teardown, not a failure, so keep the 'done' status.
       if (this.status === 'stopped' || this.status === 'done') return;
-      this.addLog('error', oneLine(`session error: ${(err as Error).message}`));
-      this.setStatus('error');
+      const message = (err as Error).message;
+      // A logged-out CLI surfaces here too (the subprocess exits reporting an auth failure).
+      // Flag it distinctly so the human re-authenticates rather than treating it as a task error.
+      if (isLoginRequired(message)) {
+        this.flagLoginRequired(message);
+      } else {
+        this.addLog('error', oneLine(`session error: ${message}`));
+        this.setStatus('error');
+      }
       // The SDK session is gone; close our side so the input queue and its async iterator
       // are released. A human can still pick the agent back up via retry()/send(), which
       // starts a fresh query() resuming the prior session id.
@@ -1195,6 +1243,12 @@ export class AgentSession extends EventEmitter {
 
     if (msg.subtype !== 'success') {
       const detail = msg.errors.join('; ');
+      // Distinguish a logged-out CLI from an ordinary turn failure: it needs the human to
+      // re-authenticate before any retry can succeed, so surface it as 'needs_login'.
+      if (isLoginRequired(`${msg.subtype} ${detail}`)) {
+        this.flagLoginRequired(detail);
+        return;
+      }
       this.addLog('error', oneLine(`turn ended: ${msg.subtype} — ${detail}`));
       this.setStatus('error');
       return;
@@ -1217,6 +1271,20 @@ export class AgentSession extends EventEmitter {
     this.lastResultText = this.question;
     this.addLog('result', '⏸ waiting for your input');
     this.setStatus('needs_input');
+  }
+
+  /**
+   * The Claude CLI reported it is logged out. Park the agent in 'needs_login' and tell the human
+   * exactly how to recover: re-authenticate the CLI (`claude login`), then press retry. We keep
+   * the prior sessionId, so retry()/send() resumes the same session once credentials are restored.
+   */
+  private flagLoginRequired(detail: string): void {
+    this.addLog('error', oneLine(`login required — ${detail}`));
+    this.addLog(
+      'system',
+      '🔑 Claude login expired. Re-authenticate the CLI (run `claude login`), then press r to retry.',
+    );
+    this.setStatus('needs_login');
   }
 
   // ---- helpers ------------------------------------------------------------
