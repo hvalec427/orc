@@ -29,7 +29,10 @@ export function paneLogPath(logsDir: string, id: string): string {
 
 /** The shell command the viewer pane runs to follow an agent's pane log from the top. */
 export function viewerTailCommand(logPath: string): string {
-  return `exec tail -n +1 -F '${logPath}'`;
+  // Single-quote the whole path, escaping any embedded `'` as `'\''`, so an unusual logsDir can
+  // never break out of the quotes. A quote-free path is unchanged by this escaping.
+  const escaped = logPath.replace(/'/g, `'\\''`);
+  return `exec tail -n +1 -F '${escaped}'`;
 }
 
 export function argvHasSession(name: string): string[] {
@@ -46,6 +49,18 @@ export function argvNewSession(name: string, reexecArgv: string[]): string[] {
 
 export function argvSplitRight(target: string): string[] {
   return ['split-window', '-h', '-t', target];
+}
+
+/** Like argvSplitRight, but prints the new pane's id (`-P -F '#{pane_id}'`) so we can capture it. */
+export function argvSplitRightPrint(target: string): string[] {
+  return ['split-window', '-h', '-P', '-F', '#{pane_id}', '-t', target];
+}
+
+/** Ask tmux to print a value for a target (or the current client when target is omitted). */
+export function argvDisplayMessage(format: string, target?: string): string[] {
+  return target
+    ? ['display-message', '-p', '-t', target, format]
+    : ['display-message', '-p', format];
 }
 
 export function argvStatusOff(name: string): string[] {
@@ -154,7 +169,11 @@ export class TmuxController implements Tmux {
     const path = paneLogPath(this.logsDir, id);
     // Create/truncate to an empty file so the viewer has something to tail and a relaunch starts
     // the mirror fresh. (Kept empty so the mirror's appends are the file's entire content.)
-    writeFileSync(path, '');
+    try {
+      writeFileSync(path, '');
+    } catch {
+      // Best-effort: a disk error here must not throw out of the AgentManager create/restore path.
+    }
     this.mirrorStates.set(id, { ...INITIAL_MIRROR_STATE });
   }
 
@@ -173,7 +192,15 @@ export class TmuxController implements Tmux {
   mirror(id: string, events: readonly LogEntry[]): void {
     const prev = this.mirrorStates.get(id) ?? { ...INITIAL_MIRROR_STATE };
     const { text, state } = computeMirrorAppend(prev, events);
-    if (text) appendFileSync(paneLogPath(this.logsDir, id), text);
+    if (text) {
+      try {
+        appendFileSync(paneLogPath(this.logsDir, id), text);
+      } catch {
+        // Best-effort on the hot path: a disk error on 'update' must not crash the session. Leave
+        // the mirror state unadvanced so the unwritten tail is retried on the next mirror() call.
+        return;
+      }
+    }
     this.mirrorStates.set(id, state);
   }
 
@@ -193,8 +220,11 @@ export class TmuxController implements Tmux {
   }
 
   /**
-   * Discover orc's window panes (left = orc's TUI at index 0, right = the viewer at index 1) so
-   * showAgent() knows which pane to respawn. Best-effort; leaves the ids unset on any failure.
+   * BOOTSTRAP-CHILD case: the session is the one orc created (named `orc`), already split by
+   * bootstrapAndReexec into left = orc's TUI at index 0 and right = the viewer at index 1. Discover
+   * those pane ids so showAgent() knows which pane to respawn. Best-effort; leaves the ids unset on
+   * any failure. The `orc:0` default only holds for the session orc owns — true inside mode (a
+   * pre-existing session with any name) must use adoptInside() instead.
    */
   async adopt(target: string = this.sessionName + ':0'): Promise<void> {
     try {
@@ -206,6 +236,36 @@ export class TmuxController implements Tmux {
       if (view) this.viewPaneId = view.paneId;
     } catch {
       // Best-effort discovery; a tmux hiccup must never crash orc.
+    }
+  }
+
+  /**
+   * TRUE INSIDE case: orc was launched inside the user's own tmux (any session name). We must not
+   * assume the `orc:0` window nor ever respawn a pane the user owns. Instead: take the current pane
+   * ($TMUX_PANE) as orc's own pane, then split OUR OWN viewer pane to its right and capture the new
+   * pane id — that is the only pane showAgent() may respawn. On any failure (no $TMUX_PANE, split
+   * fails, no pane id returned) we leave viewPaneId unset so showAgent() stays a safe no-op.
+   */
+  async adoptInside(currentPane: string | undefined = process.env.TMUX_PANE): Promise<void> {
+    try {
+      // Resolve orc's own pane: prefer $TMUX_PANE, else ask tmux for the active pane id.
+      let orcPane = currentPane;
+      if (!orcPane) {
+        const { stdout } = await this.run(argvDisplayMessage('#{pane_id}'));
+        orcPane = stdout.trim() || undefined;
+      }
+      if (!orcPane) return; // Can't identify our pane → stay a no-op; never touch unknown panes.
+
+      // Split OUR OWN viewer pane off orc's pane and capture the brand-new pane's id.
+      const { stdout } = await this.run(argvSplitRightPrint(orcPane));
+      const viewPane = stdout.trim();
+      if (!viewPane) return; // No pane created → leave viewPaneId unset (safe no-op).
+
+      this.orcPaneId = orcPane;
+      this.viewPaneId = viewPane;
+    } catch {
+      // Best-effort discovery; a tmux hiccup must never crash orc and must not leave a half-set
+      // viewPaneId pointing at a pane orc doesn't own.
     }
   }
 

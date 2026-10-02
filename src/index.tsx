@@ -18,6 +18,7 @@ function parseArgs(argv: string[]): { command: Command; flags: CliFlags } {
     else if (a === '--config') flags.config = argv[++i];
     else if (a === '--model') flags.model = argv[++i];
     else if (a === '--no-maestro') flags.noMaestro = true;
+    else if (a === '--tmux') flags.tmux = true;
     else if (a === '--no-tmux') flags.noTmux = true;
     else if (a === '--tmux-child') flags.tmuxChild = true;
     else if (a === '-h' || a === '--help') {
@@ -33,7 +34,7 @@ function printHelp(): void {
     [
       'orc — TUI orchestrator for parallel Claude Code mobile agents',
       '',
-      'Usage: orc [command] [--config <path>] [--model <id>] [--no-maestro] [--no-tmux]',
+      'Usage: orc [command] [--config <path>] [--model <id>] [--no-maestro] [--tmux] [--no-tmux]',
       '',
       'Commands:',
       '  (default)        Launch the orchestrator TUI',
@@ -43,6 +44,7 @@ function printHelp(): void {
       `  --config <path>  Central config file (default: ${DEFAULT_CONFIG_PATH})`,
       '  --model <id>     Override the model for all agents',
       '  --no-maestro     Do not attach the Maestro MCP server',
+      '  --tmux           Force-drive the tmux viewer pane (override config)',
       '  --no-tmux        Do not drive the tmux viewer pane (plain TUI)',
       '',
       'The config lists your projects (nice name + repo path). Run `orc setup` to add',
@@ -138,7 +140,15 @@ async function main(): Promise<void> {
   } else if (mode === 'inside' || (mode === 'bootstrap' && flags.tmuxChild)) {
     try {
       tmux = new TmuxController();
-      await tmux.adopt();
+      if (flags.tmuxChild) {
+        // We are the re-exec child in the session orc itself created and already split: adopt its
+        // known orc:0 window (left = TUI, right = viewer).
+        await tmux.adopt();
+      } else {
+        // True inside mode: the user's own tmux (any session name). Discover our current pane and
+        // split our own viewer pane — never assume orc:0 nor touch a pane we didn't create.
+        await tmux.adoptInside();
+      }
     } catch {
       // A tmux hiccup must never stop orc from coming up — fall back to the plain UI.
       tmux = undefined;

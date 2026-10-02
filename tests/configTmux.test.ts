@@ -36,6 +36,28 @@ describe('config tmux flag', () => {
     });
   });
 
+  test('--tmux flag forces config.tmux === true even when the file omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orc-config-tmux-'));
+    const path = join(dir, 'config.json');
+    writeFileSync(path, JSON.stringify({ projects: [{ name: 'Plain', path: '/tmp/a' }] }));
+    try {
+      assert.equal(loadConfig({ config: path, tmux: true }).tmux, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('--no-tmux overrides the --tmux flag', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orc-config-tmux-'));
+    const path = join(dir, 'config.json');
+    writeFileSync(path, JSON.stringify({ projects: [{ name: 'Plain', path: '/tmp/a' }] }));
+    try {
+      assert.equal(loadConfig({ config: path, tmux: true, noTmux: true }).tmux, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('an unknown top-level key is still rejected by the strict schema', () => {
     withConfig({ bogusKey: 1, projects: [{ name: 'Plain', path: '/tmp/a' }] }, (load) => {
       assert.throws(load, /Invalid config/);

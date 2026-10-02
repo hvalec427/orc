@@ -11,6 +11,8 @@ import {
   argvKillSession,
   argvNewSession,
   argvSplitRight,
+  argvSplitRightPrint,
+  argvDisplayMessage,
   argvStatusOff,
   argvListPanes,
   argvRespawnViewer,
@@ -73,6 +75,13 @@ describe('viewerTailCommand', () => {
       "exec tail -n +1 -F '/logs/a.log'",
     );
   });
+
+  test("escapes an embedded single quote as '\\'' so the path can't break out of the quotes", () => {
+    assert.equal(
+      viewerTailCommand("/logs/o'brien.log"),
+      "exec tail -n +1 -F '/logs/o'\\''brien.log'",
+    );
+  });
 });
 
 describe('argv builders', () => {
@@ -93,6 +102,22 @@ describe('argv builders', () => {
 
   test('argvSplitRight begins with the horizontal split targeting the pane', () => {
     assert.deepEqual(argvSplitRight('orc:0.0').slice(0, 4), ['split-window', '-h', '-t', 'orc:0.0']);
+  });
+
+  test('argvSplitRightPrint splits horizontally and prints the new pane id', () => {
+    assert.deepEqual(argvSplitRightPrint('%7'), [
+      'split-window', '-h', '-P', '-F', '#{pane_id}', '-t', '%7',
+    ]);
+  });
+
+  test('argvDisplayMessage prints the format for the current client when no target is given', () => {
+    assert.deepEqual(argvDisplayMessage('#{pane_id}'), ['display-message', '-p', '#{pane_id}']);
+  });
+
+  test('argvDisplayMessage targets a pane when one is given', () => {
+    assert.deepEqual(argvDisplayMessage('#{pane_id}', '%3'), [
+      'display-message', '-p', '-t', '%3', '#{pane_id}',
+    ]);
   });
 
   test('argvStatusOff is session-scoped (not -g)', () => {
@@ -271,6 +296,75 @@ describe('TmuxController.showAgent (fake runner)', () => {
       assert.ok(respawn, 'a respawn-pane -k call was issued');
       assert.equal(respawn![respawn!.length - 1], tail, 'the viewer tails the agent log');
       assert.ok(respawn!.includes('%2'), 'the respawn targets the discovered viewer pane');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('TmuxController.adoptInside (fake runner)', () => {
+  test('splits its own viewer pane off the current pane and respawns only that pane', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // The split-window -P prints the brand-new viewer pane id (%9). adoptInside must capture it,
+      // and showAgent must then respawn %9 — the pane orc created, never the user's pane (%5).
+      const { run, calls } = fakeRunner(['%9\n']);
+      const c = new TmuxController({ run, logsDir });
+      c.registerAgent('a1', 'alpha', 'feature');
+
+      await c.adoptInside('%5');
+
+      // The discovery split targets orc's own pane (%5) and asks for the new pane id.
+      const split = calls.find((a) => a[0] === 'split-window');
+      assert.deepEqual(split, argvSplitRightPrint('%5'));
+
+      await c.showAgent('a1');
+      const tail = viewerTailCommand(paneLogPath(logsDir, 'a1'));
+      const respawn = calls.find((a) => a[0] === 'respawn-pane' && a.includes('-k'));
+      assert.ok(respawn, 'a respawn-pane -k call was issued');
+      assert.equal(respawn![respawn!.length - 1], tail, 'the viewer tails the agent log');
+      assert.ok(respawn!.includes('%9'), 'the respawn targets the pane orc created, not %5');
+      assert.ok(!respawn!.includes('%5'), "orc never respawns the user's own pane");
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves the current pane via display-message when $TMUX_PANE is absent', async () => {
+    const logsDir = tmpLogsDir();
+    // Pass the pane explicitly as undefined AND clear the env so the default can't pick up an
+    // ambient $TMUX_PANE from a tmux the test happens to run inside.
+    const savedPane = process.env.TMUX_PANE;
+    delete process.env.TMUX_PANE;
+    try {
+      // First call answers display-message with the active pane (%2); second is the split (%9).
+      const { run, calls } = fakeRunner(['%2\n', '%9\n']);
+      const c = new TmuxController({ run, logsDir });
+
+      await c.adoptInside();
+
+      assert.deepEqual(calls[0], argvDisplayMessage('#{pane_id}'));
+      const split = calls.find((a) => a[0] === 'split-window');
+      assert.deepEqual(split, argvSplitRightPrint('%2'));
+    } finally {
+      if (savedPane === undefined) delete process.env.TMUX_PANE;
+      else process.env.TMUX_PANE = savedPane;
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('leaves the viewer unset (showAgent stays a no-op) when the split yields no pane id', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // The split returns empty stdout → no pane id captured → viewPaneId stays unset.
+      const { run, calls } = fakeRunner(['']);
+      const c = new TmuxController({ run, logsDir });
+      c.registerAgent('a1', 'alpha', 'feature');
+
+      await c.adoptInside('%5');
+      await c.showAgent('a1');
+
+      assert.ok(!calls.some((a) => a[0] === 'respawn-pane'), 'no respawn without a known viewer pane');
     } finally {
       rmSync(logsDir, { recursive: true, force: true });
     }
