@@ -36,23 +36,30 @@ export function endSentinelRe(runId: string): RegExp {
 }
 
 /**
- * Build the single shell line orc types into the agent's interactive shell to run `cmd`. The shell
- * would normally echo this whole (long) wrapper line back, which wraps across several rows and can't
- * be reliably erased, so we turn terminal echo OFF (`stty -echo`) before anything is typed back and
- * turn it back ON (`stty echo`) once the command is done. With echo off, the only thing the human
- * sees is our own clean `$ <cmd>` banner. The line then prints the BEGIN sentinel, runs the command
- * in a subshell (so a bare `exit`/`cd` can't wreck the long-lived shell), and prints the END sentinel
- * with the command's exit code. The sentinels remain in the capture stream so parseCapturedRun can
- * find the output. Sent to tmux with `send-keys -l` (literal), so none of these characters are
- * interpreted by tmux itself.
+ * The priming line orc types FIRST, as its own submitted line, to turn terminal echo off before the
+ * (long) wrapper line is sent. Echo must be disabled by a line that is itself already complete: a
+ * terminal echoes each input line as it is received, so `stty -echo` placed inside the wrapper line
+ * can't suppress that same line — it only takes effect for input typed afterwards. Sending it on its
+ * own line first means the wrapper line that follows is never echoed. The wrapper restores echo at
+ * its end (`stty echo`). This short priming line is itself echoed once, which is unavoidable but tiny.
+ */
+export const ECHO_OFF_PRIMER = 'stty -echo 2>/dev/null';
+
+/**
+ * Build the single shell line orc types into the agent's interactive shell to run `cmd`. Terminal
+ * echo is turned off beforehand by ECHO_OFF_PRIMER (sent on its own line first), so this whole long
+ * wrapper line is never echoed back; the only thing the human sees is our own clean `$ <cmd>` banner.
+ * The line prints the BEGIN sentinel, runs the command in a subshell (so a bare `exit`/`cd` can't
+ * wreck the long-lived shell), prints the END sentinel with the command's exit code, then restores
+ * echo (`stty echo`). The sentinels remain in the capture stream so parseCapturedRun can find the
+ * output. Sent to tmux with `send-keys -l` (literal), so none of these characters are interpreted by
+ * tmux itself.
  */
 export function encodeInjectedCommand(runId: string, cmd: string): string {
   const begin = beginSentinel(runId);
-  // `stty -echo` suppresses the shell re-echoing this whole wrapper line; we restore it at the end.
-  // The leading newlines on the sentinel printfs keep each sentinel on its own line even if the human
-  // left a half-typed line in the prompt.
+  // The leading newline on the END printf keeps the sentinel on its own line even if the command's
+  // last line of output had no trailing newline.
   return (
-    `stty -echo 2>/dev/null; ` +
     `printf '$ %s\\n' ${shq(cmd)}; ` +
     `printf '%s\\n' ${shq(begin)}; ` +
     `( ${cmd} ); __orc_rc=$?; ` +

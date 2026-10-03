@@ -8,6 +8,7 @@ import {
   encodeInjectedCommand,
   waitForCapture,
   capOutput,
+  ECHO_OFF_PRIMER,
 } from './paneRun.js';
 
 const execFileAsync = promisify(execFile);
@@ -421,6 +422,11 @@ export class TmuxController implements Tmux {
     const runId = randomUUID();
     const line = encodeInjectedCommand(runId, cmd);
     try {
+      // Prime echo-off on its own submitted line FIRST: a terminal echoes each input line as it is
+      // received, so echo must be disabled by an already-complete line before the long wrapper line
+      // is typed — otherwise the wrapper itself gets echoed back (the thing we're hiding).
+      await this.run(argvSendKeysLiteral(shell.paneId, ECHO_OFF_PRIMER));
+      await this.run(argvSendKeysEnter(shell.paneId));
       await this.run(argvSendKeysLiteral(shell.paneId, line));
       await this.run(argvSendKeysEnter(shell.paneId));
     } catch {

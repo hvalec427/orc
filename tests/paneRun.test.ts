@@ -4,6 +4,7 @@ import {
   beginSentinel,
   endSentinelRe,
   encodeInjectedCommand,
+  ECHO_OFF_PRIMER,
   parseCapturedRun,
   parseRc,
   capOutput,
@@ -53,11 +54,18 @@ describe('encodeInjectedCommand → parseCapturedRun round-trip (framing only)',
 });
 
 describe('encodeInjectedCommand hides the wrapper and shows a clean command', () => {
-  test('disables terminal echo and prints a clean "$ <cmd>" banner', () => {
+  test('the echo-off primer is a standalone line sent before the wrapper', () => {
+    // Echo must be disabled by its own already-complete line (ECHO_OFF_PRIMER), sent first, so the
+    // terminal never echoes the long wrapper line back to the human.
+    assert.ok(ECHO_OFF_PRIMER.includes('stty -echo'), 'the primer disables terminal echo');
+  });
+
+  test('prints a clean "$ <cmd>" banner and restores echo, without re-disabling it inline', () => {
     const line = encodeInjectedCommand('r1', 'echo hi');
-    // Echo is turned off so the shell never re-displays this long wrapper line, then restored.
-    assert.ok(line.includes('stty -echo'), 'disables terminal echo before typing back');
-    assert.ok(line.includes('stty echo'), 'restores terminal echo afterwards');
+    // The wrapper no longer carries `stty -echo`: disabling echo from inside this same line can't
+    // suppress the echo of this very line, so that job moved to the standalone ECHO_OFF_PRIMER.
+    assert.ok(!line.includes('stty -echo'), 'the wrapper does not re-disable echo inline');
+    assert.ok(line.includes('stty echo'), 'the wrapper restores terminal echo afterwards');
     // A clean prompt-style banner shows just the command text to the human.
     assert.ok(line.includes('$ '), 'prints a "$ <cmd>" banner');
     assert.ok(line.includes('echo hi'), 'the banner carries the real command');

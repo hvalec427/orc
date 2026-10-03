@@ -421,9 +421,15 @@ describe('runInPane injects a framed command and captures output', () => {
       ac.abort();
       const res = await p;
 
-      const literal = calls.find((a) => a[0] === 'send-keys' && a.includes('-l'));
-      assert.ok(literal, 'a literal send-keys carried the framed command');
-      const framed = literal![literal!.length - 1] as string;
+      const literals = calls.filter((a) => a[0] === 'send-keys' && a.includes('-l'));
+      // First literal primes echo-off on its own line, before the long wrapper is typed.
+      const primer = literals[0]?.[literals[0].length - 1] as string;
+      assert.ok(primer?.includes('stty -echo'), 'echo-off is primed on its own line first');
+      assert.ok(!primer.includes('<<<ORC-BEGIN'), 'the primer is not the framed wrapper line');
+      // A later literal carries the framed command.
+      const framedCall = literals.find((a) => (a[a.length - 1] as string).includes('<<<ORC-BEGIN'));
+      assert.ok(framedCall, 'a literal send-keys carried the framed command');
+      const framed = framedCall![framedCall!.length - 1] as string;
       assert.ok(framed.includes('<<<ORC-BEGIN'), 'the injected line prints the BEGIN sentinel');
       assert.ok(framed.includes('echo hi'), 'the injected line includes the command');
       const enter = calls.find((a) => a[0] === 'send-keys' && a.includes('Enter'));
