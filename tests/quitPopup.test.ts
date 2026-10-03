@@ -139,6 +139,41 @@ test('y confirms quit and stops all agents', async () => {
   unmount();
 });
 
+test('y still quits when an approval arrives after the popup is open', async () => {
+  // Regression: the quit popup renders with priority over the ApprovalModal, but the key
+  // handler used to deactivate whenever an approval was pending. So if an agent requested a
+  // tool approval *after* `q` opened the popup, the popup stayed on screen but y/Esc went
+  // dead — "the quit popup no longer quits when pressing y". The handler must stay live while
+  // the popup is up regardless of any pending approval.
+  const manager = makeManager(true);
+  let stopped = false;
+  manager.stopAll = async () => {
+    stopped = true;
+  };
+  const [session] = manager.list();
+  const { stdin, lastFrame, unmount } = render(
+    React.createElement(App, { manager, config }),
+  );
+  await delay();
+
+  // Open the quit popup, then simulate an approval arriving while it is up.
+  stdin.write('q');
+  await delay();
+  assert.match(lastFrame() ?? '', /Quit orc\?/, 'popup should be open after q');
+
+  session.pendingApproval = { toolName: 'Bash', input: { command: 'ls' } };
+  manager.emit('update');
+  await delay();
+  // The popup keeps priority over the approval modal.
+  assert.match(lastFrame() ?? '', /Quit orc\?/, 'popup should stay on top of the approval');
+
+  stdin.write('y');
+  await delay();
+  assert.equal(stopped, true, 'y must still quit while an approval is pending');
+
+  unmount();
+});
+
 test('opening and closing the popup does not change the frame height', async () => {
   // The popup ghosted on iTerm2's alt screen because the frame was one row TALLER while
   // the popup was up (overlayRows under-reserved the bordered box). Closing then shrank

@@ -250,7 +250,10 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         setShowDone((v) => !v);
       }
     },
-    { isActive: (mode === 'list' || mode === 'preview') && !approvalPending },
+    // Keep the handler active whenever the quit popup is up, even if an approval is pending:
+    // the popup renders with priority over the ApprovalModal, so its y/Esc must stay live or
+    // an approval arriving after `q` would silently freeze the popup (y no longer quits).
+    { isActive: confirmingQuit || ((mode === 'list' || mode === 'preview') && !approvalPending) },
   );
 
   if (mode === 'new') {
