@@ -1133,6 +1133,8 @@ export class AgentManager extends EventEmitter {
       // Seed the prior Claude session id and park the agent as 'stopped' (resumable) — even if it was
       // persisted as 'working'/'booting' because orc was killed mid-turn.
       session.hydrate({ sessionId: a.sessionId });
+      // Restore the persisted archived flag; otherwise archived agents reappear as active on reopen.
+      if (a.archived) session.setArchived(true);
     }
     this.emit('update');
   }

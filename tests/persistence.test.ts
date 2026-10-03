@@ -71,6 +71,18 @@ test('restore() reconstructs a persisted agent as a stopped, resumable session',
   assert.equal(info.metroPort, 4000);
 });
 
+test('restore() reapplies the persisted archived flag so archived agents stay archived', () => {
+  const manager = managerLoading([base({ archived: true })]);
+  manager.restore();
+  assert.equal(manager.get('a1')!.getInfo().archived, true, 'archived survives a reopen');
+});
+
+test('restore() leaves non-archived agents unarchived', () => {
+  const manager = managerLoading([base({ archived: false })]);
+  manager.restore();
+  assert.equal(manager.get('a1')!.getInfo().archived, false, 'unarchived agents stay active');
+});
+
 test('restore() reserves the persisted port so a new agent cannot reuse it', async () => {
   const manager = managerLoading([base({ metroPort: 4000 })]);
   manager.restore();
