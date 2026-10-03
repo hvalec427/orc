@@ -279,7 +279,13 @@ Run EVERY shell command through the \`${RUN_TOOL}\` tool (builds, tests, git, fi
 it). The built-in Bash tool is disabled; \`${RUN_TOOL}\` is your only shell. It returns the command's
 combined output and exit code, and when you are the selected agent your command runs live in the tmux
 viewer pane so the human can watch it. It is non-interactive — it receives no stdin, so pass flags
-like \`-m\` and avoid launching interactive or long-lived foreground programs that wait for input.`;
+like \`-m\` and avoid launching interactive or long-lived foreground programs that wait for input.
+
+You may run commands concurrently: orc reuses an idle shell and automatically opens an additional
+shell pane when one is busy, so a blocking command can run alongside another (e.g. a dev server in
+one shell and a build in another). Reuse shells where you can; orc caps how many it will open. For
+fire-and-forget long-running processes you can also use \`${RUN_BACKGROUND_TOOL}\` and watch it with
+\`${POLL_BACKGROUND_TOOL}\` / \`${STOP_BACKGROUND_TOOL}\`.`;
 
 /** Appended to every agent: keep human-facing messages terse to save tokens. */
 const BREVITY_SECTION = `### Keep messages brief

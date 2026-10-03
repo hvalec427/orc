@@ -27,9 +27,13 @@ export function paneLogPath(logsDir: string, id: string): string {
   return join(logsDir, paneSlug(id) + '.log');
 }
 
-/** The per-agent file `tmux pipe-pane` mirrors the agent's shell output into (for run capture). */
-export function paneCapturePath(logsDir: string, id: string): string {
-  return join(logsDir, paneSlug(id) + '.cap');
+/**
+ * The file `tmux pipe-pane` mirrors a shell's output into (for run capture). Each agent shell has its
+ * own capture file keyed by a shell index; shell 0 keeps the historical `<slug>.cap` name.
+ */
+export function paneCapturePath(logsDir: string, id: string, shellIdx = 0): string {
+  const base = paneSlug(id);
+  return join(logsDir, shellIdx === 0 ? base + '.cap' : `${base}.${shellIdx}.cap`);
 }
 
 /** The tmux window name that hosts an agent's long-lived interactive shell. */
@@ -83,6 +87,14 @@ export function argvNewWindow(session: string, name: string, cwd: string, cmd: s
 /** Break a pane out of its current window into its own (detached) window — preserves the process. */
 export function argvBreakPane(srcPaneId: string): string[] {
   return ['break-pane', '-d', '-s', srcPaneId];
+}
+
+/**
+ * Break a pane out into its own detached window with a given name — preserves the process and keeps
+ * the window name stable so later kill-window / join-pane calls can find the agent's window again.
+ */
+export function argvBreakPaneNamed(srcPaneId: string, windowName: string): string[] {
+  return ['break-pane', '-d', '-s', srcPaneId, '-n', windowName];
 }
 
 /** Join a pane horizontally to the right of a target pane — moves the live pane, never restarts it. */
@@ -182,6 +194,14 @@ export interface Tmux {
 
 const SESSION_NAME = 'orc';
 
+/** One interactive shell of an agent: its tmux pane, its capture file, and whether a run holds it. */
+interface Shell {
+  paneId: string;
+  idx: number;
+  capturePath: string;
+  busy: boolean;
+}
+
 export class TmuxController implements Tmux {
   private readonly run: TmuxRunner;
   private readonly logsDir: string;
@@ -189,9 +209,15 @@ export class TmuxController implements Tmux {
 
   /** orc's own TUI pane — the stage's left anchor; agent shells join to its right. */
   private orcPaneId?: string;
-  /** Each agent's long-lived interactive shell: its pane id and the background window hosting it. */
-  private readonly agentPanes = new Map<string, { paneId: string; window: string }>();
-  /** The agent whose shell is currently joined beside the TUI (occupies the stage). */
+  /**
+   * Each agent owns ONE tmux window that may hold SEVERAL interactive shells (panes). An agent can
+   * run commands concurrently: each run reuses an idle shell or, when all are busy, splits a new one.
+   * The whole window is joined/broken onto the stage so all of an agent's shells show together.
+   */
+  private readonly agentPanes = new Map<string, { window: string; shells: Shell[] }>();
+  /** Most shells an agent may open, to bound runaway `split-window`s. */
+  private readonly maxShellsPerAgent = 4;
+  /** The agent whose shells are currently joined beside the TUI (occupies the stage). */
   private stageOccupantId?: string;
   /** The agent currently selected in the TUI. */
   private selectedId?: string;
@@ -218,13 +244,15 @@ export class TmuxController implements Tmux {
   }
 
   /**
-   * Provision an agent's long-lived interactive shell: a detached background window running `bash -i`
-   * in the agent's worktree, plus a pipe-pane capture of that shell's output (so runInPane can read
-   * back a command's result). Best-effort — any failure leaves the agent paneless and runInPane falls
-   * back to the in-process runner.
+   * Provision an agent's first long-lived interactive shell: a detached background window running
+   * `zsh -if` in the agent's worktree, plus a pipe-pane capture of that shell's output (so runInPane
+   * can read back a command's result). Additional shells are split on demand by acquireShell. zsh is
+   * launched with `-f` (skip rc files) so there's no startup banner or user-config noise.
+   * Best-effort — any failure leaves the agent paneless and runInPane falls back to the in-process
+   * runner.
    */
   registerAgent(id: string, _name: string, _template: string, cwd: string): void {
-    const capture = paneCapturePath(this.logsDir, id);
+    const capture = paneCapturePath(this.logsDir, id, 0);
     try {
       // Start the capture file empty so a prior run's leftovers never match a new run's sentinels.
       writeFileSync(capture, '');
@@ -235,11 +263,14 @@ export class TmuxController implements Tmux {
     void (async () => {
       try {
         const { stdout } = await this.run(
-          argvNewWindow(this.sessionName, window, cwd, 'exec bash -i'),
+          argvNewWindow(this.sessionName, window, cwd, 'exec zsh -if'),
         );
         const paneId = stdout.trim();
         if (!paneId) return;
-        this.agentPanes.set(id, { paneId, window });
+        this.agentPanes.set(id, {
+          window,
+          shells: [{ paneId, idx: 0, capturePath: capture, busy: false }],
+        });
         // Mirror the shell's output into the capture file so runInPane can find a command's frame.
         await this.run(argvPipePane(paneId, `cat >> ${shq(capture)}`)).catch(() => {});
         // If this agent is already the selected one (fast create+select), reveal it now.
@@ -250,17 +281,65 @@ export class TmuxController implements Tmux {
     })();
   }
 
-  /** Kill an agent's shell window and remove its capture file. Best-effort. */
+  /**
+   * Return an idle shell for the agent, or split a new one when all are busy (up to maxShellsPerAgent).
+   * The new pane is split inside the agent's window and gets its own capture file + pipe-pane. Returns
+   * null when the agent has no window yet or the shell cap is reached with every shell busy.
+   */
+  private async acquireShell(agentId: string): Promise<Shell | null> {
+    const entry = this.agentPanes.get(agentId);
+    if (!entry) return null;
+    // Reserve the shell by marking it busy BEFORE any await, so two concurrent runs can't grab the
+    // same idle shell across a microtask boundary.
+    const idle = entry.shells.find((s) => !s.busy);
+    if (idle) {
+      idle.busy = true;
+      return idle;
+    }
+    if (entry.shells.length >= this.maxShellsPerAgent) return null;
+    // All shells busy and under the cap → split a new pane beside the agent's last shell.
+    const anchor = entry.shells[entry.shells.length - 1];
+    try {
+      const { stdout } = await this.run(argvSplitRightPrint(anchor.paneId));
+      const paneId = stdout.trim();
+      if (!paneId) return null;
+      const idx = entry.shells.length;
+      const capturePath = paneCapturePath(this.logsDir, agentId, idx);
+      try {
+        writeFileSync(capturePath, '');
+      } catch {
+        /* best-effort */
+      }
+      await this.run(argvPipePane(paneId, `cat >> ${shq(capturePath)}`)).catch(() => {});
+      const shell: Shell = { paneId, idx, capturePath, busy: true };
+      entry.shells.push(shell);
+      // A fresh split steals focus; pull it back to the TUI so the human keeps driving orc.
+      if (this.orcPaneId) await this.run(argvSelectPane(this.orcPaneId)).catch(() => {});
+      return shell;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Kill an agent's shell window (all its panes) and remove every per-shell capture file. */
   unregisterAgent(id: string): void {
     const entry = this.agentPanes.get(id);
     if (entry) {
       // If it's currently on the stage, it will be killed with its window; clear the slot first.
       if (this.stageOccupantId === id) this.stageOccupantId = undefined;
       void this.run(argvKillWindow(entry.window)).catch(() => {});
+      for (const shell of entry.shells) {
+        try {
+          rmSync(shell.capturePath, { force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
       this.agentPanes.delete(id);
     }
+    // Also remove the primary capture file in case the window never finished registering.
     try {
-      rmSync(paneCapturePath(this.logsDir, id), { force: true });
+      rmSync(paneCapturePath(this.logsDir, id, 0), { force: true });
     } catch {
       /* best-effort */
     }
@@ -286,8 +365,25 @@ export class TmuxController implements Tmux {
     const orcPane = this.orcPaneId;
     void (async () => {
       try {
-        if (prev) await this.run(argvBreakPane(prev.paneId)).catch(() => {});
-        await this.run(argvJoinPane(entry.paneId, orcPane));
+        // Break the previous occupant's shells back to its own window (preserved, not killed). The
+        // first break re-creates the window; the rest rejoin it so all its shells stay grouped.
+        if (prev) {
+          for (let i = 0; i < prev.shells.length; i++) {
+            const s = prev.shells[i];
+            if (i === 0) {
+              await this.run(argvBreakPaneNamed(s.paneId, prev.window)).catch(() => {});
+            } else {
+              await this.run(argvJoinPane(s.paneId, prev.shells[0].paneId)).catch(() => {});
+            }
+          }
+        }
+        // Join this agent's shells beside orc: the first anchors the stage region, the rest tile
+        // within it (joined to the first shell, not to orc, so they stack beside each other).
+        for (let i = 0; i < entry.shells.length; i++) {
+          const s = entry.shells[i];
+          const target = i === 0 ? orcPane : entry.shells[0].paneId;
+          await this.run(argvJoinPane(s.paneId, target));
+        }
         this.stageOccupantId = id;
         // join-pane focuses the joined pane; pull focus back to the TUI (requirement: focus on orc).
         await this.run(argvSelectPane(orcPane)).catch(() => {});
@@ -298,10 +394,12 @@ export class TmuxController implements Tmux {
   }
 
   /**
-   * Run a command live in the selected agent's interactive shell pane: inject it (framed with
-   * sentinels) via send-keys, then wait for its frame to appear in the capture file and read back the
-   * captured output + exit code. Returns null when the command can't be driven in-pane (not selected /
-   * not on the stage / no shell) so the caller uses its in-process fallback.
+   * Run a command live in one of the selected agent's interactive shells: acquire an idle shell (or
+   * split a new one when all are busy), inject the framed command via send-keys, wait for its frame
+   * to appear in that shell's capture file, and read back the captured output + exit code. Multiple
+   * concurrent calls use distinct shells, so an agent can run e.g. `yarn start` and `yarn ios` at the
+   * same time. Returns null when the command can't be driven in-pane (agent not selected / not on the
+   * stage / no shell free) so the caller uses its in-process fallback.
    */
   async runInPane(
     agentId: string,
@@ -311,24 +409,29 @@ export class TmuxController implements Tmux {
     const entry = this.agentPanes.get(agentId);
     if (!entry || this.selectedId !== agentId || this.stageOccupantId !== agentId) return null;
 
-    const capture = paneCapturePath(this.logsDir, agentId);
-    const fromOffset = this.fileSize(capture);
+    const shell = await this.acquireShell(agentId);
+    if (!shell) return null; // all shells busy and at the cap → fall back in-process (acquire marks it busy)
+
+    const fromOffset = this.fileSize(shell.capturePath);
     const runId = randomUUID();
     const line = encodeInjectedCommand(runId, cmd);
     try {
-      await this.run(argvSendKeysLiteral(entry.paneId, line));
-      await this.run(argvSendKeysEnter(entry.paneId));
+      await this.run(argvSendKeysLiteral(shell.paneId, line));
+      await this.run(argvSendKeysEnter(shell.paneId));
     } catch {
+      shell.busy = false;
       return null; // couldn't inject → fall back
     }
 
     try {
-      const res = await waitForCapture(capture, runId, fromOffset, signal);
+      const res = await waitForCapture(shell.capturePath, runId, fromOffset, signal);
       return { output: capOutput(res.output), rc: res.rc };
     } catch {
       // Aborted (or watch failure) → interrupt the running command, report cancel.
-      await this.run(argvSendInterrupt(entry.paneId)).catch(() => {});
+      await this.run(argvSendInterrupt(shell.paneId)).catch(() => {});
       return { output: '', rc: 130 };
+    } finally {
+      shell.busy = false;
     }
   }
 
@@ -414,12 +517,12 @@ export class TmuxController implements Tmux {
       } catch {
         /* best-effort */
       }
-    }
-    for (const id of [...this.agentPanes.keys()]) {
-      try {
-        rmSync(paneCapturePath(this.logsDir, id), { force: true });
-      } catch {
-        /* best-effort */
+      for (const shell of entry.shells) {
+        try {
+          rmSync(shell.capturePath, { force: true });
+        } catch {
+          /* best-effort */
+        }
       }
     }
     this.agentPanes.clear();

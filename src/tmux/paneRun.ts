@@ -4,8 +4,9 @@ import { dirname } from 'node:path';
 /**
  * Pane command protocol + capture helpers.
  *
- * Each agent owns a long-lived INTERACTIVE shell (`bash -i`) in its own tmux pane, so the human can
- * type into it directly. The agent's `mcp__orc__run` tool injects a command into that same shell via
+ * Each agent owns one or more long-lived INTERACTIVE shells (`zsh -if`) in its own tmux panes, so the
+ * human can type into them directly. The agent's `mcp__orc__run` tool injects a command into one such
+ * shell via
  * `tmux send-keys`, wrapping it in unique sentinel lines so orc can later find exactly that command's
  * combined output and exit code in the pane's capture stream — without disturbing the human's own
  * typing, which simply interleaves as ordinary shell input.
@@ -35,17 +36,23 @@ export function endSentinelRe(runId: string): RegExp {
 }
 
 /**
- * Build the single shell line orc types into the agent's interactive shell to run `cmd`. It prints
- * the BEGIN sentinel, runs the command in a subshell (so a bare `exit`/`cd` can't wreck the long-lived
- * shell), then prints the END sentinel with the command's exit code. Sent to tmux with `send-keys -l`
- * (literal), so none of these characters are interpreted by tmux itself.
+ * Build the single shell line orc types into the agent's interactive shell to run `cmd`. The shell
+ * echoes this whole line back, which would be noisy, so the line first erases that echoed input
+ * (`\r\033[K`) and prints a clean `$ <cmd>` banner for the human to read. It then prints the BEGIN
+ * sentinel, runs the command in a subshell (so a bare `exit`/`cd` can't wreck the long-lived shell),
+ * and prints the END sentinel with the command's exit code. The sentinels remain in the capture
+ * stream so parseCapturedRun can find the output; stripControl drops the erase sequence from the
+ * captured text. Sent to tmux with `send-keys -l` (literal), so none of these characters are
+ * interpreted by tmux itself.
  */
 export function encodeInjectedCommand(runId: string, cmd: string): string {
   const begin = beginSentinel(runId);
-  // Note the leading newlines on the printf: they guarantee each sentinel starts on its own line even
-  // if the human left a half-typed line in the prompt.
+  // `\r\033[K` returns to column 0 and clears the echoed wrapper line; then a clean `$ <cmd>` banner.
+  // The leading newlines on the sentinel printfs keep each sentinel on its own line even if the human
+  // left a half-typed line in the prompt.
   return (
-    `printf '\\n%s\\n' ${shq(begin)}; ` +
+    `printf '\\r\\033[K$ %s\\n' ${shq(cmd)}; ` +
+    `printf '%s\\n' ${shq(begin)}; ` +
     `( ${cmd} ); __orc_rc=$?; ` +
     `printf '\\n<<<ORC-END %s %s>>>\\n' ${shq(runId)} "$__orc_rc"`
   );

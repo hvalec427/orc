@@ -17,6 +17,7 @@ import {
   argvListPanes,
   argvNewWindow,
   argvBreakPane,
+  argvBreakPaneNamed,
   argvJoinPane,
   argvKillWindow,
   argvSendKeysLiteral,
@@ -100,7 +101,7 @@ describe('argv builders', () => {
   });
 
   test('argvNewWindow is detached, prints the pane id, sets name + cwd + command', () => {
-    const argv = argvNewWindow('orc', 'orc-agent-a1', '/work/tree', 'exec bash -i');
+    const argv = argvNewWindow('orc', 'orc-agent-a1', '/work/tree', 'exec zsh -if');
     assert.deepEqual(argv.slice(0, 2), ['new-window', '-d']);
     assert.ok(argv.includes('-P'));
     const fmtIdx = argv.indexOf('-F');
@@ -109,7 +110,7 @@ describe('argv builders', () => {
     assert.equal(argv[nameIdx + 1], 'orc-agent-a1');
     const cwdIdx = argv.indexOf('-c');
     assert.equal(argv[cwdIdx + 1], '/work/tree');
-    assert.equal(argv[argv.length - 1], 'exec bash -i');
+    assert.equal(argv[argv.length - 1], 'exec zsh -if');
   });
 
   test('argvBreakPane detaches a pane to its own window', () => {
@@ -232,7 +233,7 @@ describe('buildReexecArgv', () => {
 });
 
 describe('registerAgent / unregisterAgent shell-window lifecycle', () => {
-  test('registerAgent opens a detached bash -i window and starts pipe-pane capture', async () => {
+  test('registerAgent opens a detached zsh -if window and starts pipe-pane capture', async () => {
     const logsDir = tmpLogsDir();
     try {
       // new-window prints the agent's shell pane id (%9).
@@ -243,7 +244,7 @@ describe('registerAgent / unregisterAgent shell-window lifecycle', () => {
 
       const win = calls.find((a) => a[0] === 'new-window');
       assert.ok(win, 'a new-window call was issued');
-      assert.equal(win![win!.length - 1], 'exec bash -i', 'the window runs an interactive shell');
+      assert.equal(win![win!.length - 1], 'exec zsh -if', 'the window runs an interactive zsh');
       const cwdIdx = win!.indexOf('-c');
       assert.equal(win![cwdIdx + 1], '/work/a1', 'the shell starts in the agent cwd');
 
@@ -382,5 +383,139 @@ describe('runInPane injects a framed command and captures output', () => {
     } finally {
       rmSync(logsDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * A tmux runner that hands out a fresh pane id for every `new-window` / `split-window` and records
+ * all calls. Lets us drive multi-shell scenarios without counting canned stdouts by index.
+ */
+function paneAllocRunner(firstPaneIds: { listPane?: string } = {}) {
+  const calls: string[][] = [];
+  let next = 9;
+  const run = async (args: string[]) => {
+    calls.push(args);
+    if (args[0] === 'list-panes') return { stdout: (firstPaneIds.listPane ?? '%5') + ' 0\n', stderr: '' };
+    if (args[0] === 'new-window' || args[0] === 'split-window') {
+      const id = `%${next}`;
+      next += 2;
+      return { stdout: id + '\n', stderr: '' };
+    }
+    return { stdout: '', stderr: '' };
+  };
+  return { run, calls };
+}
+
+describe('multiple concurrent shells per agent', () => {
+  test('a second run while the first is busy splits a new shell pane', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      const { run, calls } = paneAllocRunner();
+      const c = new TmuxController({ run, logsDir });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+      c.showAgent('a1');
+      await flush();
+
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      // First run grabs the idle shell 0 and blocks on capture (no real shell writes it).
+      const p1 = c.runInPane('a1', 'yarn start', ac1.signal);
+      await flush();
+      // Second run finds shell 0 busy → must split a new pane for concurrency.
+      const p2 = c.runInPane('a1', 'yarn ios', ac2.signal);
+      await flush();
+
+      assert.ok(
+        calls.some((a) => a[0] === 'split-window'),
+        'a new shell pane was split for the concurrent command',
+      );
+      // A per-shell capture file for shell index 1 is created.
+      assert.ok(existsSync(paneCapturePath(logsDir, 'a1', 1)), 'shell 1 capture file created');
+
+      ac1.abort();
+      ac2.abort();
+      await Promise.all([p1, p2]);
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a run reuses an idle shell instead of splitting', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      const { run, calls } = paneAllocRunner();
+      const c = new TmuxController({ run, logsDir });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+      c.showAgent('a1');
+      await flush();
+
+      // First run, then let it finish (abort) so shell 0 returns to idle.
+      const ac1 = new AbortController();
+      const p1 = c.runInPane('a1', 'echo one', ac1.signal);
+      await flush();
+      ac1.abort();
+      await p1;
+
+      const before = calls.length;
+      const ac2 = new AbortController();
+      const p2 = c.runInPane('a1', 'echo two', ac2.signal);
+      await flush();
+      ac2.abort();
+      await p2;
+
+      const since = calls.slice(before);
+      assert.ok(!since.some((a) => a[0] === 'split-window'), 'idle shell reused, no new split');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('unregisterAgent removes every per-shell capture file', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      const { run } = paneAllocRunner();
+      const c = new TmuxController({ run, logsDir });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+      c.showAgent('a1');
+      await flush();
+
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      const p1 = c.runInPane('a1', 'yarn start', ac1.signal);
+      await flush();
+      const p2 = c.runInPane('a1', 'yarn ios', ac2.signal);
+      await flush();
+      ac1.abort();
+      ac2.abort();
+      await Promise.all([p1, p2]);
+
+      assert.ok(existsSync(paneCapturePath(logsDir, 'a1', 0)), 'shell 0 capture exists before');
+      assert.ok(existsSync(paneCapturePath(logsDir, 'a1', 1)), 'shell 1 capture exists before');
+
+      c.unregisterAgent('a1');
+      assert.ok(!existsSync(paneCapturePath(logsDir, 'a1', 0)), 'shell 0 capture removed');
+      assert.ok(!existsSync(paneCapturePath(logsDir, 'a1', 1)), 'shell 1 capture removed');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('argvBreakPaneNamed keeps the agent window name stable', () => {
+  test('breaks a pane into a named detached window', () => {
+    assert.deepEqual(argvBreakPaneNamed('%9', 'orc-agent-a1'), [
+      'break-pane',
+      '-d',
+      '-s',
+      '%9',
+      '-n',
+      'orc-agent-a1',
+    ]);
   });
 });
