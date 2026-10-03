@@ -238,7 +238,13 @@ export class TmuxController implements Tmux {
       doneDir: paneDoneDir(this.logsDir, id),
       idsDir: paneIdsDir(this.logsDir, id),
     });
-    void this.run(argvRespawnViewer(this.viewPaneId, cmd)).catch(() => {});
+    void this.run(argvRespawnViewer(this.viewPaneId, cmd))
+      // respawn-pane moves tmux focus onto the viewer pane; pull it back to orc's own pane so the
+      // human keeps driving the TUI (never the shell) on open and on every new agent.
+      .then(() => {
+        if (this.orcPaneId) return this.run(argvSelectPane(this.orcPaneId));
+      })
+      .catch(() => {});
   }
 
   /**

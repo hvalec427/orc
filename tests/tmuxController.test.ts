@@ -15,6 +15,7 @@ import {
   argvStatusOff,
   argvListPanes,
   argvRespawnViewer,
+  argvSelectPane,
   argvKillPane,
   parsePanes,
   detectMode,
@@ -208,6 +209,29 @@ describe('TmuxController.adoptInside (fake runner)', () => {
       assert.ok(cmd.includes('while :') || cmd.includes("trap '' INT"), 'the viewer runs the driver loop');
       assert.ok(respawn!.includes('%9'), 'the respawn targets the pane orc created, not %5');
       assert.ok(!respawn!.includes('%5'), "orc never respawns the user's own pane");
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('pulls focus back to orc after respawning the viewer (never leaves focus on the shell)', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      const { run, calls } = fakeRunner(['%9\n']);
+      const c = new TmuxController({ run, logsDir });
+      c.registerAgent('a1', 'alpha', 'feature');
+
+      await c.adoptInside('%5'); // orc's own pane is %5; viewer is %9.
+
+      c.showAgent('a1');
+      // showAgent re-selects orc's pane in a follow-up microtask; let the promise chain settle.
+      await new Promise((r) => setImmediate(r));
+
+      const respawnIdx = calls.findIndex((a) => a[0] === 'respawn-pane' && a.includes('-k'));
+      const selectIdx = calls.findIndex((a) => a[0] === 'select-pane' && a.includes('%5'));
+      assert.ok(respawnIdx >= 0, 'the viewer pane was respawned');
+      assert.ok(selectIdx >= 0, 'orc re-selects its own pane (%5) to keep focus off the shell');
+      assert.ok(selectIdx > respawnIdx, 'the re-select happens AFTER the respawn that stole focus');
     } finally {
       rmSync(logsDir, { recursive: true, force: true });
     }
