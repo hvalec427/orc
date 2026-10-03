@@ -53,10 +53,11 @@ describe('encodeInjectedCommand → parseCapturedRun round-trip (framing only)',
 });
 
 describe('encodeInjectedCommand hides the wrapper and shows a clean command', () => {
-  test('erases the echoed input line and prints a clean "$ <cmd>" banner', () => {
+  test('disables terminal echo and prints a clean "$ <cmd>" banner', () => {
     const line = encodeInjectedCommand('r1', 'echo hi');
-    // Carriage-return + erase-to-end-of-line wipes the shell-echoed wrapper from the visible line.
-    assert.ok(line.includes('\\r\\033[K'), 'emits a CR + erase-line sequence');
+    // Echo is turned off so the shell never re-displays this long wrapper line, then restored.
+    assert.ok(line.includes('stty -echo'), 'disables terminal echo before typing back');
+    assert.ok(line.includes('stty echo'), 'restores terminal echo afterwards');
     // A clean prompt-style banner shows just the command text to the human.
     assert.ok(line.includes('$ '), 'prints a "$ <cmd>" banner');
     assert.ok(line.includes('echo hi'), 'the banner carries the real command');
@@ -65,12 +66,11 @@ describe('encodeInjectedCommand hides the wrapper and shows a clean command', ()
     assert.match(line, /<<<ORC-END/);
   });
 
-  test('the banner erase sequence is stripped from captured OUTPUT', () => {
+  test('the banner is excluded from captured OUTPUT', () => {
     // Simulate the capture: the banner line + sentinels + output, as the shell+pipe-pane would record.
-    const buf =
-      `\r\u001b[K$ echo hi\n${beginSentinel('r1')}\nhi\n<<<ORC-END r1 0>>>\n`;
+    const buf = `$ echo hi\n${beginSentinel('r1')}\nhi\n<<<ORC-END r1 0>>>\n`;
     const res = parseCapturedRun(buf, 'r1');
-    assert.deepEqual(res, { output: 'hi', rc: 0 }, 'output excludes the banner + control codes');
+    assert.deepEqual(res, { output: 'hi', rc: 0 }, 'output excludes the banner');
   });
 });
 
