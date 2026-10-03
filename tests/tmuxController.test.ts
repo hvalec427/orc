@@ -403,7 +403,7 @@ describe('runInPane injects a framed command and captures output', () => {
     }
   });
 
-  test('sends the framed command then Enter when the agent is on the stage', async () => {
+  test('installs the quiet setup once and injects only a short __orc_run call', async () => {
     const logsDir = tmpLogsDir();
     try {
       const { run, calls } = fakeRunner(['%5 0\n', '%9\n']);
@@ -414,24 +414,32 @@ describe('runInPane injects a framed command and captures output', () => {
       c.showAgent('a1');
       await flush();
 
+      // registerAgent installs the one-time pane protocol: a literal send-keys that defines __orc_run
+      // and blanks the prompt. The sentinels live here (written to the result file at runtime), NOT in
+      // the per-run injected line.
+      const setup = calls.find(
+        (a) => a[0] === 'send-keys' && a.includes('-l') && (a[a.length - 1] as string).includes('__orc_run()'),
+      );
+      assert.ok(setup, 'the __orc_run helper was installed at shell startup');
+      assert.ok((setup![setup!.length - 1] as string).includes("PROMPT=''"), 'the prompt is blanked');
+
       const ac = new AbortController();
-      // Don't await — waitForCapture would hang (no real shell writes the capture). Abort quickly.
+      // Don't await — waitForCapture would hang (no real shell writes the result). Abort quickly.
       const p = c.runInPane('a1', 'echo hi', ac.signal);
       await flush();
       ac.abort();
       const res = await p;
 
-      const literals = calls.filter((a) => a[0] === 'send-keys' && a.includes('-l'));
-      // First literal primes echo-off on its own line, before the long wrapper is typed.
-      const primer = literals[0]?.[literals[0].length - 1] as string;
-      assert.ok(primer?.includes('stty -echo'), 'echo-off is primed on its own line first');
-      assert.ok(!primer.includes('<<<ORC-BEGIN'), 'the primer is not the framed wrapper line');
-      // A later literal carries the framed command.
-      const framedCall = literals.find((a) => (a[a.length - 1] as string).includes('<<<ORC-BEGIN'));
-      assert.ok(framedCall, 'a literal send-keys carried the framed command');
-      const framed = framedCall![framedCall!.length - 1] as string;
-      assert.ok(framed.includes('<<<ORC-BEGIN'), 'the injected line prints the BEGIN sentinel');
-      assert.ok(framed.includes('echo hi'), 'the injected line includes the command');
+      // The per-run injection is a short __orc_run call — it carries NO command text and NO sentinels.
+      const call = calls.find(
+        (a) => a[0] === 'send-keys' && a.includes('-l') && (a[a.length - 1] as string).startsWith('__orc_run '),
+      );
+      assert.ok(call, 'a short __orc_run call was injected for the command');
+      const callLine = call![call!.length - 1] as string;
+      assert.ok(!callLine.includes('echo hi'), 'command text is staged in a file, not injected');
+      assert.ok(!callLine.includes('<<<ORC-BEGIN'), 'no sentinels pass through the injected line');
+      assert.ok(!callLine.includes('stty'), 'no stty echo juggling remains');
+
       const enter = calls.find((a) => a[0] === 'send-keys' && a.includes('Enter'));
       assert.ok(enter, 'Enter was pressed to submit the command');
       // Aborted → interrupt sent, rc 130.

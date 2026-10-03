@@ -1,14 +1,14 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
-  encodeInjectedCommand,
+  buildSetupScript,
+  encodeInjectedCall,
   waitForCapture,
   capOutput,
-  ECHO_OFF_PRIMER,
 } from './paneRun.js';
 
 const execFileAsync = promisify(execFile);
@@ -62,6 +62,11 @@ export function argvSendKeysLiteral(paneId: string, text: string): string[] {
 /** Press Enter in a pane (submit the current input line). */
 export function argvSendKeysEnter(paneId: string): string[] {
   return ['send-keys', '-t', paneId, 'Enter'];
+}
+
+/** Drop a pane's scrollback history (so cleared setup noise can't be scrolled back to). */
+export function argvClearHistory(paneId: string): string[] {
+  return ['clear-history', '-t', paneId];
 }
 
 export function argvHasSession(name: string): string[] {
@@ -227,6 +232,8 @@ export class TmuxController implements Tmux {
   private stageOccupantId?: string;
   /** The agent currently selected in the TUI. */
   private selectedId?: string;
+  /** Monotonic run counter feeding nextRunToken (short, unique per-run ids/filenames). */
+  private runCounter = 0;
 
   constructor(opts?: { run?: TmuxRunner; logsDir?: string }) {
     this.run = opts?.run ?? ((args) => execFileAsync('tmux', args));
@@ -277,8 +284,11 @@ export class TmuxController implements Tmux {
           window,
           shells: [{ paneId, idx: 0, capturePath: capture, busy: false }],
         });
-        // Mirror the shell's output into the capture file so runInPane can find a command's frame.
+        // Mirror the shell's (now clean) output into the capture file for any pane readers.
         await this.run(argvPipePane(paneId, `cat >> ${shq(capture)}`)).catch(() => {});
+        // Install the one-time pane protocol (blank prompt + __orc_run helper) so subsequent runs show
+        // only a clean `$ <cmd>` banner and their output, with no prompt/wrapper/sentinel noise.
+        await this.installSetup(paneId);
         // If this agent is already the selected one (fast create+select), reveal it now.
         if (this.selectedId === id) this.showAgent(id);
       } catch {
@@ -317,6 +327,8 @@ export class TmuxController implements Tmux {
         /* best-effort */
       }
       await this.run(argvPipePane(paneId, `cat >> ${shq(capturePath)}`)).catch(() => {});
+      // Install the pane protocol in this new shell too (same as the agent's first shell).
+      await this.installSetup(paneId);
       const shell: Shell = { paneId, idx, capturePath, busy: true };
       entry.shells.push(shell);
       // A fresh split steals focus; pull it back to the TUI so the human keeps driving orc.
@@ -400,12 +412,39 @@ export class TmuxController implements Tmux {
   }
 
   /**
+   * Type the one-time pane protocol (blank prompt + __orc_run helper) into a shell and submit it, then
+   * wipe the shell's screen + scrollback so the human never sees the setup script's own echo — leaving
+   * a pristine pane that from then on shows only clean `$ <cmd>` banners and their output.
+   */
+  private async installSetup(paneId: string): Promise<void> {
+    try {
+      await this.run(argvSendKeysLiteral(paneId, buildSetupScript(this.logsDir)));
+      await this.run(argvSendKeysEnter(paneId));
+      // Clear the visible screen (the setup echo) and drop scrollback so it can't be scrolled back to.
+      await this.run(argvSendKeysLiteral(paneId, 'clear')).catch(() => {});
+      await this.run(argvSendKeysEnter(paneId)).catch(() => {});
+      await this.run(argvClearHistory(paneId)).catch(() => {});
+    } catch {
+      /* best-effort: without setup, runInPane's injected call just no-ops and we fall back */
+    }
+  }
+
+  /** A short, unique, filename/parse-safe token for one run (bare so its echoed call never wraps). */
+  private nextRunToken(): string {
+    const seq = this.runCounter++;
+    // A base36 counter (unique within this process) + 6 random hex (unique across restarts) keeps the
+    // token short — so its echoed call line never wraps — while staying collision-free for sentinels.
+    return `${seq.toString(36)}${randomUUID().slice(0, 6)}`;
+  }
+
+  /**
    * Run a command live in one of the selected agent's interactive shells: acquire an idle shell (or
-   * split a new one when all are busy), inject the framed command via send-keys, wait for its frame
-   * to appear in that shell's capture file, and read back the captured output + exit code. Multiple
-   * concurrent calls use distinct shells, so an agent can run e.g. `yarn start` and `yarn ios` at the
-   * same time. Returns null when the command can't be driven in-pane (agent not selected / not on the
-   * stage / no shell free) so the caller uses its in-process fallback.
+   * split a new one when all are busy), stage the command in a per-run file, inject only the short
+   * `__orc_run` call via send-keys, wait for its framed result to appear in that run's result file,
+   * and read back the captured output + exit code. Multiple concurrent calls use distinct shells, so
+   * an agent can run e.g. `yarn start` and `yarn ios` at the same time. Returns null when the command
+   * can't be driven in-pane (agent not selected / not on the stage / no shell free) so the caller uses
+   * its in-process fallback.
    */
   async runInPane(
     agentId: string,
@@ -418,24 +457,33 @@ export class TmuxController implements Tmux {
     const shell = await this.acquireShell(agentId);
     if (!shell) return null; // all shells busy and at the cap → fall back in-process (acquire marks it busy)
 
-    const fromOffset = this.fileSize(shell.capturePath);
-    const runId = randomUUID();
-    const line = encodeInjectedCommand(runId, cmd);
+    // Each run uses its own fresh cmd + result files, named `<token>.cmd` / `<token>.res` in logsDir to
+    // match the paths __orc_run derives from `$__ORC_DIR` + token. The command text goes in the cmd file
+    // (so it never passes through tmux/the line editor); __orc_run writes the framed output + rc into the
+    // result file (never the pane). The result file starts empty, so we always parse from offset 0. The
+    // token doubles as this run's sentinel id.
+    const token = this.nextRunToken();
+    const cmdPath = join(this.logsDir, `${token}.cmd`);
+    const resultPath = join(this.logsDir, `${token}.res`);
     try {
-      // Prime echo-off on its own submitted line FIRST: a terminal echoes each input line as it is
-      // received, so echo must be disabled by an already-complete line before the long wrapper line
-      // is typed — otherwise the wrapper itself gets echoed back (the thing we're hiding).
-      await this.run(argvSendKeysLiteral(shell.paneId, ECHO_OFF_PRIMER));
-      await this.run(argvSendKeysEnter(shell.paneId));
-      await this.run(argvSendKeysLiteral(shell.paneId, line));
+      writeFileSync(cmdPath, cmd);
+      writeFileSync(resultPath, '');
+    } catch {
+      shell.busy = false;
+      return null; // can't stage the files → fall back in-process
+    }
+
+    try {
+      await this.run(argvSendKeysLiteral(shell.paneId, encodeInjectedCall(token)));
       await this.run(argvSendKeysEnter(shell.paneId));
     } catch {
       shell.busy = false;
+      this.cleanupRunFiles(cmdPath, resultPath);
       return null; // couldn't inject → fall back
     }
 
     try {
-      const res = await waitForCapture(shell.capturePath, runId, fromOffset, signal);
+      const res = await waitForCapture(resultPath, token, 0, signal);
       return { output: capOutput(res.output), rc: res.rc };
     } catch {
       // Aborted (or watch failure) → interrupt the running command, report cancel.
@@ -443,15 +491,18 @@ export class TmuxController implements Tmux {
       return { output: '', rc: 130 };
     } finally {
       shell.busy = false;
+      this.cleanupRunFiles(cmdPath, resultPath);
     }
   }
 
-  /** Current byte length of a file, or 0 when it doesn't exist. */
-  private fileSize(path: string): number {
-    try {
-      return statSync(path).size;
-    } catch {
-      return 0;
+  /** Best-effort removal of a run's temporary command + result files. */
+  private cleanupRunFiles(cmdPath: string, resultPath: string): void {
+    for (const p of [cmdPath, resultPath]) {
+      try {
+        rmSync(p, { force: true });
+      } catch {
+        /* best-effort */
+      }
     }
   }
 

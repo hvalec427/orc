@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {
   beginSentinel,
   endSentinelRe,
-  encodeInjectedCommand,
-  ECHO_OFF_PRIMER,
+  buildSetupScript,
+  encodeInjectedCall,
   parseCapturedRun,
   parseRc,
   capOutput,
@@ -32,53 +32,70 @@ describe('sentinels', () => {
   });
 });
 
-describe('encodeInjectedCommand → parseCapturedRun round-trip (framing only)', () => {
-  // The injected line prints the sentinels; we simulate a shell that echoed the command's output
-  // between them and confirm the parser recovers exactly that output + rc, for tricky commands.
-  const CASES: Array<[string, string, string]> = [
-    ['id1', 'echo hi', 'hi'],
-    ['id2', 'echo "with spaces and quotes"', 'with spaces and quotes'],
-    ['id3', "echo 'single quoted $VAR'", 'single quoted $VAR'],
-    ['id6', 'echo "café 日本語 🚀"', 'café 日本語 🚀'],
+describe('result-file framing → parseCapturedRun round-trip', () => {
+  // __orc_run writes only the BEGIN/END sentinels and the command's output into the result file; we
+  // simulate that file for tricky commands and confirm the parser recovers exactly the output + rc.
+  const CASES: Array<[string, string]> = [
+    ['id1', 'hi'],
+    ['id2', 'with spaces and quotes'],
+    ['id3', 'single quoted $VAR'],
+    ['id6', 'café 日本語 🚀'],
   ];
-  for (const [id, cmd, out] of CASES) {
-    test(`frames id=${id} cmd=${JSON.stringify(cmd)}`, () => {
-      const line = encodeInjectedCommand(id, cmd);
-      assert.match(line, new RegExp(`<<<ORC-BEGIN ${id}>>>`));
-      // Build a capture buffer as the shell would produce it.
-      const buf = `\n${beginSentinel(id)}\n${out}\n<<<ORC-END ${id} 0>>>\n`;
+  for (const [id, out] of CASES) {
+    test(`frames id=${id} out=${JSON.stringify(out)}`, () => {
+      // Build a result file exactly as __orc_run's `print -r --` statements would write it.
+      const buf = `${beginSentinel(id)}\n${out}\n<<<ORC-END ${id} 0>>>\n`;
       const res = parseCapturedRun(buf, id);
       assert.deepEqual(res, { output: out, rc: 0 });
     });
   }
 });
 
-describe('encodeInjectedCommand hides the wrapper and shows a clean command', () => {
-  test('the echo-off primer is a standalone line sent before the wrapper', () => {
-    // Echo must be disabled by its own already-complete line (ECHO_OFF_PRIMER), sent first, so the
-    // terminal never echoes the long wrapper line back to the human.
-    assert.ok(ECHO_OFF_PRIMER.includes('stty -echo'), 'the primer disables terminal echo');
+describe('buildSetupScript installs a quiet pane protocol', () => {
+  test('blanks the prompt, records the run dir, and defines the __orc_run helper', () => {
+    const setup = buildSetupScript('/run/dir');
+    // No prompt noise: PROMPT/RPROMPT are blanked.
+    assert.match(setup, /PROMPT=''/);
+    assert.match(setup, /RPROMPT=''/);
+    // The run directory is recorded so the per-run call can stay a bare token.
+    assert.ok(setup.includes("__ORC_DIR='/run/dir'"), 'records the run dir in $__ORC_DIR');
+    // The helper the per-run call invokes, with paths derived from $__ORC_DIR + token.
+    assert.match(setup, /__orc_run\(\)/);
+    assert.ok(setup.includes('$__ORC_DIR/$__orc_tok.cmd'), 'derives the cmd path from dir + token');
+    assert.ok(setup.includes('$__ORC_DIR/$__orc_tok.res'), 'derives the result path from dir + token');
+    // Sentinels + rc are written to the RESULT FILE, never the pane.
+    assert.match(setup, /<<<ORC-BEGIN /);
+    assert.match(setup, /<<<ORC-END /);
+    assert.match(setup, /\$\{pipestatus\[1\]\}/, 'captures the command rc, not tee rc');
+    // Erases the single echoed call line before printing the clean banner.
+    assert.ok(setup.includes('\\033[A'), 'moves the cursor up to erase the echoed call');
+    assert.match(setup, /\$ \$__orc_cmd/, 'prints a "$ <cmd>" banner');
   });
 
-  test('prints a clean "$ <cmd>" banner and restores echo, without re-disabling it inline', () => {
-    const line = encodeInjectedCommand('r1', 'echo hi');
-    // The wrapper no longer carries `stty -echo`: disabling echo from inside this same line can't
-    // suppress the echo of this very line, so that job moved to the standalone ECHO_OFF_PRIMER.
-    assert.ok(!line.includes('stty -echo'), 'the wrapper does not re-disable echo inline');
-    assert.ok(line.includes('stty echo'), 'the wrapper restores terminal echo afterwards');
-    // A clean prompt-style banner shows just the command text to the human.
-    assert.ok(line.includes('$ '), 'prints a "$ <cmd>" banner');
-    assert.ok(line.includes('echo hi'), 'the banner carries the real command');
-    // Sentinels are still present so orc can parse the output from the capture stream.
-    assert.match(line, /<<<ORC-BEGIN r1>>>/);
-    assert.match(line, /<<<ORC-END/);
+  test("single-quotes in the run dir are escaped so $__ORC_DIR stays one safe token", () => {
+    const setup = buildSetupScript("/it's/dir");
+    assert.ok(setup.includes(`__ORC_DIR='/it'\\''s/dir'`), 'embedded quote is escaped');
+  });
+});
+
+describe('encodeInjectedCall is a short, bare token call', () => {
+  test('calls __orc_run with just the single-quoted run token', () => {
+    assert.equal(encodeInjectedCall('abc123'), "__orc_run 'abc123'");
   });
 
-  test('the banner is excluded from captured OUTPUT', () => {
-    // Simulate the capture: the banner line + sentinels + output, as the shell+pipe-pane would record.
-    const buf = `$ echo hi\n${beginSentinel('r1')}\nhi\n<<<ORC-END r1 0>>>\n`;
+  test('no command text or file paths pass through the injected line', () => {
+    const line = encodeInjectedCall('abc123');
+    assert.ok(!line.includes('/'), 'no file paths in the injected call');
+    assert.ok(!line.includes('echo'), 'no command text in the injected call');
+  });
+});
+
+describe('the result file contains no banner or prompt noise', () => {
+  test('parses output + rc from a clean result file (no "$ cmd" banner line)', () => {
+    // __orc_run prints the banner to the PANE, not the result file, so the file is sentinels + output.
+    const buf = `${beginSentinel('r1')}\nhi\n<<<ORC-END r1 0>>>\n`;
     const res = parseCapturedRun(buf, 'r1');
-    assert.deepEqual(res, { output: 'hi', rc: 0 }, 'output excludes the banner');
+    assert.deepEqual(res, { output: 'hi', rc: 0 });
   });
 });
 

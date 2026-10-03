@@ -5,13 +5,30 @@ import { dirname } from 'node:path';
  * Pane command protocol + capture helpers.
  *
  * Each agent owns one or more long-lived INTERACTIVE shells (`zsh -if`) in its own tmux panes, so the
- * human can type into them directly. The agent's `mcp__orc__run` tool injects a command into one such
- * shell via
- * `tmux send-keys`, wrapping it in unique sentinel lines so orc can later find exactly that command's
- * combined output and exit code in the pane's capture stream — without disturbing the human's own
- * typing, which simply interleaves as ordinary shell input.
+ * human can type into them directly. The agent's `mcp__orc__run` tool runs a command in one such shell
+ * WITHOUT polluting the pane with wrapper/plumbing noise: the human sees only a clean `$ <cmd>` banner
+ * followed by the command's own output, exactly as if they had typed it.
  *
- * The pane's output is mirrored to a per-agent capture file via `tmux pipe-pane`. A run is framed as:
+ * How that is achieved — and why the obvious approaches don't work:
+ *
+ *   The pane runs an INTERACTIVE zsh. Its line editor (ZLE) echoes whatever `send-keys` injects and
+ *   redraws the prompt around it — and ZLE's echo is NOT governed by `stty -echo`, so trying to mute
+ *   the tty can't hide an injected wrapper line. Any long wrapper we type is therefore shown verbatim.
+ *
+ * So instead of typing a long wrapper, orc:
+ *   1. Installs a tiny `__orc_run` shell function, blanks the prompt, and records the agent's run
+ *      directory in `$__ORC_DIR` ONCE at shell startup (buildSetupScript). The only noise this leaves
+ *      is its own one-time echo, which orc clears right after installing it.
+ *   2. For each run, writes the command text to `<__ORC_DIR>/<token>.cmd` and injects only a SHORT
+ *      call: `__orc_run <token>` (encodeInjectedCall). A bare short token NEVER wraps across terminal
+ *      rows, so the function can reliably erase its single echoed line (cursor-up + clear) before
+ *      printing the clean banner. Passing long file paths as args would wrap and defeat that erase.
+ *   3. `__orc_run` derives the cmd/result paths from `$__ORC_DIR` + token, prints `$ <cmd>` to the
+ *      PANE, runs the command so its output shows in the pane, and writes the framed result — BEGIN/END
+ *      sentinels + the command's combined output — to the RESULT FILE orc reads. The sentinels never
+ *      touch the pane, so the human never sees them.
+ *
+ * The result file is framed as:
  *
  *   <<<ORC-BEGIN runId>>>
  *   ...the command's combined stdout/stderr...
@@ -36,36 +53,54 @@ export function endSentinelRe(runId: string): RegExp {
 }
 
 /**
- * The priming line orc types FIRST, as its own submitted line, to turn terminal echo off before the
- * (long) wrapper line is sent. Echo must be disabled by a line that is itself already complete: a
- * terminal echoes each input line as it is received, so `stty -echo` placed inside the wrapper line
- * can't suppress that same line — it only takes effect for input typed afterwards. Sending it on its
- * own line first means the wrapper line that follows is never echoed. The wrapper restores echo at
- * its end (`stty echo`). This short priming line is itself echoed once, which is unavoidable but tiny.
+ * The one-time setup orc types into a freshly created agent shell. It:
+ *   - blanks the prompt (PROMPT/RPROMPT/PS2) and disables zsh's prompt CR/space padding, so no
+ *     `host%`-style prompt noise ever appears in the pane;
+ *   - records the agent's run directory in `$__ORC_DIR` so the per-run call can stay a bare token; and
+ *   - defines the `__orc_run` function orc calls for every subsequent command.
+ *
+ * `__orc_run <token>` (paths derived as `$__ORC_DIR/<token>.cmd` and `.res`):
+ *   - reads the command text from the cmd file (so the long/odd command text never goes through ZLE);
+ *   - erases the single echoed line of its own call (cursor-up, CR, clear-to-EOL) — reliable because
+ *     the call is a bare short token that never wraps — then prints a clean `$ <cmd>` banner to the pane;
+ *   - runs the command via `eval` and tees its combined stdout/stderr to the result file AND the pane;
+ *   - writes the BEGIN/END sentinels and the command's exit code to the result file ONLY (never the
+ *     pane), bracketing the tee'd output so parseCapturedRun can recover exactly this run's output + rc.
+ *
+ * Sent to the shell with `send-keys -l` (literal). `eval` runs in the interactive shell itself (not a
+ * subshell) so `cd`/env changes the human expects from typing a command persist; the shell is `-f` (no
+ * rc files) so there's no banner. `dir` is single-quoted into the assignment of `$__ORC_DIR`.
  */
-export const ECHO_OFF_PRIMER = 'stty -echo 2>/dev/null';
+export function buildSetupScript(dir: string): string {
+  // Kept to a single line so it is one submitted command. `${pipestatus[1]}` is the command's rc
+  // (first element of the zsh pipe status array), not tee's. The cmd/result paths are derived inside
+  // the function from `$__ORC_DIR` + the token, so the per-run call orc injects stays a bare token.
+  return (
+    `setopt no_prompt_cr no_prompt_sp 2>/dev/null; PROMPT='' RPROMPT='' PS2=''; ` +
+    `__ORC_DIR=${shq(dir)}; ` +
+    `__orc_run() { ` +
+    `local __orc_tok=$1; ` +
+    `local __orc_cmdf="$__ORC_DIR/$__orc_tok.cmd" __orc_resf="$__ORC_DIR/$__orc_tok.res"; ` +
+    `local __orc_cmd; __orc_cmd=$(cat "$__orc_cmdf"); ` +
+    `printf '\\033[A\\r\\033[K'; ` +
+    `print -r -- "$ $__orc_cmd"; ` +
+    `print -r -- "<<<ORC-BEGIN $__orc_tok>>>" >> "$__orc_resf"; ` +
+    `{ eval "$__orc_cmd" } 2>&1 | tee -a "$__orc_resf"; ` +
+    `local __orc_rc=\${pipestatus[1]}; ` +
+    `print -r -- "<<<ORC-END $__orc_tok $__orc_rc>>>" >> "$__orc_resf"; ` +
+    `}`
+  );
+}
 
 /**
- * Build the single shell line orc types into the agent's interactive shell to run `cmd`. Terminal
- * echo is turned off beforehand by ECHO_OFF_PRIMER (sent on its own line first), so this whole long
- * wrapper line is never echoed back; the only thing the human sees is our own clean `$ <cmd>` banner.
- * The line prints the BEGIN sentinel, runs the command in a subshell (so a bare `exit`/`cd` can't
- * wreck the long-lived shell), prints the END sentinel with the command's exit code, then restores
- * echo (`stty echo`). The sentinels remain in the capture stream so parseCapturedRun can find the
- * output. Sent to tmux with `send-keys -l` (literal), so none of these characters are interpreted by
- * tmux itself.
+ * Build the SHORT line orc types into the agent's shell to run one command: a bare call to the
+ * pre-installed `__orc_run` with just this run's token. Being a single short token it never wraps across
+ * terminal rows, so `__orc_run` can reliably erase its one echoed line before printing the clean banner.
+ * The command text and the cmd/result file paths live elsewhere (staged by orc, derived from
+ * `$__ORC_DIR`), so nothing long or quoted ever passes through tmux or the line editor.
  */
-export function encodeInjectedCommand(runId: string, cmd: string): string {
-  const begin = beginSentinel(runId);
-  // The leading newline on the END printf keeps the sentinel on its own line even if the command's
-  // last line of output had no trailing newline.
-  return (
-    `printf '$ %s\\n' ${shq(cmd)}; ` +
-    `printf '%s\\n' ${shq(begin)}; ` +
-    `( ${cmd} ); __orc_rc=$?; ` +
-    `printf '\\n<<<ORC-END %s %s>>>\\n' ${shq(runId)} "$__orc_rc"; ` +
-    `stty echo 2>/dev/null`
-  );
+export function encodeInjectedCall(token: string): string {
+  return `__orc_run ${shq(token)}`;
 }
 
 /** Single-quote a string for safe embedding in a bash command line. */

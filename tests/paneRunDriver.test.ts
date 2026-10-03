@@ -5,29 +5,33 @@ import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  encodeInjectedCommand,
+  buildSetupScript,
+  encodeInjectedCall,
   parseCapturedRun,
   waitForCapture,
 } from '../src/tmux/paneRun.js';
 
-// These tests exercise the capture protocol WITHOUT tmux: a real bash evaluates the exact line orc
-// would type into an agent's interactive shell (encodeInjectedCommand), redirecting its output into a
-// capture file just as `tmux pipe-pane` would. waitForCapture then reads back the framed result.
+// These tests exercise the capture protocol WITHOUT tmux: a real zsh sources the setup script (which
+// defines __orc_run) and then runs the exact short call orc would inject (encodeInjectedCall). __orc_run
+// writes the framed output + rc to the per-run RESULT FILE (just as it does in a real pane), and
+// waitForCapture then reads back the result. The command text lives in a cmd file, as orc stages it.
 
 interface Fixture {
   dir: string;
-  capture: string;
   child?: ChildProcess;
 }
 const fixtures: Fixture[] = [];
 
 function makeFixture(): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'orc-cap-'));
-  const capture = join(dir, 'a1.cap');
-  writeFileSync(capture, '');
-  const fx: Fixture = { dir, capture };
+  const fx: Fixture = { dir };
   fixtures.push(fx);
   return fx;
+}
+
+/** Path of a run's result file inside a fixture (where __orc_run writes the framed output). */
+function resultPath(fx: Fixture, token: string): string {
+  return join(fx.dir, `${token}.res`);
 }
 
 afterEach(() => {
@@ -54,22 +58,29 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
-/** Run the injected line in a real bash, appending its output to the capture file (like pipe-pane). */
-function runInjected(fx: Fixture, runId: string, cmd: string): ChildProcess {
-  const line = encodeInjectedCommand(runId, cmd);
-  const child = spawn('bash', ['-c', `{ ${line} ; } >> ${JSON.stringify(fx.capture)} 2>&1`], {
-    stdio: 'ignore',
-  });
+/**
+ * Run a command the way a real agent shell does: a non-interactive zsh sources the setup script (which
+ * defines __orc_run), then runs the exact short call orc injects. __orc_run writes the framed result to
+ * the run's result file. The command text is staged in a cmd file first, as orc does. Returns the
+ * result-file path so waitForCapture can read it back.
+ */
+function runInjected(fx: Fixture, token: string, cmd: string): { child: ChildProcess; res: string } {
+  const cmdPath = join(fx.dir, `${token}.cmd`);
+  const res = resultPath(fx, token);
+  writeFileSync(cmdPath, cmd);
+  writeFileSync(res, '');
+  // -f: skip rc files, like the real agent shell. Source the setup (which records __ORC_DIR and defines
+  // __orc_run), then run the exact bare-token call orc injects.
+  const script = `${buildSetupScript(fx.dir)}\n${encodeInjectedCall(token)}\n`;
+  const child = spawn('zsh', ['-fc', script], { stdio: 'ignore' });
   fx.child = child;
-  return child;
+  return { child, res };
 }
 
-describe('encodeInjectedCommand', () => {
-  test('frames the command with BEGIN/END sentinels and the run id', () => {
-    const line = encodeInjectedCommand('abc', 'echo hi');
-    assert.match(line, /<<<ORC-BEGIN abc>>>/);
-    assert.match(line, /<<<ORC-END/);
-    assert.match(line, /echo hi/);
+describe('encodeInjectedCall', () => {
+  test('is a short bare __orc_run call carrying only the run token', () => {
+    const line = encodeInjectedCall('abc');
+    assert.equal(line, "__orc_run 'abc'");
   });
 });
 
@@ -111,56 +122,65 @@ describe('parseCapturedRun (pure)', () => {
   });
 });
 
-describe('capture protocol end-to-end (real bash, no tmux)', () => {
+describe('capture protocol end-to-end (real zsh, no tmux)', () => {
   test('a simple echo is framed, captured, and read back with rc 0', async () => {
     const fx = makeFixture();
-    runInjected(fx, 'r1', 'echo hi');
-    const res = await withTimeout(
-      waitForCapture(fx.capture, 'r1', 0, new AbortController().signal),
+    const { res } = runInjected(fx, 'r1', 'echo hi');
+    const r = await withTimeout(
+      waitForCapture(res, 'r1', 0, new AbortController().signal),
       5000,
       'waitForCapture r1',
     );
-    assert.equal(res.rc, 0);
-    assert.match(res.output, /hi/);
+    assert.equal(r.rc, 0);
+    assert.match(r.output, /hi/);
   });
 
   test('a non-zero exit is reported via the END sentinel', async () => {
     const fx = makeFixture();
-    runInjected(fx, 'r1', 'echo boom; exit 7');
-    const res = await withTimeout(
-      waitForCapture(fx.capture, 'r1', 0, new AbortController().signal),
+    const { res } = runInjected(fx, 'r1', 'echo boom; exit 7');
+    const r = await withTimeout(
+      waitForCapture(res, 'r1', 0, new AbortController().signal),
       5000,
       'waitForCapture r1',
     );
-    assert.equal(res.rc, 7);
-    assert.match(res.output, /boom/);
+    assert.equal(r.rc, 7);
+    assert.match(r.output, /boom/);
   });
 
-  test('a second run after the first is parsed independently from its own offset', async () => {
+  test('the result file contains only the output — no banner, prompt, or sentinel noise', async () => {
     const fx = makeFixture();
-    runInjected(fx, 'r1', 'echo first');
-    await withTimeout(waitForCapture(fx.capture, 'r1', 0, new AbortController().signal), 5000, 'r1');
-    const offset = (await import('node:fs')).statSync(fx.capture).size;
-    // Reuse the fixture's capture file for a second injected run.
-    const line2 = encodeInjectedCommand('r2', 'echo second');
-    fx.child = spawn('bash', ['-c', `{ ${line2} ; } >> ${JSON.stringify(fx.capture)} 2>&1`], {
-      stdio: 'ignore',
-    });
-    const res = await withTimeout(
-      waitForCapture(fx.capture, 'r2', offset, new AbortController().signal),
+    const { res } = runInjected(fx, 'r1', 'echo only-this');
+    const r = await withTimeout(
+      waitForCapture(res, 'r1', 0, new AbortController().signal),
+      5000,
+      'waitForCapture r1',
+    );
+    // The captured output is exactly the command's output: no "$ echo…" banner, no prompt.
+    assert.equal(r.output, 'only-this');
+  });
+
+  test('two runs write independent result files parsed on their own', async () => {
+    const fx = makeFixture();
+    const a = runInjected(fx, 'r1', 'echo first');
+    await withTimeout(waitForCapture(a.res, 'r1', 0, new AbortController().signal), 5000, 'r1');
+    const b = runInjected(fx, 'r2', 'echo second');
+    const r = await withTimeout(
+      waitForCapture(b.res, 'r2', 0, new AbortController().signal),
       5000,
       'waitForCapture r2',
     );
-    assert.equal(res.rc, 0);
-    assert.match(res.output, /second/);
-    assert.doesNotMatch(res.output, /first/);
+    assert.equal(r.rc, 0);
+    assert.match(r.output, /second/);
+    assert.doesNotMatch(r.output, /first/);
   });
 
   test('waitForCapture rejects promptly when the AbortController is aborted', async () => {
     const fx = makeFixture();
     // No frame is ever written for r1, so only the abort can settle it.
+    const res = resultPath(fx, 'r1');
+    writeFileSync(res, '');
     const ac = new AbortController();
-    const p = waitForCapture(fx.capture, 'r1', 0, ac.signal);
+    const p = waitForCapture(res, 'r1', 0, ac.signal);
     setTimeout(() => ac.abort(), 100);
     await withTimeout(
       assert.rejects(() => p, (err: Error) => {
@@ -174,11 +194,12 @@ describe('capture protocol end-to-end (real bash, no tmux)', () => {
 
   test('waitForCapture resolves as the END sentinel is appended after the fact', async () => {
     const fx = makeFixture();
-    appendFileSync(fx.capture, '<<<ORC-BEGIN r1>>>\npartial\n');
-    const p = waitForCapture(fx.capture, 'r1', 0, new AbortController().signal);
-    setTimeout(() => appendFileSync(fx.capture, '<<<ORC-END r1 0>>>\n'), 150);
-    const res = await withTimeout(p, 2000, 'late END');
-    assert.equal(res.rc, 0);
-    assert.match(res.output, /partial/);
+    const res = resultPath(fx, 'r1');
+    writeFileSync(res, '<<<ORC-BEGIN r1>>>\npartial\n');
+    const p = waitForCapture(res, 'r1', 0, new AbortController().signal);
+    setTimeout(() => appendFileSync(res, '<<<ORC-END r1 0>>>\n'), 150);
+    const r = await withTimeout(p, 2000, 'late END');
+    assert.equal(r.rc, 0);
+    assert.match(r.output, /partial/);
   });
 });
