@@ -140,9 +140,9 @@ export function NewAgentForm({
     }
     if (step === 'template') {
       if (key.upArrow || input === 'k')
-        setTemplateCursor((c) => (c - 1 + TEMPLATES.length) % TEMPLATES.length);
+        setTemplateCursor((c) => Math.max(0, c - 1));
       else if (key.downArrow || input === 'j')
-        setTemplateCursor((c) => (c + 1) % TEMPLATES.length);
+        setTemplateCursor((c) => Math.min(TEMPLATES.length - 1, c + 1));
       else if (key.return) {
         const t = TEMPLATES[templateCursor].value;
         setTemplate(t);
@@ -158,9 +158,9 @@ export function NewAgentForm({
     }
     if (step !== 'project') return;
     if (key.upArrow || input === 'k' || input === 'h')
-      setCursor((c) => (c - 1 + projects.length) % projects.length);
+      setCursor((c) => Math.max(0, c - 1));
     else if (key.downArrow || input === 'j' || input === 'l')
-      setCursor((c) => (c + 1) % projects.length);
+      setCursor((c) => Math.min(projects.length - 1, c + 1));
     else if (key.return) {
       const proj = projects[cursor];
       setProject(proj.name);

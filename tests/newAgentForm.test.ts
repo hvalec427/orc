@@ -93,6 +93,39 @@ test('subagent skips the ticket step and inherits the parent ticket', async () =
   unmount();
 });
 
+test('template picker does not wrap around at the ends', async () => {
+  const { stdin, lastFrame, unmount } = renderForm({});
+  await delay();
+
+  // The selected row is marked with "❯ ". Helper to read the selected label.
+  const selectedLabel = () => {
+    const line = (lastFrame() ?? '').split('\n').find((l) => l.includes('❯'));
+    return line ?? '';
+  };
+
+  // Starts on the first entry (Feature).
+  assert.match(selectedLabel(), /Feature/);
+
+  // k at the top clamps (no wrap to the last entry).
+  stdin.write('k');
+  await delay();
+  assert.match(selectedLabel(), /Feature/, 'k at top must not wrap to the bottom');
+
+  // j all the way down lands on the last entry (Integrate) and stays there.
+  for (let i = 0; i < 10; i++) {
+    stdin.write('j');
+    await delay();
+  }
+  assert.match(selectedLabel(), /Integrate/);
+
+  // j at the bottom clamps (no wrap back to the first entry).
+  stdin.write('j');
+  await delay();
+  assert.match(selectedLabel(), /Integrate/, 'j at bottom must not wrap to the top');
+
+  unmount();
+});
+
 test('top-level feature agent still requires a name and prompts for a ticket', async () => {
   const { stdin, lastFrame, submissions, unmount } = renderForm({});
   await delay();

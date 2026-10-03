@@ -95,8 +95,8 @@ function Menu({
       onQuit();
       return;
     }
-    if (key.upArrow || input === 'k') setCursor((c) => (c - 1 + items.length) % items.length);
-    else if (key.downArrow || input === 'j') setCursor((c) => (c + 1) % items.length);
+    if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
+    else if (key.downArrow || input === 'j') setCursor((c) => Math.min(items.length - 1, c + 1));
     else if (key.return) onChoose(items[cursor].key);
   });
 
@@ -151,8 +151,8 @@ function ApplyClaudeMd({
       return;
     }
     if (projects.length === 0) return;
-    if (key.upArrow || input === 'k') setCursor((c) => (c - 1 + projects.length) % projects.length);
-    else if (key.downArrow || input === 'j') setCursor((c) => (c + 1) % projects.length);
+    if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
+    else if (key.downArrow || input === 'j') setCursor((c) => Math.min(projects.length - 1, c + 1));
     else if (input === 'c' || key.return) {
       if (!project) return;
       const repo = expandPath(project.path);
@@ -333,10 +333,10 @@ function FieldEditor({
       }
       if (key.upArrow || input === 'k') {
         setError('');
-        setCursor((c) => (c - 1 + total) % total);
+        setCursor((c) => Math.max(0, c - 1));
       } else if (key.downArrow || input === 'j') {
         setError('');
-        setCursor((c) => (c + 1) % total);
+        setCursor((c) => Math.min(total - 1, c + 1));
       } else if (input === 's') {
         doSave();
       } else if (key.return) {
@@ -355,14 +355,14 @@ function FieldEditor({
       const opts = current.options!;
       const cur = (draft[current.key] as string) || '';
       const idx = Math.max(0, opts.indexOf(cur));
-      if (key.upArrow || input === 'k') set({ [current.key]: opts[(idx - 1 + opts.length) % opts.length] } as Partial<Draft>);
-      else if (key.downArrow || input === 'j') set({ [current.key]: opts[(idx + 1) % opts.length] } as Partial<Draft>);
+      if (key.upArrow || input === 'k') set({ [current.key]: opts[Math.max(0, idx - 1)] } as Partial<Draft>);
+      else if (key.downArrow || input === 'j') set({ [current.key]: opts[Math.min(opts.length - 1, idx + 1)] } as Partial<Draft>);
       else if (input === 'x') set({ [current.key]: '' } as Partial<Draft>);
       else if (key.return) setEditing(false);
     } else if (current?.kind === 'multiselect') {
       const opts = current.options as readonly SettingSource[];
-      if (key.upArrow || input === 'k') setMultiCursor((c) => (c - 1 + opts.length) % opts.length);
-      else if (key.downArrow || input === 'j') setMultiCursor((c) => (c + 1) % opts.length);
+      if (key.upArrow || input === 'k') setMultiCursor((c) => Math.max(0, c - 1));
+      else if (key.downArrow || input === 'j') setMultiCursor((c) => Math.min(opts.length - 1, c + 1));
       else if (input === ' ') {
         const opt = opts[multiCursor];
         const has = draft.settingSources.includes(opt);
@@ -526,8 +526,8 @@ function EditProject({
         return;
       }
       if (projects.length === 0) return;
-      if (key.upArrow || input === 'k') setCursor((c) => (c - 1 + projects.length) % projects.length);
-      else if (key.downArrow || input === 'j') setCursor((c) => (c + 1) % projects.length);
+      if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
+      else if (key.downArrow || input === 'j') setCursor((c) => Math.min(projects.length - 1, c + 1));
       else if (key.return) setChosen(projects[cursor]);
     },
     { isActive: chosen === null },
@@ -633,8 +633,8 @@ function RemoveProject({
       return;
     }
     if (projects.length === 0) return;
-    if (key.upArrow || input === 'k') setCursor((c) => (c - 1 + projects.length) % projects.length);
-    else if (key.downArrow || input === 'j') setCursor((c) => (c + 1) % projects.length);
+    if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
+    else if (key.downArrow || input === 'j') setCursor((c) => Math.min(projects.length - 1, c + 1));
     else if (key.return) {
       if (project) setConfirming(true);
     }
