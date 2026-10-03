@@ -14,6 +14,7 @@ describe('LOG_KIND_COLOR', () => {
       text: {},
       thinking: { color: 'gray', dim: true },
       tool: { color: 'cyan' },
+      tool_result: { color: 'white', dim: true },
       system: { color: 'gray', dim: true },
       result: { color: 'green' },
       error: { color: 'red' },

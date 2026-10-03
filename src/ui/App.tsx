@@ -169,7 +169,21 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         setSubagentParentId(manager.groupRootOf(selected.id).id);
         setMode('new');
       } else if (input === 'x') {
-        // stop() no-ops once the agent is dead, so only act while it's alive.
+        // x pauses (keep-alive interrupt): only act on a live, non-terminal, non-paused agent.
+        // pause() keeps the subprocess alive so r resumes the same session (see Shift+X to hard-kill).
+        const status = selected?.getInfo().status;
+        if (
+          selected &&
+          status !== 'done' &&
+          status !== 'error' &&
+          status !== 'stopped' &&
+          status !== 'paused'
+        ) {
+          void selected.pause();
+        }
+      } else if (input === 'X') {
+        // Shift+X hard-kills (old x behavior): interrupt + abort the subprocess. stop() no-ops once
+        // dead, so only act while it's alive (a paused agent is still alive and killable).
         const status = selected?.getInfo().status;
         if (
           selected &&
@@ -183,7 +197,12 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       } else if (input === 'r') {
         // Resuming a now-running agent shouldn't leave it hidden in Done, so unarchive it too.
         if (selected) {
-          selected.retry();
+          // A paused agent resumes its LIVE session (resume); a dead one retries (relaunch/resume id).
+          if (selected.getInfo().status === 'paused') {
+            selected.resume();
+          } else {
+            selected.retry();
+          }
           if (selected.getInfo().archived) void manager.unarchive(selected.id);
         }
       } else if (input === 'm' && selected) {
@@ -476,6 +495,8 @@ function HelpBar({
     selectedStatus === 'error' ||
     selectedStatus === 'stopped' ||
     selectedStatus === 'needs_login';
+  // A paused agent is alive (kept-alive interrupt): r resumes its live session; X still hard-kills.
+  const isPaused = selectedStatus === 'paused';
 
   // Only list a command when pressing its key would actually do something.
   const global: string[] = ['n:new'];
@@ -490,11 +511,14 @@ function HelpBar({
   const agent: string[] = [];
   // i (ask/reply) and c (launch a subagent) work for any selected agent regardless of state.
   if (hasSession) agent.push('i:ask', 'c:subagent');
-  if (isDead) agent.push('r:resume');
+  // r resumes both a dead agent (retry) and a paused one (continue its live session).
+  if (isDead || isPaused) agent.push('r:resume');
   if (canMerge) agent.push('m:integrate');
   // C spawns a cleanup worker to remove the agent's worktree + branch; only useful once it has one.
   if (hasWorktree) agent.push('C:cleanup');
-  if (hasSession && !isDead) agent.push('x:stop');
+  // x pauses a live, non-paused agent (keep-alive); X hard-kills any live agent (incl. paused).
+  if (hasSession && !isDead && !isPaused) agent.push('x:pause');
+  if (hasSession && !isDead) agent.push('X:kill');
   // P shows orc's generated "how to run/test this branch" instructions inside the agent window.
   if (hasSession) agent.push(previewing ? 'P:close preview' : 'P:preview');
   // d archives (non-destructive, into Done); Shift+D is the old destructive delete. Messaging an

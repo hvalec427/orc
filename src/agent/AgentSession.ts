@@ -54,6 +54,9 @@ import { createWorktree, type Worktree } from '../worktree.js';
 
 const MAX_EVENTS = 800;
 
+/** Cap a single captured tool_result entry so one huge stdout can't blow up the log/TUI. */
+const MAX_TOOL_RESULT_CHARS = 10_000;
+
 /**
  * The SDK aborts the whole session (not just the turn) when a `Read` returns more than
  * ~25 000 tokens: its file reader throws a `MaxFileReadTokenExceededError` that escapes the
@@ -105,6 +108,26 @@ const LOGIN_REQUIRED_PATTERNS: readonly RegExp[] = [
 /** Whether a diagnostic string indicates the Claude CLI needs the human to re-authenticate. */
 function isLoginRequired(detail: string): boolean {
   return LOGIN_REQUIRED_PATTERNS.some((re) => re.test(detail));
+}
+
+/**
+ * Flatten a tool_result block's `content` to plain text. The SDK delivers it either as a bare string
+ * or as an array of `{type:'text', text}` blocks; anything else yields ''. Trimmed so a blank result
+ * is skipped by the caller. Newlines inside the text are preserved.
+ */
+function extractToolResultText(content: unknown): string {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((b) =>
+        b && typeof b === 'object' && (b as { type?: unknown }).type === 'text'
+          ? String((b as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .join('')
+      .trim();
+  }
+  return '';
 }
 
 /** Loose shape of the raw Anthropic stream events we care about. */
@@ -280,6 +303,12 @@ export class AgentSession extends EventEmitter {
   private query: Query | null = null;
   /** Aborts the current SDK subprocess. Recreated on every launch. */
   private abortController: AbortController | null = null;
+  /**
+   * Set while pause() is interrupting the live turn, so the resulting non-success `result` the
+   * interrupt produces is resolved to 'paused' (session kept alive) instead of 'error'. Cleared once
+   * handled, and defensively at the top of deliver()/resumeWith().
+   */
+  private pausing = false;
 
   private status: AgentStatus = 'booting';
   private question?: string;
@@ -486,6 +515,7 @@ export class AgentSession extends EventEmitter {
    */
   private deliver(text: string, entry: { kind: LogEntry['kind']; log: string }): void {
     this.question = undefined;
+    this.pausing = false;
     // If the turn has ended, the SDK subprocess is no longer consuming the input queue — for
     // 'needs_input' the turn resolved to a 'result' and the CLI typically exits — so pushing the
     // reply onto the live queue would be silently dropped and the agent would never pick it up.
@@ -568,6 +598,7 @@ export class AgentSession extends EventEmitter {
    * the human re-authenticates a retry()/send() must relaunch (resume) rather than push.
    */
   private isDead(): boolean {
+    // 'paused' is intentionally NOT dead: the subprocess is kept alive and resume() continues it.
     return (
       this.status === 'done' ||
       this.status === 'error' ||
@@ -596,6 +627,7 @@ export class AgentSession extends EventEmitter {
     text: string,
     entry: { kind: LogEntry['kind']; log: string } = { kind: 'input', log: `you: ${text}` },
   ): void {
+    this.pausing = false;
     this.queue = new InputQueue();
     this.queue.push(text);
     this.addLog(entry.kind, entry.log);
@@ -634,6 +666,35 @@ export class AgentSession extends EventEmitter {
     this.query = null;
     this.queue.close();
     if (this.status !== 'done' && this.status !== 'error') this.setStatus('stopped');
+  }
+
+  /**
+   * Pause the current turn WITHOUT killing the session. Unlike stop(), this only interrupts the live
+   * turn — it leaves the SDK subprocess, input queue and query intact so resume() can continue the
+   * same Claude session with full context. The interrupt makes the turn end with a non-success
+   * `result`; the `pausing` flag (checked first in handleResult) resolves that to 'paused', not
+   * 'error'. No-op if the agent is already dead or already paused.
+   */
+  async pause(): Promise<void> {
+    if (this.isDead() || this.status === 'paused') return;
+    this.pausing = true;
+    try {
+      await this.query?.interrupt();
+    } catch {
+      /* turn already ending */
+    }
+    // Set directly too: if the interrupt produced no 'result' (already idle), we still land paused.
+    this.setStatus('paused');
+  }
+
+  /**
+   * Continue a paused session on its LIVE queue — no relaunch, no new query. Pushes a nudge onto the
+   * existing input stream (via deliver) so status flips back to 'working' and the same Claude session
+   * picks up where it was interrupted. No-op unless currently paused.
+   */
+  resume(): void {
+    if (this.status !== 'paused') return;
+    this.deliver('Continue.', { kind: 'input', log: 'you: ▶ resume' });
   }
 
   getInfo(): AgentInfo {
@@ -1089,6 +1150,9 @@ export class AgentSession extends EventEmitter {
       case 'stream_event':
         this.handleStream(msg.event as unknown as StreamEvent);
         break;
+      case 'user':
+        this.handleToolResults(msg);
+        break;
       case 'result':
         this.handleResult(msg);
         break;
@@ -1157,6 +1221,14 @@ export class AgentSession extends EventEmitter {
   }
 
   private handleResult(msg: Extract<SDKMessage, { type: 'result' }>): void {
+    // A pause() interrupt ends the turn with a non-success result; resolve it to 'paused' (session
+    // kept alive) rather than letting it fall through to the 'error' branch below.
+    if (this.pausing) {
+      this.pausing = false;
+      this.setStatus('paused');
+      this.addLog('system', '⏸ paused (session kept alive — r to resume)');
+      return;
+    }
     this.sessionId = msg.session_id;
     this.totalCostUsd = (this.totalCostUsd ?? 0) + (msg.total_cost_usd ?? 0);
 
@@ -1206,10 +1278,53 @@ export class AgentSession extends EventEmitter {
     this.setStatus('needs_login');
   }
 
+  /**
+   * Capture the full output of each tool the agent ran. The SDK delivers tool results as a 'user'
+   * message whose content is an array of `tool_result` blocks (string or text-block array content).
+   * We log one entry per block — multi-line text preserved verbatim (no oneLine flattening) so the
+   * agent's real stdout/stderr is visible — keyed by its tool_use id. Empty results are skipped and
+   * oversized ones truncated by addToolResultLog.
+   */
+  private handleToolResults(msg: Extract<SDKMessage, { type: 'user' }>): void {
+    const content = msg.message.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (!block || block.type !== 'tool_result') continue;
+      const text = extractToolResultText(block.content);
+      if (text === '') continue;
+      const kind: LogEntry['kind'] = block.is_error === true ? 'error' : 'tool_result';
+      this.addToolResultLog(kind, text, block.tool_use_id as string | undefined);
+    }
+  }
+
+  /**
+   * Append a captured tool_result entry: like addLog but carrying the tool_use id and PRESERVING
+   * newlines (no oneLine flattening). Truncates anything over MAX_TOOL_RESULT_CHARS into a single
+   * bounded entry with a trailing notice. Reuses the same id/eviction/emit mechanics as addLog.
+   */
+  private addToolResultLog(kind: LogEntry['kind'], text: string, toolUseId?: string): LogEntry {
+    let body = text;
+    if (body.length > MAX_TOOL_RESULT_CHARS) {
+      const omitted = body.length - MAX_TOOL_RESULT_CHARS;
+      body = body.slice(0, MAX_TOOL_RESULT_CHARS) + `\n… truncated (${omitted} more chars)`;
+    }
+    return this.pushEntry({ id: this.nextEventId++, kind, text: body, toolUseId, done: true });
+  }
+
   // ---- helpers ------------------------------------------------------------
 
   private addLog(kind: LogEntry['kind'], text: string, toolName?: string): LogEntry {
-    const entry: LogEntry = { id: this.nextEventId++, kind, text, toolName, done: kind !== 'text' && kind !== 'thinking' && kind !== 'tool' };
+    return this.pushEntry({
+      id: this.nextEventId++,
+      kind,
+      text,
+      toolName,
+      done: kind !== 'text' && kind !== 'thinking' && kind !== 'tool',
+    });
+  }
+
+  /** Append an entry, evict the oldest once over MAX_EVENTS, and schedule an emit. */
+  private pushEntry(entry: LogEntry): LogEntry {
     this.events.push(entry);
     if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
     this.scheduleEmit();
