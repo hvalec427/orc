@@ -390,14 +390,29 @@ export function buildSpawnSubagentTool(spawn: SpawnSubagent) {
 export type RunInPane = (cmd: string, signal: AbortSignal) => Promise<{ output: string; rc: number }>;
 
 /**
+ * How long `mcp__orc__run` waits for a command to finish before returning a "still running" result
+ * instead of blocking. This MUST stay below the MCP client's per-request timeout (the Claude Agent
+ * SDK hardcodes DEFAULT_REQUEST_TIMEOUT_MSEC = 60000 ms and exposes no knob to change it): if the
+ * handler blocks past that, the client cancels the tools/call with `-32001 "Request timed out"`,
+ * which ends the whole turn and leaves the agent appearing to hang until a human pause/resume kicks
+ * the stream. By returning first, a long build/test/typecheck keeps running in the pane and the agent
+ * is told to poll its output rather than the turn being aborted.
+ */
+export const RUN_WAIT_MS = 50_000;
+
+/**
  * Build the custom shell tool (server name "orc" → fully-qualified `mcp__orc__run`). This replaces the
  * built-in Bash tool: instead of running commands in the SDK subprocess, it hands them to `runInPane`
  * so the currently-selected agent's commands execute live in the shared tmux viewer pane. A non-zero
  * exit code is surfaced as `isError` so the model notices failures. When `readOnly` is set (a
  * read-only template agent), a state-changing command is refused up front — never run — with a hint to
  * delegate it to a full-access subagent, matching the PreToolUse guard.
+ *
+ * `runWaitMs` bounds how long the handler blocks on a single command (default RUN_WAIT_MS). It stays
+ * under the MCP request timeout so a slow command returns a "still running" note instead of letting
+ * the client abort the turn with `-32001`.
  */
-export function buildRunTool(runInPane: RunInPane, readOnly = false) {
+export function buildRunTool(runInPane: RunInPane, readOnly = false, runWaitMs = RUN_WAIT_MS) {
   return [
     tool(
       'run',
@@ -433,8 +448,41 @@ export function buildRunTool(runInPane: RunInPane, readOnly = false) {
         // never-aborted signal only when none is supplied (e.g. a direct unit-test call).
         const signal = (extra as { signal?: AbortSignal } | undefined)?.signal ?? new AbortController().signal;
         try {
-          const { output, rc } = await runInPane(command, signal);
-          return { content: [{ type: 'text', text: output }], isError: rc !== 0 };
+          // Race the command against runWaitMs. The MCP client aborts a tools/call that blocks past
+          // its (hardcoded, 60s) request timeout with `-32001`, which kills the turn. A long command
+          // (big build, test suite, `tsc`) routinely exceeds that, so if it hasn't finished in time we
+          // stop WAITING — the command itself keeps running in the pane — and return a non-error note
+          // telling the model to poll its output with read_pane. That returns well before the client
+          // timeout, so the turn survives.
+          const timedOut = Symbol('run-wait-timeout');
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<typeof timedOut>((resolve) => {
+            timer = setTimeout(() => resolve(timedOut), runWaitMs);
+          });
+          const run = runInPane(command, signal);
+          // If we return on timeout, `run` stays pending (the command keeps going in the pane). Swallow
+          // its eventual settle so a later abort-rejection can't surface as an unhandled rejection.
+          run.catch(() => {});
+          try {
+            const result = await Promise.race([run, timeout]);
+            if (result === timedOut) {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text:
+                      `Command still running after ${Math.round(runWaitMs / 1000)}s; it keeps running in ` +
+                      `your pane. Don't re-run it — read its output with read_pane (agentId = your own ` +
+                      `id) to see progress and the final result, or run long jobs with run_background.`,
+                  },
+                ],
+                isError: false,
+              };
+            }
+            return { content: [{ type: 'text', text: result.output }], isError: result.rc !== 0 };
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
         } catch (err) {
           return {
             content: [{ type: 'text', text: `Command failed: ${(err as Error).message}` }],

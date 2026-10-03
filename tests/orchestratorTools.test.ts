@@ -290,3 +290,43 @@ test('the run tool is named "run" (fully-qualified mcp__orc__run on the orc serv
   const tools = mod.buildRunTool(async () => ({ output: '', rc: 0 })) as unknown as AnyTool[];
   assert.ok(toolByName(tools, 'run'), 'exposes a tool literally named "run"');
 });
+
+// Regression: a command that outlives the MCP request timeout must NOT block the handler long enough
+// for the client to abort the tools/call with -32001 (which kills the turn and makes the agent appear
+// to hang until a human pause/resume). Instead the handler returns a non-error "still running" note
+// well before the timeout, leaving the command running in the pane for the agent to poll.
+test('buildRunTool returns a "still running" note instead of blocking past the wait bound', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  // runInPane never resolves (simulates a long `tsc`/build). With a tiny wait bound the handler must
+  // still return promptly rather than hanging.
+  const tools = mod.buildRunTool(
+    () => new Promise(() => {}),
+    false,
+    20,
+  ) as unknown as AnyTool[];
+  const start = Date.now();
+  const res = await call(toolByName(tools, 'run'), { command: 'npx tsc --noEmit' });
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 1000, `handler returned promptly (took ${elapsed}ms), not hung on the command`);
+  assert.ok(!res.isError, 'a still-running command is not reported as an error');
+  assert.match(textOf(res), /still running/i);
+  assert.match(textOf(res), /read_pane/);
+});
+
+test('buildRunTool still returns the real result when the command finishes within the wait bound', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  const tools = mod.buildRunTool(
+    async () => ({ output: 'done', rc: 0 }),
+    false,
+    20,
+  ) as unknown as AnyTool[];
+  const res = await call(toolByName(tools, 'run'), { command: 'echo done' });
+  assert.ok(!res.isError);
+  assert.match(textOf(res), /done/);
+});
+
+test('RUN_WAIT_MS stays below the SDK MCP request timeout (60s)', async () => {
+  const mod = (await import('../src/agent/orchestratorTools.js')) as any;
+  assert.equal(typeof mod.RUN_WAIT_MS, 'number');
+  assert.ok(mod.RUN_WAIT_MS < 60_000, 'must be under the 60s MCP client timeout');
+});
