@@ -205,7 +205,12 @@ interface Shell {
 export class TmuxController implements Tmux {
   private readonly run: TmuxRunner;
   private readonly logsDir: string;
-  private readonly sessionName = SESSION_NAME;
+  // Defaults to the session bootstrapAndReexec creates; adoptInside overwrites it with the user's
+  // actual session name so agent windows are created in — and joined from — the right session.
+  private sessionName = SESSION_NAME;
+  // True only when we created the session ourselves (bootstrap). In adopted-inside mode we must never
+  // kill the user's session on shutdown — we only own the agent windows within it.
+  private ownsSession = false;
 
   /** orc's own TUI pane — the stage's left anchor; agent shells join to its right. */
   private orcPaneId?: string;
@@ -450,6 +455,8 @@ export class TmuxController implements Tmux {
    * Best-effort; leaves orcPaneId unset on any failure (showAgent stays a no-op).
    */
   async adopt(target: string = this.sessionName + ':0'): Promise<void> {
+    // The bootstrap child runs inside the session orc itself created, so it owns (and may kill) it.
+    this.ownsSession = true;
     try {
       const { stdout } = await this.run(argvListPanes(target));
       const panes = parsePanes(stdout);
@@ -475,6 +482,11 @@ export class TmuxController implements Tmux {
       }
       if (!orcPane) return; // Can't identify our pane → stay a no-op.
       this.orcPaneId = orcPane;
+      // Learn the user's real session name so agent windows are created in (and joined from) THIS
+      // session rather than the hardcoded 'orc' one, which usually doesn't exist here.
+      const { stdout } = await this.run(argvDisplayMessage('#{session_name}', orcPane));
+      const session = stdout.trim();
+      if (session) this.sessionName = session;
     } catch {
       // Best-effort discovery; a tmux hiccup must never crash orc.
     }
@@ -486,6 +498,7 @@ export class TmuxController implements Tmux {
    * are joined beside it on demand. Replaces the current process via attach; never returns on success.
    */
   async bootstrapAndReexec(reexecArgv: string[]): Promise<never> {
+    this.ownsSession = true;
     try {
       await this.run(argvHasSession(this.sessionName));
       await this.run(argvKillSession(this.sessionName));
@@ -502,8 +515,9 @@ export class TmuxController implements Tmux {
   /** Tear down what we own: the whole session when we bootstrapped, else just our agent windows. */
   async shutdown(): Promise<void> {
     for (const id of [...this.agentPanes.keys()]) this.unregisterAgent(id);
-    // When we bootstrapped the session, kill it outright; inside the user's tmux we only owned the
-    // agent windows (just removed) and must never kill the user's session.
+    // Only kill the session when we created it (bootstrap). In adopted-inside mode sessionName is the
+    // user's own session — we removed just our agent windows above and must never kill it.
+    if (!this.ownsSession) return;
     await this.run(argvHasSession(this.sessionName))
       .then(() => this.run(argvKillSession(this.sessionName)))
       .catch(() => {});

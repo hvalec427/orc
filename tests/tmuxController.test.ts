@@ -261,6 +261,57 @@ describe('registerAgent / unregisterAgent shell-window lifecycle', () => {
     }
   });
 
+  test('inside mode: agent windows target the current session, not the hardcoded orc session', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // adoptInside knows the current pane (%5) but still looks up its session name ("dotfiles");
+      // new-window then prints the agent shell pane id (%9).
+      const { run, calls } = fakeRunner(['dotfiles\n', '%9\n']);
+      const c = new TmuxController({ run, logsDir });
+      await c.adoptInside('%5');
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+
+      const win = calls.find((a) => a[0] === 'new-window');
+      assert.ok(win, 'a new-window call was issued');
+      const tIdx = win!.indexOf('-t');
+      assert.equal(win![tIdx + 1], 'dotfiles', 'agent window is created in the user current session');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('inside mode: shutdown removes agent windows but never kills the user session', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      const { run, calls } = fakeRunner(['dotfiles\n', '%9\n']);
+      const c = new TmuxController({ run, logsDir });
+      await c.adoptInside('%5');
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+
+      await c.shutdown();
+      assert.ok(calls.some((a) => a[0] === 'kill-window'), 'agent window torn down');
+      assert.ok(!calls.some((a) => a[0] === 'kill-session'), 'never kills the user session');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
+  test('bootstrap-child: shutdown kills the orc session it created', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // adopt lists panes (orc TUI %5), shutdown then has-session succeeds so kill-session runs.
+      const { run, calls } = fakeRunner(['%5 0\n']);
+      const c = new TmuxController({ run, logsDir });
+      await c.adopt();
+      await c.shutdown();
+      assert.ok(calls.some((a) => a[0] === 'kill-session'), 'owns + kills the orc session');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+
   test('unregisterAgent kills the agent window and removes its capture file', async () => {
     const logsDir = tmpLogsDir();
     try {
