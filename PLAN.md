@@ -1,116 +1,178 @@
-# Plan: let agents read any pane and watch long-running commands live
+# Plan: per-agent interactive shell panes (side-by-side, focus-stays-on-orc)
 
-## Goal
-Agents should be able to:
-1. **See all other panes** — read the current output buffer of any agent (across all groups).
-2. **Watch long-running commands evolve in real time** — start a command non-blocking and re-read its
-   growing output.
+## Goal (confirmed with user: 1a + 2a + 3a + layout A)
 
-## Key facts from the codebase
-- orc uses **one** shared tmux viewer pane; only the *selected* agent is live in it. Every other agent
-  runs in-process (`AgentManager.runInProcess`, `AgentManager.ts:641`). **There are no N persistent
-  panes.**
-- BUT every agent already continuously mirrors all command output to a per-agent **pane log file** at
-  `~/.orc/panes/<slug>.log` (written at `AgentManager.ts:646`; slug via `paneSlug`,
-  `TmuxController.ts:24`; path via `paneLogPath`, `TmuxController.ts:29`). The live FIFO driver also
-  prints to the same pane. **This log file IS the readable "pane buffer" for every agent.**
-- Tools are in-process MCP tools on the "orc" server, assembled per session at `AgentSession.ts:857-887`
-  and built in `src/agent/orchestratorTools.ts`.
-- Read-only enforcement is template-based (`isReadOnlyTemplate`, `types.ts:90`) and enforced both in
-  `buildRunTool` (`orchestratorTools.ts:374`) and the `canUseTool` guard
-  (`AgentSession.decideReadOnlyTool`, `AgentSession.ts:905-932`).
-- `mcp__orc__run` is currently **blocking** (`runInPaneFor` awaits the driver done-file / child close).
+Replace the single shared "viewer" pane + respawn-driver model with **one persistent
+interactive shell pane per agent**, shown side-by-side with the always-visible orc TUI:
 
-## Decisions (confirmed with user)
-- **1A** Non-blocking run + poll the pane log (works for selected AND unselected agents).
-- **2B** An agent may read ANY agent's pane log (all groups) — superset of group scope.
-- **3A** Read-only agents also get the new read/list tools. Background **run** still obeys the
-  read-only command filter.
+1. **1a** – each agent's pane is a REAL interactive `bash -i` in that agent's worktree; the
+   user can type into it, and it also shows the agent's own injected commands + output.
+2. **2a** – selecting an agent in the TUI REVEALS that agent's shell on the right but keeps
+   keyboard focus on the orc TUI pane (the user grabs the shell with a tmux key to type).
+3. **3a** – each agent's shell is long-lived and never respawned/killed on switch, so its
+   scrollback is preserved. Switching agents swaps WHICH shell occupies the right slot.
+4. **Layout A** – TUI left, selected agent's shell right, swapped via `break-pane`/`join-pane`.
 
-## Design
+The agent tool `mcp__orc__run` must still inject a command into the agent's shell and capture
+its combined output + exit code, coexisting with user typing.
 
-### New capability A — read any agent's pane buffer
-Add a manager method `readPaneLog(agentId, { tailBytes?, sinceOffset? })` on `AgentManager` that:
-- Resolves the target agent from `this.agents` (returns a clear error if unknown).
-- Reads `paneLogPath(join(homedir(), '.orc','panes'), agentId)`.
-- Supports two read modes for polling:
-  - `tailBytes` (default e.g. 8KB): return the last N bytes (a snapshot of recent output).
-  - `sinceOffset`: return only bytes after a byte offset, plus the new `nextOffset`, so an agent can
-    poll incrementally without re-reading the whole log.
-- Caps returned text with `capOutput`.
-- Returns `{ text, size, nextOffset }` (size = current file length, for offset bookkeeping).
+## Root cause of the three current bugs
 
-Add a manager method `listPanes()` returning, for every agent in `this.agents`:
-`{ id, name, template, status, group/parent info, logBytes }` — so an agent can discover which panes
-exist and their ids before reading one.
+All in the single shared viewer pane that runs a FIFO driver loop, respawned per switch:
+- **Shell not usable**: `buildDriverScript` (`paneRun.ts:48`) does `while :; do read -r id b64 <
+  "$FIFO"` — the loop owns stdin reading the FIFO, so the user can never type a shell command.
+- **Focus on orc**: `showAgent` (`TmuxController.ts:244`) deliberately `select-pane`s back to
+  orc after each respawn, so focus never reaches the viewer (commit `ea16dc3`, by design).
+- **Cleared on switch**: `showAgent` uses `respawn-pane -k` (`TmuxController.ts:241`), killing +
+  restarting the pane each switch, wiping scrollback.
 
-### New capability B — non-blocking (background) run + poll
-Current `runInProcess` resolves only on child `close`. Add a background mode:
-- Add `startBackground(id, cmd) -> { runId }` on `AgentManager`:
-  - Spawns `bash -c cmd` (same stdin=/dev/null safety as `runInProcess`), **does not await close**.
-  - Streams stdout+stderr to the agent's pane log (reusing the existing append-to-log path) AND to an
-    in-memory/file ring so output is pollable.
-  - Tracks running jobs in a `Map<runId, { child, status, rc? }>` keyed per agent; records rc on close.
-  - For the *selected* agent, still drive via the tmux pane when possible; otherwise in-process. (The
-    pane-driver path is inherently blocking on the FIFO done-file, so background runs use the
-    in-process streamer which already mirrors to the same pane log the human sees. Keep this simple:
-    background = in-process streamer; foreground selected = existing live pane path. Output is visible
-    either way because both write the pane log.)
-- Add `pollBackground(id, runId) -> { status, rc?, newOutput, nextOffset }` and
-  `stopBackground(id, runId)` (sends SIGINT/term, like the abort path).
+## Layout strategy (tmux)
 
-### New MCP tools (in `orchestratorTools.ts`, "orc" server)
-1. `mcp__orc__list_panes` — list all agents + their pane metadata (id, name, template, status, logBytes).
-2. `mcp__orc__read_pane` — args `{ agentId, tailBytes?, sinceOffset? }`; returns recent/incremental
-   output + `nextOffset`. For live watching, the agent calls repeatedly with the returned offset.
-3. `mcp__orc__run_background` — args `{ command }`; starts a non-blocking command for THE CALLING
-   agent, returns `{ runId }`. Obeys the read-only command filter (same `isReadOnlyBashCommand` gate as
-   `buildRunTool`).
-4. `mcp__orc__poll_background` — args `{ runId }`; returns `{ status, rc?, newOutput, nextOffset }`.
-5. `mcp__orc__stop_background` — args `{ runId }`; stops the background command.
+- Window `orc:0`: pane 0 = orc TUI (left), pane 1 = the reusable "stage" right slot where the
+  currently selected agent's shell is joined.
+- Each agent owns a **background window** `orc-agent-<slug>` running a single long-lived
+  `bash -i` in its worktree cwd, created on `registerAgent`, killed on `unregisterAgent`. A
+  separate window keeps the shell running + scrollback intact while not shown.
+- `showAgent(id)` swaps the stage:
+  1. If another agent currently occupies the right stage pane, `break-pane -d` it back to its
+     own background window (preserves the shell + scrollback).
+  2. `join-pane -h -s <agent-window-pane> -t <orc-tui-pane>` to pull the selected agent's shell
+     into the right slot beside the TUI.
+  3. `select-pane -t <orc-tui-pane>` LAST so focus returns to the TUI (requirement 2a).
+- Nothing is respawned/cleared on switch → scrollback preserved (3a). `respawn-pane` removed.
 
-(Reading tools 1–2 are available to all agents incl. read-only; tool 3 applies the read-only command
-filter; 4–5 are read/control of the caller's own jobs.)
+Rationale vs alternatives: a separate window per agent is the only way tmux keeps N shells
+alive without showing them all; `break-pane`/`join-pane` relocate a *live* pane between windows
+without restarting it, giving TUI+shell side-by-side AND preservation.
 
-### Wiring
-- Extend the orchestration callbacks object (`AgentManager.orchestrationCallbacks`, `AgentManager.ts:677`
-  and the matching type in `orchestratorTools.ts`) with: `listPanes`, `readPane`, `runBackground`,
-  `pollBackground`, `stopBackground` — each a closure capturing the agent `id` where needed
-  (background runs are scoped to the caller's id; read/list can target any id).
-- In `AgentSession` tool assembly (`AgentSession.ts:857-887`), add the new builders to `orcTools`.
-- In `AgentSession.decideReadOnlyTool` (`AgentSession.ts:905-932`): allow the new read/list/poll/stop
-  tools for read-only agents (add their names to the allowed set, like `ORCHESTRATION_TOOLS`); gate
-  `run_background` through `isReadOnlyBashCommand` exactly like `mcp__orc__run`.
-- Add tool names to `ORCHESTRATION_TOOLS`/allowed set so the `canUseTool` guard doesn't deny them.
+## Command capture while interactive (send-keys + sentinels + pipe-pane)
 
-### Tool descriptions
-Clear, self-contained descriptions explaining: read_pane shows another pane's recent output; to WATCH
-a long-running command, start it with run_background, then call read_pane/poll_background repeatedly
-using the returned nextOffset to see new output as it arrives.
+The shell stays interactive (`bash -i`), so we cannot own its stdin with a FIFO `read` loop.
+Instead:
 
-## Files to change
-- `src/agent/orchestratorTools.ts` — new tool builders + callback types.
-- `src/agent/AgentManager.ts` — `readPaneLog`, `listPanes`, background job map + start/poll/stop,
-  extend `orchestrationCallbacks`.
-- `src/agent/AgentSession.ts` — assemble new tools; update read-only allow-list / gating.
-- (Possibly) `src/tmux/TmuxController.ts` — only if we expose a helper; likely not needed since we read
-  the existing pane log file directly.
+- On agent-window creation, start capturing that pane to a per-agent file:
+  `pipe-pane -o -t <pane> "cat >> <capturePath>"`.
+- `runInPane(agentId, cmd, signal)`:
+  1. Generate a `runId`. Record current capture-file size as `startOffset`.
+  2. Inject via `send-keys`, bracketing with sentinels + an rc marker. The injected line:
+     `printf '\n<<<ORC-BEGIN runId>>>\n'; ( <cmd> ); printf '\n<<<ORC-END runId %s>>>\n' "$?"`
+     sent as `send-keys -t <pane> -l '<line>'` then `send-keys -t <pane> Enter`.
+     (`-l` sends text literally so tmux doesn't interpret shell metacharacters.)
+  3. Wait (fs.watch + 100ms poll + abort) until the capture file contains the matching
+     `<<<ORC-END runId RC>>>` past `startOffset`.
+  4. Extract bytes between the BEGIN and END sentinels, strip sentinel lines, `capOutput`,
+     parse RC, return `{ output, rc }`.
+  5. On abort: `send-keys -t <pane> C-c`, read captured-so-far, rc 130.
+- The command runs in the user's own interactive shell so they see it run; the user's own
+  typing interleaves naturally; sentinels keep the agent's run unambiguously parseable.
 
-## Tests (follow existing patterns in `tests/`)
-- `tests/orchestratorTools.test.ts` — unit-test each new tool builder: list_panes formats agents;
-  read_pane returns tail + incremental slice via offset; run_background returns runId and is refused
-  for read-only state-changing commands; poll_background reports status/rc/newOutput; stop_background
-  stops. Use stub callbacks like existing tool tests.
-- `tests/paneRun.test.ts` or a new `tests/paneLog.test.ts` — unit-test the pure read/slice logic
-  (tail by bytes, slice since offset, nextOffset bookkeeping, capping).
-- `tests/agentManagerTmux.test.ts` — integration: start a background command, poll it to completion,
-  read another agent's pane log by id, assert incremental offset reads only return new bytes.
-- `tests/readonlyPermissions.test.ts` — assert read-only agents may call read_pane/list_pane but
-  run_background obeys the command filter.
+## Files & changes
+
+### `src/tmux/paneRun.ts`
+- REMOVE: `buildDriverScript`, `encodeRunLine`, `decodeRunLine`, `writeRunLine`,
+  `decidePaneVsFallback`, `sleepSync` (FIFO-specific).
+- ADD:
+  - `encodeInjectedCommand(runId, cmd): string` – the bracketed shell line above.
+  - `beginSentinel(runId)`, `endSentinelRe(runId)` – pure helpers.
+  - `parseCapturedRun(buf, runId, fromOffset): { output; rc } | null` – pure; finds BEGIN/END
+    for `runId` after `fromOffset`, returns extracted output + rc, or null if END absent.
+  - `waitForCapture(capturePath, runId, fromOffset, signal): Promise<{output; rc}>` – fs.watch
+    on the file's dir + 100ms poll + abort (same shape as today's `waitForDone`), resolving via
+    `parseCapturedRun` once END appears.
+- KEEP unchanged: `capOutput`, `slicePaneText`. Remove `parseDoneRc`/`waitForDone` if dead.
+
+### `src/tmux/TmuxController.ts`
+- Path helpers: KEEP `paneSlug`, `paneLogPath`. REMOVE `paneFifoPath`, `paneDoneDir`,
+  `paneIdsDir`. ADD `paneCapturePath(logsDir, id)`.
+- argv builders:
+  - REMOVE `argvRespawnViewer` (and `argvSplitRight` if unused). KEEP `argvSplitRightPrint`.
+  - ADD `argvNewWindow(session, name, cwd, cmd)` →
+    `['new-window','-d','-P','-F','#{pane_id}','-t',session,'-c',cwd,'-n',name,cmd]`.
+  - ADD `argvBreakPane(srcPaneId)` → `['break-pane','-d','-s',srcPaneId]`.
+  - ADD `argvJoinPane(srcPaneId, dstPaneId)` → `['join-pane','-h','-s',srcPaneId,'-t',dstPaneId]`.
+  - ADD `argvKillWindow(target)`.
+  - ADD `argvSendKeysLiteral(paneId, text)` → `['send-keys','-t',paneId,'-l',text]`;
+    `argvSendKeysEnter(paneId)` → `['send-keys','-t',paneId,'Enter']`.
+  - KEEP `argvPipePane`, `argvSendInterrupt`, `argvSelectPane`, `argvKillPane`, session builders.
+- State: replace `viewPaneId` with:
+  - `orcPaneId?: string`, `stagePaneId?: string` (right pane joined to orc:0),
+  - `agentPanes: Map<agentId, { paneId; window }>`, `selectedId?: string`.
+- `registerAgent(id, name, template, cwd)`:
+  - Create a background window `orc-agent-<slug>` running `bash -i` in `cwd` via `argvNewWindow`,
+    capture its pane id into `agentPanes`.
+  - Start capture `argvPipePane(paneId, "cat >> <paneCapturePath>")`.
+  - Best-effort: on failure leave agent paneless (runInPane falls back in-process).
+- `unregisterAgent(id)`: `argvKillWindow` the agent's window, remove capture file + map entry.
+- `showAgent(id)`: the break/join/select-pane swap above; no-op until panes known; records
+  `selectedId`.
+- `runInPane(agentId, cmd, signal)`: only when `selectedId === agentId` and the agent occupies
+  the stage; inject + `waitForCapture`; return `{output, rc}` or null to fall back; C-c on abort.
+- `adopt()`/`adoptInside()`/`bootstrapAndReexec()`: set `orcPaneId`, establish a reusable empty
+  `stagePaneId` (one split right of the TUI); keep "never touch the user's own pane" guarantee
+  in `adoptInside`. First `showAgent` joins the first agent's shell into the stage slot.
+- `shutdown()`/`shutdownSync()`: kill all agent windows + the stage pane (bootstrap) or just our
+  own panes/windows (inside); clean capture files.
+
+### `src/agent/AgentManager.ts`
+- `registerAgent` call site (~396): pass the agent's cwd to `tmux.registerAgent` — use
+  `session.worktree` when present, else the project base repo path. (If an agent adopts a
+  worktree later, v1 keeps the base-repo cwd; a follow-up can inject a `cd`.)
+- `runInPaneFor` (~645): unchanged in shape (tries `tmux.runInPane` for selected agent, else
+  `runInProcess`). In-process fallback for unselected agents / tmux-off stays as-is.
+- `Tmux` interface: `registerAgent` gains a `cwd` param; `runInPane`/`showAgent`/`unregisterAgent`
+  unchanged.
+
+### `src/index.tsx`
+- No mode-detection change. `adopt`/`adoptInside` now also establish the stage pane. Restore,
+  render, shutdown unchanged.
+
+### `src/ui/App.tsx`
+- No change: the existing `useEffect` → `manager.showAgentInPane(selectedId)` already drives
+  `showAgent`; all behavior change is inside the controller.
+
+## Tests
+
+### `tests/paneRun.test.ts` (new unit tests, pure)
+- `encodeInjectedCommand` yields a single line containing BEGIN+END sentinels with runId, the
+  `$?` marker, and the verbatim cmd.
+- `parseCapturedRun`: null when END absent; extracts exactly between BEGIN/END stripping
+  sentinel lines; parses rc (0, non-zero, non-numeric → sentinel); respects `fromOffset`;
+  tolerates interleaved user text.
+- Retain `capOutput` / `slicePaneText` tests.
+
+### `tests/tmuxController.test.ts` (rewrite)
+- DELETE old-design groups: `argvRespawnViewer`, "showAgent respawns the DRIVER", fifo/done/ids
+  path builders, FIFO + dir lifecycle, "pulls focus back after respawn", the dynamic-import RED
+  block referencing fifo/done/ids + driver.
+- KEEP + ADAPT: `paneSlug`, `paneLogPath`, `detectMode`, `buildReexecArgv`, `parsePanes`, generic
+  argv builders.
+- ADD with the fake runner:
+  - argv shape tests for new-window/break-pane/join-pane/kill-window/send-keys-literal.
+  - `registerAgent` issues `new-window` (captures pane id) + `pipe-pane` capture; `unregisterAgent`
+    issues `kill-window`.
+  - `showAgent` swap sequence A→B: `break-pane` A, `join-pane` B into the stage, then
+    `select-pane` the ORC pane LAST (focus stays on orc; never selects the shell).
+  - `runInPane` returns null when not selected / no stage pane.
+- Capture-parsing integration (bash, no tmux): append BEGIN/…/END to a capture file; assert
+  `waitForCapture` resolves with correct output+rc and aborts cleanly.
+
+### `tests/paneRunDriver.test.ts`
+- Replace FIFO-driver integration with capture-file integration exercising
+  `encodeInjectedCommand` + `parseCapturedRun` + `waitForCapture` against real bash appending
+  sentinel-wrapped output to a file (no tmux). Keep abort + "second run parses independently".
 
 ## Verification
-Run the project's typecheck, lint, and full test suite; fix until green. Confirm no unrelated diff.
+1. `npm run typecheck` (tsc --noEmit) – clean.
+2. `npm run lint` – clean.
+3. `npm test` – all green.
+4. Manual E2E in tmux: bootstrap orc on a plain TTY, create 2 agents, confirm:
+   - each agent has its own right-hand shell you can focus (tmux key) and type into;
+   - selecting A then B swaps the right pane WITHOUT clearing A's scrollback (back to A shows
+     prior output intact);
+   - after selecting, focus is on the orc TUI (j/k navigates the list, not the shell);
+   - an agent `run` tool call shows the command in that agent's pane and returns correct output
+     + exit code.
 
-## Out of scope
-- No new persistent tmux panes; no `tmux capture-pane` (can't read unselected agents anyway).
-- No change to the blocking semantics of the existing `mcp__orc__run` (background is a separate tool).
+## Out of scope / follow-ups
+- Re-`cd`ing an agent's shell on later worktree adoption (v1 uses the known-at-register cwd).
+- Many-agent window clutter beyond the single stage slot (background windows hidden; fine).

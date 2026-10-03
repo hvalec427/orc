@@ -1,16 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
-  buildDriverScript,
-  encodeRunLine,
-  writeRunLine,
-  waitForDone,
+  encodeInjectedCommand,
+  waitForCapture,
   capOutput,
-  decidePaneVsFallback,
 } from './paneRun.js';
 
 const execFileAsync = promisify(execFile);
@@ -30,20 +27,17 @@ export function paneLogPath(logsDir: string, id: string): string {
   return join(logsDir, paneSlug(id) + '.log');
 }
 
-/** The named-pipe the pane driver reads commands from, for an agent. */
-export function paneFifoPath(logsDir: string, id: string): string {
-  return join(logsDir, paneSlug(id) + '.fifo');
+/** The per-agent file `tmux pipe-pane` mirrors the agent's shell output into (for run capture). */
+export function paneCapturePath(logsDir: string, id: string): string {
+  return join(logsDir, paneSlug(id) + '.cap');
 }
 
-/** The directory the pane driver writes per-command done-files (exit codes) into. */
-export function paneDoneDir(logsDir: string, id: string): string {
-  return join(logsDir, paneSlug(id) + '.done');
+/** The tmux window name that hosts an agent's long-lived interactive shell. */
+export function agentWindowName(id: string): string {
+  return 'orc-agent-' + paneSlug(id);
 }
 
-/** The directory the pane driver writes per-command captured output into. */
-export function paneIdsDir(logsDir: string, id: string): string {
-  return join(logsDir, paneSlug(id) + '.ids');
-}
+// --- argv builders --------------------------------------------------------------------------------
 
 /** Capture a pane's output to a shell command (`-o` = only while a program is running). */
 export function argvPipePane(paneId: string, cmd: string): string[] {
@@ -53,6 +47,16 @@ export function argvPipePane(paneId: string, cmd: string): string[] {
 /** Send Ctrl+C to a pane (cancels only the command currently running in it). */
 export function argvSendInterrupt(paneId: string): string[] {
   return ['send-keys', '-t', paneId, 'C-c'];
+}
+
+/** Send a literal string to a pane (tmux does not interpret it as key names). */
+export function argvSendKeysLiteral(paneId: string, text: string): string[] {
+  return ['send-keys', '-t', paneId, '-l', text];
+}
+
+/** Press Enter in a pane (submit the current input line). */
+export function argvSendKeysEnter(paneId: string): string[] {
+  return ['send-keys', '-t', paneId, 'Enter'];
 }
 
 export function argvHasSession(name: string): string[] {
@@ -67,11 +71,26 @@ export function argvNewSession(name: string, reexecArgv: string[]): string[] {
   return ['new-session', '-d', '-s', name, ...reexecArgv];
 }
 
-export function argvSplitRight(target: string): string[] {
-  return ['split-window', '-h', '-t', target];
+/**
+ * Create a detached background window running `cmd` in `cwd`, printing the new window's pane id so we
+ * can drive it later. This is where each agent's long-lived interactive shell lives until it is
+ * joined beside the TUI on selection.
+ */
+export function argvNewWindow(session: string, name: string, cwd: string, cmd: string): string[] {
+  return ['new-window', '-d', '-P', '-F', '#{pane_id}', '-t', session, '-n', name, '-c', cwd, cmd];
 }
 
-/** Like argvSplitRight, but prints the new pane's id (`-P -F '#{pane_id}'`) so we can capture it. */
+/** Break a pane out of its current window into its own (detached) window — preserves the process. */
+export function argvBreakPane(srcPaneId: string): string[] {
+  return ['break-pane', '-d', '-s', srcPaneId];
+}
+
+/** Join a pane horizontally to the right of a target pane — moves the live pane, never restarts it. */
+export function argvJoinPane(srcPaneId: string, dstPaneId: string): string[] {
+  return ['join-pane', '-h', '-s', srcPaneId, '-t', dstPaneId];
+}
+
+/** Split a pane horizontally and print the new pane's id (`-P -F '#{pane_id}'`) so we can capture it. */
 export function argvSplitRightPrint(target: string): string[] {
   return ['split-window', '-h', '-P', '-F', '#{pane_id}', '-t', target];
 }
@@ -91,12 +110,12 @@ export function argvListPanes(target: string): string[] {
   return ['list-panes', '-t', target, '-F', '#{pane_id} #{pane_index}'];
 }
 
-export function argvRespawnViewer(paneId: string, cmd: string): string[] {
-  return ['respawn-pane', '-k', '-t', paneId, cmd];
-}
-
 export function argvKillPane(paneId: string): string[] {
   return ['kill-pane', '-t', paneId];
+}
+
+export function argvKillWindow(target: string): string[] {
+  return ['kill-window', '-t', target];
 }
 
 export function argvSelectPane(target: string): string[] {
@@ -146,13 +165,13 @@ export function buildReexecArgv(argv: string[], entry: string): string[] {
 
 /** The tmux surface AgentManager drives. Inert (undefined) when tmux is off or in tests. */
 export interface Tmux {
-  registerAgent(id: string, name: string, template: string): void;
+  registerAgent(id: string, name: string, template: string, cwd: string): void;
   unregisterAgent(id: string): void;
   showAgent(id?: string): void;
   /**
-   * Run a command live in the agent's viewer pane. Resolves to the captured output + exit code, or
-   * null when the command can't be driven in-pane (agent not selected / no viewer pane / FIFO not
-   * writable), signalling the caller to use its in-process fallback instead.
+   * Run a command live in the agent's interactive shell pane. Resolves to the captured output + exit
+   * code, or null when the command can't be driven in-pane (agent not selected / not on the stage /
+   * no capture), signalling the caller to use its in-process fallback instead.
    */
   runInPane(
     agentId: string,
@@ -167,12 +186,14 @@ export class TmuxController implements Tmux {
   private readonly run: TmuxRunner;
   private readonly logsDir: string;
   private readonly sessionName = SESSION_NAME;
-  /** The agents whose FIFO + done/ids dirs we created, so we only tear down what we own. */
-  private readonly registered = new Set<string>();
 
+  /** orc's own TUI pane — the stage's left anchor; agent shells join to its right. */
   private orcPaneId?: string;
-  private viewPaneId?: string;
-  /** The agent currently shown in the viewer pane — only it can run commands live in the pane. */
+  /** Each agent's long-lived interactive shell: its pane id and the background window hosting it. */
+  private readonly agentPanes = new Map<string, { paneId: string; window: string }>();
+  /** The agent whose shell is currently joined beside the TUI (occupies the stage). */
+  private stageOccupantId?: string;
+  /** The agent currently selected in the TUI. */
   private selectedId?: string;
 
   constructor(opts?: { run?: TmuxRunner; logsDir?: string }) {
@@ -196,175 +217,170 @@ export class TmuxController implements Tmux {
     }
   }
 
-  /** Provision an agent's pane IPC: a FIFO the driver reads from, plus done/ids output dirs. */
-  registerAgent(id: string, _name: string, _template: string): void {
-    const fifo = paneFifoPath(this.logsDir, id);
-    const doneDir = paneDoneDir(this.logsDir, id);
-    const idsDir = paneIdsDir(this.logsDir, id);
+  /**
+   * Provision an agent's long-lived interactive shell: a detached background window running `bash -i`
+   * in the agent's worktree, plus a pipe-pane capture of that shell's output (so runInPane can read
+   * back a command's result). Best-effort — any failure leaves the agent paneless and runInPane falls
+   * back to the in-process runner.
+   */
+  registerAgent(id: string, _name: string, _template: string, cwd: string): void {
+    const capture = paneCapturePath(this.logsDir, id);
     try {
-      mkdirSync(doneDir, { recursive: true });
-      mkdirSync(idsDir, { recursive: true });
-      // mkfifo via the system binary (node has no direct API). Remove any stale node first.
-      rmSync(fifo, { force: true });
-      execFileSync('mkfifo', [fifo]);
+      // Start the capture file empty so a prior run's leftovers never match a new run's sentinels.
+      writeFileSync(capture, '');
     } catch {
-      // Best-effort: a disk/mkfifo error here must not throw out of the AgentManager create path;
-      // runInPane will simply fall back to the in-process runner when the FIFO isn't writable.
+      /* best-effort */
     }
-    this.registered.add(id);
+    const window = agentWindowName(id);
+    void (async () => {
+      try {
+        const { stdout } = await this.run(
+          argvNewWindow(this.sessionName, window, cwd, 'exec bash -i'),
+        );
+        const paneId = stdout.trim();
+        if (!paneId) return;
+        this.agentPanes.set(id, { paneId, window });
+        // Mirror the shell's output into the capture file so runInPane can find a command's frame.
+        await this.run(argvPipePane(paneId, `cat >> ${shq(capture)}`)).catch(() => {});
+        // If this agent is already the selected one (fast create+select), reveal it now.
+        if (this.selectedId === id) this.showAgent(id);
+      } catch {
+        /* best-effort: no window → runInPane falls back in-process */
+      }
+    })();
   }
 
-  /** Remove an agent's FIFO and its done/ids dirs. */
+  /** Kill an agent's shell window and remove its capture file. Best-effort. */
   unregisterAgent(id: string): void {
-    for (const p of [paneFifoPath(this.logsDir, id), paneDoneDir(this.logsDir, id), paneIdsDir(this.logsDir, id)]) {
-      try {
-        rmSync(p, { recursive: true, force: true });
-      } catch {
-        // Best-effort: a missing path is fine.
-      }
+    const entry = this.agentPanes.get(id);
+    if (entry) {
+      // If it's currently on the stage, it will be killed with its window; clear the slot first.
+      if (this.stageOccupantId === id) this.stageOccupantId = undefined;
+      void this.run(argvKillWindow(entry.window)).catch(() => {});
+      this.agentPanes.delete(id);
     }
-    this.registered.delete(id);
+    try {
+      rmSync(paneCapturePath(this.logsDir, id), { force: true });
+    } catch {
+      /* best-effort */
+    }
   }
 
   /**
-   * Point the single viewer pane at the selected agent by respawning it running that agent's driver
-   * loop (which services the agent's FIFO). No-op until the viewer pane is known.
+   * Reveal the selected agent's shell beside the TUI without stealing focus. Breaks the previous
+   * occupant back to its own (detached) window — preserving its shell + scrollback — then joins the
+   * selected agent's live shell to the right of orc's pane and re-selects orc's pane so the human
+   * keeps driving the TUI. No-op until orc's pane is known or the agent has no shell yet.
    */
   showAgent(id?: string): void {
     this.selectedId = id;
-    if (!this.viewPaneId || !id) return;
-    const cmd = buildDriverScript({
-      fifo: paneFifoPath(this.logsDir, id),
-      doneDir: paneDoneDir(this.logsDir, id),
-      idsDir: paneIdsDir(this.logsDir, id),
-    });
-    void this.run(argvRespawnViewer(this.viewPaneId, cmd))
-      // respawn-pane moves tmux focus onto the viewer pane; pull it back to orc's own pane so the
-      // human keeps driving the TUI (never the shell) on open and on every new agent.
-      .then(() => {
-        if (this.orcPaneId) return this.run(argvSelectPane(this.orcPaneId));
-      })
-      .catch(() => {});
+    if (!this.orcPaneId || !id) return;
+    const entry = this.agentPanes.get(id);
+    if (!entry) return; // shell not created yet; registerAgent re-calls showAgent once it exists
+    if (this.stageOccupantId === id) {
+      // Already shown — just make sure focus is on the TUI.
+      void this.run(argvSelectPane(this.orcPaneId)).catch(() => {});
+      return;
+    }
+    const prev = this.stageOccupantId ? this.agentPanes.get(this.stageOccupantId) : undefined;
+    const orcPane = this.orcPaneId;
+    void (async () => {
+      try {
+        if (prev) await this.run(argvBreakPane(prev.paneId)).catch(() => {});
+        await this.run(argvJoinPane(entry.paneId, orcPane));
+        this.stageOccupantId = id;
+        // join-pane focuses the joined pane; pull focus back to the TUI (requirement: focus on orc).
+        await this.run(argvSelectPane(orcPane)).catch(() => {});
+      } catch {
+        /* a tmux hiccup must never crash orc */
+      }
+    })();
   }
 
   /**
-   * Run a command live in the selected agent's viewer pane: hand it to the pane driver via the FIFO,
-   * then wait for the driver's done-file and read back the captured output. Returns null when the
-   * command can't be driven in-pane (not selected / no viewer / FIFO not writable) so the caller
-   * uses its in-process fallback.
+   * Run a command live in the selected agent's interactive shell pane: inject it (framed with
+   * sentinels) via send-keys, then wait for its frame to appear in the capture file and read back the
+   * captured output + exit code. Returns null when the command can't be driven in-pane (not selected /
+   * not on the stage / no shell) so the caller uses its in-process fallback.
    */
   async runInPane(
     agentId: string,
     cmd: string,
     signal: AbortSignal,
   ): Promise<{ output: string; rc: number } | null> {
-    const fifo = paneFifoPath(this.logsDir, agentId);
-    const where = decidePaneVsFallback({
-      tmuxOn: Boolean(this.viewPaneId),
-      isSelected: this.selectedId === agentId,
-      fifoWritable: existsSync(fifo),
-    });
-    if (where === 'fallback') return null;
+    const entry = this.agentPanes.get(agentId);
+    if (!entry || this.selectedId !== agentId || this.stageOccupantId !== agentId) return null;
 
+    const capture = paneCapturePath(this.logsDir, agentId);
+    const fromOffset = this.fileSize(capture);
     const runId = randomUUID();
-    const wrote = writeRunLine(fifo, encodeRunLine(runId, cmd));
-    if (!wrote) return null; // No driver reading the FIFO → fall back.
-
-    let rc: number;
+    const line = encodeInjectedCommand(runId, cmd);
     try {
-      rc = await waitForDone(paneDoneDir(this.logsDir, agentId), runId, signal);
+      await this.run(argvSendKeysLiteral(entry.paneId, line));
+      await this.run(argvSendKeysEnter(entry.paneId));
     } catch {
-      // Aborted (or watch failure) → signal a cancel via the pane, then report a non-zero rc.
-      if (this.viewPaneId) await this.run(argvSendInterrupt(this.viewPaneId)).catch(() => {});
-      const output = this.readPaneOutput(agentId, runId);
-      this.cleanupRunFiles(agentId, runId);
-      return { output, rc: 130 };
+      return null; // couldn't inject → fall back
     }
-    const output = this.readPaneOutput(agentId, runId);
-    this.cleanupRunFiles(agentId, runId);
-    return { output, rc };
-  }
 
-  /** Read (and cap) a finished command's captured output from its per-id file. */
-  private readPaneOutput(agentId: string, runId: string): string {
     try {
-      return capOutput(readFileSync(join(paneIdsDir(this.logsDir, agentId), runId), 'utf8'));
+      const res = await waitForCapture(capture, runId, fromOffset, signal);
+      return { output: capOutput(res.output), rc: res.rc };
     } catch {
-      return '';
+      // Aborted (or watch failure) → interrupt the running command, report cancel.
+      await this.run(argvSendInterrupt(entry.paneId)).catch(() => {});
+      return { output: '', rc: 130 };
     }
   }
 
-  /** Best-effort removal of a command's per-id output + done files; they only bridge one command. */
-  private cleanupRunFiles(agentId: string, runId: string): void {
-    const doneDir = paneDoneDir(this.logsDir, agentId);
-    const paths = [
-      join(paneIdsDir(this.logsDir, agentId), runId),
-      join(doneDir, runId),
-      join(doneDir, `.${runId}.tmp`),
-    ];
-    for (const p of paths) {
-      try {
-        rmSync(p, { force: true });
-      } catch {
-        // Best-effort: a missing file is fine.
-      }
+  /** Current byte length of a file, or 0 when it doesn't exist. */
+  private fileSize(path: string): number {
+    try {
+      return statSync(path).size;
+    } catch {
+      return 0;
     }
   }
 
   /**
-   * BOOTSTRAP-CHILD case: the session is the one orc created (named `orc`), already split by
-   * bootstrapAndReexec into left = orc's TUI at index 0 and right = the viewer at index 1. Discover
-   * those pane ids so showAgent() knows which pane to respawn. Best-effort; leaves the ids unset on
-   * any failure. The `orc:0` default only holds for the session orc owns — true inside mode (a
-   * pre-existing session with any name) must use adoptInside() instead.
+   * BOOTSTRAP-CHILD case: the session is the one orc created (named `orc`). bootstrapAndReexec left
+   * orc's TUI as the only pane of window 0; discover its pane id so showAgent knows the stage anchor.
+   * Best-effort; leaves orcPaneId unset on any failure (showAgent stays a no-op).
    */
   async adopt(target: string = this.sessionName + ':0'): Promise<void> {
     try {
       const { stdout } = await this.run(argvListPanes(target));
       const panes = parsePanes(stdout);
       const orc = panes.find((p) => p.index === 0);
-      const view = panes.find((p) => p.index === 1);
       if (orc) this.orcPaneId = orc.paneId;
-      if (view) this.viewPaneId = view.paneId;
     } catch {
       // Best-effort discovery; a tmux hiccup must never crash orc.
     }
   }
 
   /**
-   * TRUE INSIDE case: orc was launched inside the user's own tmux (any session name). We must not
-   * assume the `orc:0` window nor ever respawn a pane the user owns. Instead: take the current pane
-   * ($TMUX_PANE) as orc's own pane, then split OUR OWN viewer pane to its right and capture the new
-   * pane id — that is the only pane showAgent() may respawn. On any failure (no $TMUX_PANE, split
-   * fails, no pane id returned) we leave viewPaneId unset so showAgent() stays a safe no-op.
+   * TRUE INSIDE case: orc was launched inside the user's own tmux (any session name). We take the
+   * current pane ($TMUX_PANE) as orc's own pane — the stage anchor agent shells join beside. We do NOT
+   * split or respawn anything the user owns; agent shells live in their own windows and are joined on
+   * demand. On failure (no $TMUX_PANE) we leave orcPaneId unset so showAgent stays a safe no-op.
    */
   async adoptInside(currentPane: string | undefined = process.env.TMUX_PANE): Promise<void> {
     try {
-      // Resolve orc's own pane: prefer $TMUX_PANE, else ask tmux for the active pane id.
       let orcPane = currentPane;
       if (!orcPane) {
         const { stdout } = await this.run(argvDisplayMessage('#{pane_id}'));
         orcPane = stdout.trim() || undefined;
       }
-      if (!orcPane) return; // Can't identify our pane → stay a no-op; never touch unknown panes.
-
-      // Split OUR OWN viewer pane off orc's pane and capture the brand-new pane's id.
-      const { stdout } = await this.run(argvSplitRightPrint(orcPane));
-      const viewPane = stdout.trim();
-      if (!viewPane) return; // No pane created → leave viewPaneId unset (safe no-op).
-
+      if (!orcPane) return; // Can't identify our pane → stay a no-op.
       this.orcPaneId = orcPane;
-      this.viewPaneId = viewPane;
     } catch {
-      // Best-effort discovery; a tmux hiccup must never crash orc and must not leave a half-set
-      // viewPaneId pointing at a pane orc doesn't own.
+      // Best-effort discovery; a tmux hiccup must never crash orc.
     }
   }
 
   /**
-   * From a plain TTY: create (or recreate) the orc tmux session, split a viewer pane to the right,
-   * hide the status bar, select the left pane, and attach — re-execing orc as the --tmux-child in
-   * the left pane. Replaces the current process via attach; never returns on success.
+   * From a plain TTY: create (or recreate) the orc tmux session with the TUI as window 0's only pane,
+   * hide the status bar, and attach — re-execing orc as the --tmux-child in that pane. Agent shells
+   * are joined beside it on demand. Replaces the current process via attach; never returns on success.
    */
   async bootstrapAndReexec(reexecArgv: string[]): Promise<never> {
     try {
@@ -374,40 +390,43 @@ export class TmuxController implements Tmux {
       // No stale session — nothing to kill.
     }
     await this.run(argvNewSession(this.sessionName, reexecArgv));
-    await this.run(argvSplitRight(this.sessionName + ':0'));
     await this.run(argvStatusOff(this.sessionName));
-    await this.run(argvSelectPane(this.sessionName + ':0.0'));
     // Attach inherits the terminal so the human sees the tmux session; blocks until detach/exit.
     execFileSync('tmux', argvAttach(this.sessionName), { stdio: 'inherit' });
     process.exit(0);
   }
 
-  /** Tear down what we own: the whole session when we bootstrapped, else just our viewer pane. */
+  /** Tear down what we own: the whole session when we bootstrapped, else just our agent windows. */
   async shutdown(): Promise<void> {
-    this.cleanupPaneIpc();
-    if (this.orcPaneId || this.viewPaneId) {
-      if (this.viewPaneId) await this.run(argvKillPane(this.viewPaneId)).catch(() => {});
-    } else {
-      await this.run(argvKillSession(this.sessionName)).catch(() => {});
-    }
+    for (const id of [...this.agentPanes.keys()]) this.unregisterAgent(id);
+    // When we bootstrapped the session, kill it outright; inside the user's tmux we only owned the
+    // agent windows (just removed) and must never kill the user's session.
+    await this.run(argvHasSession(this.sessionName))
+      .then(() => this.run(argvKillSession(this.sessionName)))
+      .catch(() => {});
   }
 
   /** Synchronous teardown for signal handlers (a never-attached controller is a no-op). */
   shutdownSync(): void {
-    this.cleanupPaneIpc();
-    try {
-      if (this.viewPaneId) {
-        execFileSync('tmux', argvKillPane(this.viewPaneId), { stdio: 'ignore' });
-      } else if (this.orcPaneId) {
-        execFileSync('tmux', argvKillSession(this.sessionName), { stdio: 'ignore' });
+    for (const entry of this.agentPanes.values()) {
+      try {
+        execFileSync('tmux', argvKillWindow(entry.window), { stdio: 'ignore' });
+      } catch {
+        /* best-effort */
       }
-    } catch {
-      // Best-effort on exit.
     }
+    for (const id of [...this.agentPanes.keys()]) {
+      try {
+        rmSync(paneCapturePath(this.logsDir, id), { force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+    this.agentPanes.clear();
   }
+}
 
-  /** Remove every agent's FIFO + done/ids dirs we created. Best-effort. */
-  private cleanupPaneIpc(): void {
-    for (const id of [...this.registered]) this.unregisterAgent(id);
-  }
+/** Single-quote a path for safe embedding in a pipe-pane shell command. */
+function shq(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`;
 }

@@ -392,8 +392,9 @@ export class AgentManager extends EventEmitter {
       cutWorktreeOnDemand,
       orchestration,
     });
-    // Provision this agent's tmux pane IPC (FIFO + done/ids dirs; inert when tmux is off).
-    this.tmux?.registerAgent(id, name, template);
+    // Provision this agent's long-lived interactive shell pane (inert when tmux is off). Its cwd is
+    // the agent's worktree when it has one, else the project base repo (worktree-less templates).
+    this.tmux?.registerAgent(id, name, template, session.worktree ?? project.repo);
     session.on('update', () => {
       this.emit('update');
     });

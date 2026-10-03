@@ -1,52 +1,31 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, renameSync, writeFileSync, openSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  encodeRunLine,
-  buildDriverScript,
-  writeRunLine,
-  waitForDone,
+  encodeInjectedCommand,
+  parseCapturedRun,
+  waitForCapture,
 } from '../src/tmux/paneRun.js';
 
-// Scripted bash integration (NO tmux): background buildDriverScript() and talk to the FIFO directly.
-// Expected RED until src/tmux/paneRun.ts exists.
+// These tests exercise the capture protocol WITHOUT tmux: a real bash evaluates the exact line orc
+// would type into an agent's interactive shell (encodeInjectedCommand), redirecting its output into a
+// capture file just as `tmux pipe-pane` would. waitForCapture then reads back the framed result.
 
-/** One isolated driver fixture: a tmp dir with fifo + done/ids dirs and a running bash driver. */
 interface Fixture {
   dir: string;
-  fifo: string;
-  doneDir: string;
-  idsDir: string;
-  paneOut?: string;
+  capture: string;
   child?: ChildProcess;
 }
-
 const fixtures: Fixture[] = [];
 
-function makeFixture(startDriver = true, captureStdout = false): Fixture {
-  const dir = mkdtempSync(join(tmpdir(), 'orc-drv-'));
-  const fifo = join(dir, 'cmd.fifo');
-  const doneDir = join(dir, 'done');
-  const idsDir = join(dir, 'ids');
-  mkdirSync(doneDir, { recursive: true });
-  mkdirSync(idsDir, { recursive: true });
-  // mkfifo via the system binary (node has no direct API).
-  execFileSync('mkfifo', [fifo]);
-  const fx: Fixture = { dir, fifo, doneDir, idsDir };
-  if (startDriver) {
-    const script = buildDriverScript({ fifo, doneDir, idsDir });
-    // Own process group so we can signal the whole driver + its child if needed. When captureStdout
-    // is set, redirect the driver's stdout to a file so a test can assert what the pane would show.
-    const paneOut = captureStdout ? join(dir, 'pane.out') : undefined;
-    if (paneOut) fx.paneOut = paneOut;
-    fx.child = spawn('bash', ['-c', script], {
-      detached: true,
-      stdio: paneOut ? ['ignore', openSync(paneOut, 'w'), 'ignore'] : 'ignore',
-    });
-  }
+function makeFixture(): Fixture {
+  const dir = mkdtempSync(join(tmpdir(), 'orc-cap-'));
+  const capture = join(dir, 'a1.cap');
+  writeFileSync(capture, '');
+  const fx: Fixture = { dir, capture };
   fixtures.push(fx);
   return fx;
 }
@@ -55,13 +34,9 @@ afterEach(() => {
   for (const fx of fixtures.splice(0)) {
     if (fx.child && fx.child.pid) {
       try {
-        process.kill(-fx.child.pid, 'SIGKILL'); // kill the whole group
+        fx.child.kill('SIGKILL');
       } catch {
-        try {
-          fx.child.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
+        /* already gone */
       }
     }
     try {
@@ -72,7 +47,6 @@ afterEach(() => {
   }
 });
 
-/** Reject if a promise doesn't settle within `ms` — turns a hang into a failing test. */
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     p,
@@ -80,195 +54,131 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
-describe('driver happy path', () => {
-  test('a simple echo runs, output captured, rc 0', async () => {
-    const fx = makeFixture();
-    const ok = writeRunLine(fx.fifo, encodeRunLine('id1', 'echo hi'));
-    assert.equal(ok, true, 'writeRunLine succeeded (reader present)');
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'id1', new AbortController().signal),
-      5000,
-      'waitForDone id1',
-    );
-    assert.equal(rc, 0);
-    const out = readFileSync(join(fx.idsDir, 'id1'), 'utf8');
-    assert.match(out, /hi/, 'captured stdout contains hi');
+/** Run the injected line in a real bash, appending its output to the capture file (like pipe-pane). */
+function runInjected(fx: Fixture, runId: string, cmd: string): ChildProcess {
+  const line = encodeInjectedCommand(runId, cmd);
+  const child = spawn('bash', ['-c', `{ ${line} ; } >> ${JSON.stringify(fx.capture)} 2>&1`], {
+    stdio: 'ignore',
   });
+  fx.child = child;
+  return child;
+}
 
-  test('command output is echoed to the pane (stdout), not only captured', async () => {
-    // Regression: the driver used to redirect the command's output solely into $IDS/$id, so the
-    // viewer pane showed only the `$ <cmd>` prompt and never the output. It must tee to both.
-    const fx = makeFixture(true, true);
-    writeRunLine(fx.fifo, encodeRunLine('id1', 'echo PANE_VISIBLE; echo ERRSIDE >&2'));
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'id1', new AbortController().signal),
-      5000,
-      'waitForDone id1',
-    );
-    assert.equal(rc, 0);
-    assert.ok(fx.paneOut, 'fixture captured the pane stdout');
-    const pane = readFileSync(fx.paneOut as string, 'utf8');
-    assert.match(pane, /\$ echo PANE_VISIBLE/, 'pane shows the command prompt');
-    assert.match(pane, /PANE_VISIBLE/, 'pane shows the command stdout');
-    assert.match(pane, /ERRSIDE/, 'pane shows the command stderr');
-    // The capture file still receives the output too (so readPaneOutput keeps working).
-    assert.match(readFileSync(join(fx.idsDir, 'id1'), 'utf8'), /PANE_VISIBLE/);
-  });
-
-  test('a non-zero exit is reported via PIPESTATUS, not tee', async () => {
-    // Regression: output now runs through `| tee`, so rc must come from PIPESTATUS[0] (the command)
-    // and not from tee (which exits 0).
-    const fx = makeFixture();
-    writeRunLine(fx.fifo, encodeRunLine('fail', 'echo boom; exit 7'));
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'fail', new AbortController().signal),
-      5000,
-      'waitForDone fail',
-    );
-    assert.equal(rc, 7, 'exit code is the command’s, not tee’s');
+describe('encodeInjectedCommand', () => {
+  test('frames the command with BEGIN/END sentinels and the run id', () => {
+    const line = encodeInjectedCommand('abc', 'echo hi');
+    assert.match(line, /<<<ORC-BEGIN abc>>>/);
+    assert.match(line, /<<<ORC-END/);
+    assert.match(line, /echo hi/);
   });
 });
 
-describe('Ctrl+C interrupt + loop survival', () => {
-  test('a long command is interrupted, and the driver loop survives for a second command', async () => {
-    const fx = makeFixture();
-    // Start a long-running command.
-    writeRunLine(fx.fifo, encodeRunLine('slow', 'sleep 100'));
-    // Give the driver a beat to spawn the child.
-    await new Promise((r) => setTimeout(r, 300));
-    // Emulate pane Ctrl+C: interrupt the driver's process GROUP. The driver ignores INT
-    // (trap '' INT) but the foreground child restores and receives it → rc 130.
-    if (fx.child?.pid) {
-      try {
-        process.kill(-fx.child.pid, 'SIGINT');
-      } catch {
-        /* if the group signal is awkward in this env, the survival check below still proves the loop */
-      }
-    }
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'slow', new AbortController().signal),
-      6000,
-      'waitForDone slow (interrupted)',
-    );
-    assert.equal(rc, 130, 'interrupted command reports rc 130');
-
-    // The outer `while :` must have survived — a SECOND command still completes.
-    const ok = writeRunLine(fx.fifo, encodeRunLine('after', 'echo survived'));
-    assert.equal(ok, true, 'driver still has a reader (loop alive)');
-    const rc2 = await withTimeout(
-      waitForDone(fx.doneDir, 'after', new AbortController().signal),
-      5000,
-      'waitForDone after',
-    );
-    assert.equal(rc2, 0);
-    assert.match(readFileSync(join(fx.idsDir, 'after'), 'utf8'), /survived/);
+describe('parseCapturedRun (pure)', () => {
+  test('returns null when the END sentinel is absent', () => {
+    const buf = '<<<ORC-BEGIN r1>>>\nsome partial output\n';
+    assert.equal(parseCapturedRun(buf, 'r1'), null);
   });
 
-  test('empty-writer EOF does not kill the loop (a later command still completes)', async () => {
-    const fx = makeFixture();
-    // Open+close the FIFO with no data (an empty writer). A naive `while read` loop would see EOF
-    // and exit; the outer `while :` must survive this.
-    try {
-      // Opening for write and immediately closing delivers EOF to the reader.
-      const fd = (await import('node:fs')).openSync(fx.fifo, 'w');
-      (await import('node:fs')).closeSync(fd);
-    } catch {
-      /* ignore: if this can't open without a reader, the driver is the reader so it should be fine */
-    }
-    await new Promise((r) => setTimeout(r, 200));
-    const ok = writeRunLine(fx.fifo, encodeRunLine('later', 'echo still-here'));
-    assert.equal(ok, true, 'driver still reading after EOF');
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'later', new AbortController().signal),
-      5000,
-      'waitForDone later',
-    );
-    assert.equal(rc, 0);
-    assert.match(readFileSync(join(fx.idsDir, 'later'), 'utf8'), /still-here/);
+  test('extracts exactly the output between BEGIN and END and parses rc 0', () => {
+    const buf = 'noise\n<<<ORC-BEGIN r1>>>\nhello\nworld\n<<<ORC-END r1 0>>>\ntrailing\n';
+    const res = parseCapturedRun(buf, 'r1');
+    assert.deepEqual(res, { output: 'hello\nworld', rc: 0 });
   });
 
-  test('an interrupted pipeline also reports a non-zero rc and the loop survives', async () => {
-    const fx = makeFixture();
-    writeRunLine(fx.fifo, encodeRunLine('pipe', 'sleep 100 | cat'));
-    await new Promise((r) => setTimeout(r, 300));
-    if (fx.child?.pid) {
-      try {
-        process.kill(-fx.child.pid, 'SIGINT');
-      } catch {
-        /* best effort */
-      }
-    }
-    const rc = await withTimeout(
-      waitForDone(fx.doneDir, 'pipe', new AbortController().signal),
-      6000,
-      'waitForDone pipe (interrupted)',
-    );
-    assert.notEqual(rc, 0, 'interrupted pipeline is non-zero');
-    // Loop survived.
-    writeRunLine(fx.fifo, encodeRunLine('ok', 'echo ok'));
-    const rc2 = await withTimeout(
-      waitForDone(fx.doneDir, 'ok', new AbortController().signal),
-      5000,
-      'waitForDone ok',
-    );
-    assert.equal(rc2, 0);
+  test('parses a non-zero rc', () => {
+    const buf = '<<<ORC-BEGIN r1>>>\nboom\n<<<ORC-END r1 7>>>\n';
+    assert.equal(parseCapturedRun(buf, 'r1')?.rc, 7);
+  });
+
+  test('respects fromOffset, ignoring earlier bytes', () => {
+    const early = '<<<ORC-BEGIN r1>>>\nstale\n<<<ORC-END r1 0>>>\n';
+    const later = '<<<ORC-BEGIN r2>>>\nfresh\n<<<ORC-END r2 3>>>\n';
+    const buf = early + later;
+    const res = parseCapturedRun(buf, 'r2', early.length);
+    assert.deepEqual(res, { output: 'fresh', rc: 3 });
+  });
+
+  test('tolerates interleaved user typing inside the frame', () => {
+    const buf = '<<<ORC-BEGIN r1>>>\nagent-out\nuser typed this\n<<<ORC-END r1 0>>>\n';
+    const res = parseCapturedRun(buf, 'r1');
+    assert.match(res!.output, /agent-out/);
+    assert.match(res!.output, /user typed this/);
+  });
+
+  test('strips ANSI control sequences from the captured output', () => {
+    const buf = '<<<ORC-BEGIN r1>>>\n\u001b[31mred\u001b[0m\n<<<ORC-END r1 0>>>\n';
+    assert.equal(parseCapturedRun(buf, 'r1')?.output, 'red');
   });
 });
 
-describe('writeRunLine ENXIO (no reader)', () => {
-  test('returns false and does NOT hang when no driver is reading the FIFO', async () => {
-    const fx = makeFixture(false); // FIFO exists but NO driver
-    // Must return promptly; wrap in a timeout guard so a hang fails the test.
-    const result = await withTimeout(
-      Promise.resolve().then(() => writeRunLine(fx.fifo, encodeRunLine('x', 'echo nope'))),
-      2000,
-      'writeRunLine with no reader',
-    );
-    assert.equal(result, false, 'no reader → false (ENXIO), without blocking');
-  });
-});
-
-describe('waitForDone abort', () => {
-  test('rejects promptly when the AbortController is aborted', async () => {
+describe('capture protocol end-to-end (real bash, no tmux)', () => {
+  test('a simple echo is framed, captured, and read back with rc 0', async () => {
     const fx = makeFixture();
-    writeRunLine(fx.fifo, encodeRunLine('slow', 'sleep 100'));
+    runInjected(fx, 'r1', 'echo hi');
+    const res = await withTimeout(
+      waitForCapture(fx.capture, 'r1', 0, new AbortController().signal),
+      5000,
+      'waitForCapture r1',
+    );
+    assert.equal(res.rc, 0);
+    assert.match(res.output, /hi/);
+  });
+
+  test('a non-zero exit is reported via the END sentinel', async () => {
+    const fx = makeFixture();
+    runInjected(fx, 'r1', 'echo boom; exit 7');
+    const res = await withTimeout(
+      waitForCapture(fx.capture, 'r1', 0, new AbortController().signal),
+      5000,
+      'waitForCapture r1',
+    );
+    assert.equal(res.rc, 7);
+    assert.match(res.output, /boom/);
+  });
+
+  test('a second run after the first is parsed independently from its own offset', async () => {
+    const fx = makeFixture();
+    runInjected(fx, 'r1', 'echo first');
+    await withTimeout(waitForCapture(fx.capture, 'r1', 0, new AbortController().signal), 5000, 'r1');
+    const offset = (await import('node:fs')).statSync(fx.capture).size;
+    // Reuse the fixture's capture file for a second injected run.
+    const line2 = encodeInjectedCommand('r2', 'echo second');
+    fx.child = spawn('bash', ['-c', `{ ${line2} ; } >> ${JSON.stringify(fx.capture)} 2>&1`], {
+      stdio: 'ignore',
+    });
+    const res = await withTimeout(
+      waitForCapture(fx.capture, 'r2', offset, new AbortController().signal),
+      5000,
+      'waitForCapture r2',
+    );
+    assert.equal(res.rc, 0);
+    assert.match(res.output, /second/);
+    assert.doesNotMatch(res.output, /first/);
+  });
+
+  test('waitForCapture rejects promptly when the AbortController is aborted', async () => {
+    const fx = makeFixture();
+    // No frame is ever written for r1, so only the abort can settle it.
     const ac = new AbortController();
-    const p = waitForDone(fx.doneDir, 'slow', ac.signal);
+    const p = waitForCapture(fx.capture, 'r1', 0, ac.signal);
     setTimeout(() => ac.abort(), 100);
     await withTimeout(
       assert.rejects(() => p, (err: Error) => {
-        // AbortError-shaped.
-        assert.ok(/abort/i.test(err.name) || /abort/i.test(err.message), 'rejects with an abort-shaped error');
+        assert.ok(/abort/i.test(err.name) || /abort/i.test(err.message), 'abort-shaped error');
         return true;
       }),
       1500,
-      'waitForDone abort',
+      'waitForCapture abort',
     );
   });
-});
 
-describe('waitForDone atomic done-file', () => {
-  test('does not resolve on a .tmp file; resolves only after the rename into place', async () => {
-    const fx = makeFixture(false); // no driver; we create the done-file by hand
-    const tmp = join(fx.doneDir, '.x.tmp');
-    const finalPath = join(fx.doneDir, 'x');
-    writeFileSync(tmp, '0\n');
-
-    const ac = new AbortController();
-    let resolved = false;
-    const p = waitForDone(fx.doneDir, 'x', ac.signal).then((rc) => {
-      resolved = true;
-      return rc;
-    });
-
-    // Give the watcher a moment — it must NOT resolve off the .tmp file.
-    await new Promise((r) => setTimeout(r, 300));
-    assert.equal(resolved, false, 'the temp file must not satisfy waitForDone');
-    assert.ok(existsSync(tmp), 'temp still present');
-
-    // Atomically move into place → now it resolves with the parsed rc.
-    renameSync(tmp, finalPath);
-    const rc = await withTimeout(p, 2000, 'waitForDone after rename');
-    assert.equal(rc, 0);
+  test('waitForCapture resolves as the END sentinel is appended after the fact', async () => {
+    const fx = makeFixture();
+    appendFileSync(fx.capture, '<<<ORC-BEGIN r1>>>\npartial\n');
+    const p = waitForCapture(fx.capture, 'r1', 0, new AbortController().signal);
+    setTimeout(() => appendFileSync(fx.capture, '<<<ORC-END r1 0>>>\n'), 150);
+    const res = await withTimeout(p, 2000, 'late END');
+    assert.equal(res.rc, 0);
+    assert.match(res.output, /partial/);
   });
 });
