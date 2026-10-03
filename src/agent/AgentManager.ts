@@ -1,12 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { writeFileSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { paneLogPath } from '../tmux/TmuxController.js';
-import { capOutput } from '../tmux/paneRun.js';
+import { capOutput, slicePaneText } from '../tmux/paneRun.js';
 import type { AgentStatus, AgentTemplate, OrcConfig, ProjectConfig } from '../types.js';
-import { needsWorktree, isWorkerTemplate } from '../types.js';
+import { needsWorktree, isWorkerTemplate, isReadOnlyTemplate } from '../types.js';
 import { PortAllocator } from '../ports.js';
 import { SimulatorAllocator } from '../simulators.js';
 import { assertGitRepo, createWorktree, removeWorktree, slugify, type Worktree } from '../worktree.js';
@@ -21,7 +22,14 @@ import type {
   SpawnSubagent,
   SpawnableTemplate,
   SubagentInfo,
+  PaneInfo,
+  ListPanes,
+  ReadPane,
+  RunBackground,
+  PollBackground,
+  StopBackground,
 } from './orchestratorTools.js';
+import { isReadOnlyBashCommand } from './readOnlyCommands.js';
 import { NEEDS_INPUT } from '../agentPrompt.js';
 import type { Tmux } from '../tmux/TmuxController.js';
 
@@ -59,6 +67,19 @@ interface PersistedState {
   agents: PersistedAgent[];
 }
 
+/**
+ * A non-blocking command started via `run_background`. The child streams its combined output into
+ * `output` (and the agent's pane log) while running; `status` flips to 'done' with an `rc` on exit.
+ * Kept in-memory keyed by runId so `poll_background`/`stop_background` can reach it.
+ */
+interface BackgroundJob {
+  agentId: string;
+  child: ChildProcess;
+  output: string;
+  status: 'running' | 'done';
+  rc?: number;
+}
+
 /** Owns all agent sessions (across projects) plus their worktree/port lifecycle. Emits 'update'. */
 export class AgentManager extends EventEmitter {
   private readonly agents = new Map<string, AgentSession>();
@@ -66,6 +87,8 @@ export class AgentManager extends EventEmitter {
   private readonly ports = new Map<string, PortAllocator>();
   /** One simulator allocator per react-native project (keyed by project name). */
   private readonly simulators = new Map<string, SimulatorAllocator>();
+  /** Background commands started via `run_background`, keyed by runId (see {@link BackgroundJob}). */
+  private readonly backgroundJobs = new Map<string, BackgroundJob>();
   /**
    * Subagents currently blocked in `ask_orchestrator`, keyed by the asking child's id. The value
    * resolves the child's pending promise with the orchestrator's (or human's) answer text. A child
@@ -674,6 +697,108 @@ export class AgentManager extends EventEmitter {
     });
   }
 
+  /** Read the current pane-log buffer for agent `id` (empty string when it has none yet). */
+  private readPaneBuffer(id: string): string {
+    try {
+      return readFileSync(paneLogPath(join(homedir(), '.orc', 'panes'), id), 'utf8');
+    } catch {
+      return '';
+    }
+  }
+
+  /** List every agent's pane across all groups, for the `list_panes` tool. */
+  private listPanes(): PaneInfo[] {
+    return [...this.agents.values()].map((a) => {
+      const info = a.getInfo();
+      return {
+        id: info.id,
+        name: info.name,
+        template: info.template,
+        status: info.status,
+        logBytes: this.readPaneBuffer(info.id).length,
+      };
+    });
+  }
+
+  /** Read (a slice of) any agent's pane buffer, for the `read_pane` tool. Throws on unknown id. */
+  private readPane(args: { agentId: string; tailBytes?: number; sinceOffset?: number }): {
+    text: string;
+    size: number;
+    nextOffset: number;
+  } {
+    if (!this.agents.has(args.agentId)) throw new Error(`Unknown agent: ${args.agentId}`);
+    const full = this.readPaneBuffer(args.agentId);
+    const sliced = slicePaneText(full, { tailBytes: args.tailBytes, sinceOffset: args.sinceOffset });
+    return { text: capOutput(sliced.text), size: sliced.size, nextOffset: sliced.nextOffset };
+  }
+
+  /**
+   * Start `cmd` for agent `id` WITHOUT blocking and return its runId. Output streams into the job's
+   * buffer and the agent's pane log so it's visible via read_pane/poll_background and in the TUI.
+   */
+  private startBackground(id: string, cmd: string): { runId: string } {
+    const runId = randomUUID();
+    const logPath = paneLogPath(join(homedir(), '.orc', 'panes'), id);
+    const append = (text: string) => {
+      try {
+        appendFileSync(logPath, text);
+      } catch {
+        /* best-effort mirroring */
+      }
+    };
+    append(`$ ${cmd} &\n`);
+    // stdin from /dev/null: a background command has no tty, so one that reads stdin must not hang.
+    const child = spawn('bash', ['-c', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const job: BackgroundJob = { agentId: id, child, output: '', status: 'running' };
+    this.backgroundJobs.set(runId, job);
+    const onData = (d: Buffer) => {
+      const s = d.toString();
+      job.output += s;
+      append(s);
+    };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.on('error', () => {
+      job.status = 'done';
+      job.rc = job.rc ?? -1;
+    });
+    child.on('close', (code, sig) => {
+      job.status = 'done';
+      job.rc = sig ? 128 + 2 : code ?? -1;
+    });
+    return { runId };
+  }
+
+  /** Poll a background job's status + new output since `sinceOffset`, for the `poll_background` tool. */
+  private pollBackground(args: { runId: string; sinceOffset?: number }): {
+    status: string;
+    rc?: number;
+    newOutput: string;
+    nextOffset: number;
+  } {
+    const job = this.backgroundJobs.get(args.runId);
+    if (!job) throw new Error(`Unknown background runId: ${args.runId}`);
+    const sliced = slicePaneText(job.output, { sinceOffset: args.sinceOffset ?? 0 });
+    return {
+      status: job.status,
+      rc: job.rc,
+      newOutput: capOutput(sliced.text),
+      nextOffset: sliced.nextOffset,
+    };
+  }
+
+  /** Stop a running background job (SIGINT), for the `stop_background` tool. */
+  private stopBackground(runId: string): { stopped: boolean } {
+    const job = this.backgroundJobs.get(runId);
+    if (!job || job.status !== 'running') return { stopped: false };
+    try {
+      job.child.kill('SIGINT');
+    } catch {
+      /* already gone */
+    }
+    return { stopped: true };
+  }
+
   /** Build the orchestration callbacks a session at `id` exposes as its in-process MCP tools. */
   private orchestrationCallbacks(id: string): {
     listSubagents: ListSubagents;
@@ -683,7 +808,16 @@ export class AgentManager extends EventEmitter {
     reportToOrchestrator: ReportToOrchestrator;
     spawnSubagent: SpawnSubagent;
     runInPane: (cmd: string, signal: AbortSignal) => Promise<{ output: string; rc: number }>;
+    listPanes: ListPanes;
+    readPane: ReadPane;
+    runBackground: RunBackground;
+    pollBackground: PollBackground;
+    stopBackground: StopBackground;
   } {
+    const readOnly = (() => {
+      const a = this.agents.get(id);
+      return a ? isReadOnlyTemplate(a.template) : false;
+    })();
     return {
       listSubagents: () => this.listSubagentsOf(id),
       askSubagent: (args) => this.askChild(id, args.childId, args.question),
@@ -692,6 +826,18 @@ export class AgentManager extends EventEmitter {
       reportToOrchestrator: (args) => this.reportToParent(id, args.note),
       spawnSubagent: (args) => this.spawnSubagentFor(id, args),
       runInPane: (cmd, signal) => this.runInPaneFor(id, cmd, signal),
+      listPanes: () => this.listPanes(),
+      readPane: (args) => this.readPane(args),
+      // Background runs are scoped to THIS agent; enforce the read-only command filter here too, so a
+      // read-only agent can't bypass it by backgrounding a state-changing command.
+      runBackground: (cmd) => {
+        if (readOnly && !isReadOnlyBashCommand(cmd)) {
+          throw new Error('read-only agent may not run a state-changing command in the background');
+        }
+        return this.startBackground(id, cmd);
+      },
+      pollBackground: (args) => this.pollBackground(args),
+      stopBackground: (runId) => this.stopBackground(runId),
     };
   }
 

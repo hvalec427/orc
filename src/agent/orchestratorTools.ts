@@ -95,6 +95,48 @@ export interface OrchestratorCallbacks {
   answerSubagent: AnswerSubagent;
 }
 
+/** One agent's pane as seen by any other agent: who it is, its state, and how much output it has. */
+export interface PaneInfo {
+  id: string;
+  name: string;
+  template: string;
+  status: string;
+  /** Current size of this agent's pane-log buffer, in bytes. */
+  logBytes: number;
+}
+
+/** List every agent's pane across all groups, so an agent can discover which panes it can read. */
+export type ListPanes = () => PaneInfo[];
+
+/**
+ * Read an agent's pane-log buffer. With `sinceOffset`, returns only the bytes after it (incremental
+ * polling for watching a live command); otherwise returns the last `tailBytes` (a recent snapshot).
+ * `nextOffset` is where the next poll should resume from. Rejects for an unknown agent id.
+ */
+export type ReadPane = (args: {
+  agentId: string;
+  tailBytes?: number;
+  sinceOffset?: number;
+}) => { text: string; size: number; nextOffset: number };
+
+/**
+ * Start a shell command for the CALLING agent WITHOUT blocking, returning a `runId`. Output streams
+ * to the agent's pane log; poll it with {@link PollBackground}. Obeys the read-only command filter.
+ */
+export type RunBackground = (cmd: string) => { runId: string };
+
+/**
+ * Poll a background command started by {@link RunBackground}. Returns its status ('running' | 'done'),
+ * the exit code once finished, the new output since `sinceOffset`, and the `nextOffset` to resume from.
+ */
+export type PollBackground = (args: {
+  runId: string;
+  sinceOffset?: number;
+}) => { status: string; rc?: number; newOutput: string; nextOffset: number };
+
+/** Stop a background command started by {@link RunBackground}. Returns whether a running job was stopped. */
+export type StopBackground = (runId: string) => { stopped: boolean };
+
 /**
  * Build the parent-side orchestration tools (server name "orc" so tools are `mcp__orc__*`). Given to
  * every agent; when the agent has no subagents yet, `list_subagents` just returns an empty list and
@@ -396,6 +438,184 @@ export function buildRunTool(runInPane: RunInPane, readOnly = false) {
         } catch (err) {
           return {
             content: [{ type: 'text', text: `Command failed: ${(err as Error).message}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
+  ];
+}
+
+export interface PaneToolCallbacks {
+  listPanes: ListPanes;
+  readPane: ReadPane;
+  runBackground: RunBackground;
+  pollBackground: PollBackground;
+  stopBackground: StopBackground;
+}
+
+/**
+ * Build the pane-visibility tools (server name "orc"). Given to EVERY agent so it can see what the
+ * rest of the group (and other groups) is doing and watch long-running commands evolve:
+ * - `list_panes` enumerates all agents + their pane buffers.
+ * - `read_pane` reads any agent's recent output, or (with `sinceOffset`) only the new bytes — call it
+ *   repeatedly with the returned `nextOffset` to watch a command's output grow.
+ * - `run_background` starts a command for THIS agent without blocking (obeys the read-only command
+ *   filter), returning a `runId`; `poll_background` reports its status/exit code + new output; and
+ *   `stop_background` stops it.
+ */
+export function buildPaneTools(cb: PaneToolCallbacks, readOnly = false) {
+  return [
+    tool(
+      'list_panes',
+      'List every agent and its pane buffer (id, name, template, status, output size in bytes). Use ' +
+        'this to discover which panes exist before reading one with read_pane. You can see panes ' +
+        'across all groups, not just your own.',
+      {},
+      async () => {
+        const panes = cb.listPanes();
+        const text = panes.length
+          ? panes
+              .map(
+                (p) =>
+                  `- ${p.name} (id: ${p.id}, ${p.template}, ${p.status}, ${p.logBytes} bytes)`,
+              )
+              .join('\n')
+          : '(no panes available)';
+        return { content: [{ type: 'text', text }] };
+      },
+    ),
+    tool(
+      'read_pane',
+      "Read another agent's pane output (its terminal buffer). By default returns the most recent " +
+        'output (tailBytes). To WATCH a long-running command evolve, pass the sinceOffset you got back ' +
+        'from a previous call to get only the NEW output, then repeat with the returned nextOffset. ' +
+        'Pass the agent id from list_panes; use your own id to re-read your own pane.',
+      {
+        agentId: z.string().min(1).describe('The agent whose pane to read (id from list_panes).'),
+        tailBytes: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Return at most this many trailing bytes (snapshot mode). Ignored when sinceOffset is set.'),
+        sinceOffset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Return only bytes after this offset (incremental mode for watching live output).'),
+      },
+      async (args) => {
+        try {
+          const res = cb.readPane({
+            agentId: args.agentId,
+            tailBytes: args.tailBytes,
+            sinceOffset: args.sinceOffset,
+          });
+          const header = `[pane ${args.agentId} • ${res.size} bytes • nextOffset=${res.nextOffset}]\n`;
+          return { content: [{ type: 'text', text: header + res.text }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Failed to read pane: ${(err as Error).message}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
+    tool(
+      'run_background',
+      'Start a shell command WITHOUT blocking and get back a runId. Use this for long-running ' +
+        'commands (dev servers, watchers, builds) you want to watch evolve: its output streams to ' +
+        'your pane, and you poll it with poll_background (or read_pane on your own id). Stop it with ' +
+        'stop_background. For ordinary commands that finish quickly, use run instead.',
+      {
+        command: z
+          .string()
+          .min(1)
+          .describe('The shell command to run in the background (passed to `bash -c`).'),
+      },
+      async (args) => {
+        if (readOnly && !isReadOnlyBashCommand(args.command)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  "This command isn't allowed for a read-only agent: it may change state. To run a " +
+                  'state-changing command, spawn a full-access "feature"/"fix"/"worker" subagent.',
+              },
+            ],
+            isError: true,
+          };
+        }
+        try {
+          const { runId } = cb.runBackground(args.command);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Started background command (runId: ${runId}). Poll it with poll_background using this runId.`,
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Failed to start background command: ${(err as Error).message}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
+    tool(
+      'poll_background',
+      'Check a background command started with run_background: returns its status (running/done), ' +
+        'exit code once finished, and any NEW output since sinceOffset. Call repeatedly with the ' +
+        'returned nextOffset to watch output as it arrives.',
+      {
+        runId: z.string().min(1).describe('The runId returned by run_background.'),
+        sinceOffset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Return only output after this offset; omit to get recent output.'),
+      },
+      async (args) => {
+        try {
+          const res = cb.pollBackground({ runId: args.runId, sinceOffset: args.sinceOffset });
+          const rc = res.rc === undefined ? '' : ` • rc=${res.rc}`;
+          const header = `[${res.status}${rc} • nextOffset=${res.nextOffset}]\n`;
+          return { content: [{ type: 'text', text: header + res.newOutput }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Failed to poll background command: ${(err as Error).message}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
+    tool(
+      'stop_background',
+      'Stop a background command started with run_background (sends an interrupt). Returns whether a ' +
+        'running job was stopped.',
+      {
+        runId: z.string().min(1).describe('The runId returned by run_background.'),
+      },
+      async (args) => {
+        try {
+          const { stopped } = cb.stopBackground(args.runId);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: stopped ? 'Stopped the background command.' : 'No running background command with that runId.',
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Failed to stop background command: ${(err as Error).message}` }],
             isError: true,
           };
         }

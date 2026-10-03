@@ -26,6 +26,33 @@ export const RUN_TOOL = 'mcp__orc__run';
  */
 export const CREATE_WORKTREE_TOOL = 'mcp__orc__create_worktree';
 
+/**
+ * The pane-visibility MCP tools EVERY agent gets. `list_panes` enumerates all agents and their pane
+ * buffers; `read_pane` reads any agent's recent (or incremental) output. The background trio lets an
+ * agent run a long-running command without blocking and watch it evolve: `run_background` starts it,
+ * `poll_background` reports status + new output, `stop_background` stops it. All are read-only actions
+ * (reading logs / polling) except the command a `run_background` starts, which obeys the read-only
+ * command filter just like {@link RUN_TOOL}. Auto-allowed for read-only agents via PANE_READ_TOOLS.
+ */
+export const LIST_PANES_TOOL = 'mcp__orc__list_panes';
+export const READ_PANE_TOOL = 'mcp__orc__read_pane';
+export const RUN_BACKGROUND_TOOL = 'mcp__orc__run_background';
+export const POLL_BACKGROUND_TOOL = 'mcp__orc__poll_background';
+export const STOP_BACKGROUND_TOOL = 'mcp__orc__stop_background';
+
+/**
+ * Pane tools that are pure read/control actions (no codebase mutation): listing panes, reading a
+ * pane buffer, polling or stopping a background job. Read-only agents are auto-allowed these. Note
+ * {@link RUN_BACKGROUND_TOOL} is deliberately NOT here — the command it launches is gated through the
+ * read-only command filter, exactly like {@link RUN_TOOL}.
+ */
+export const PANE_READ_TOOLS: ReadonlySet<string> = new Set<string>([
+  LIST_PANES_TOOL,
+  READ_PANE_TOOL,
+  POLL_BACKGROUND_TOOL,
+  STOP_BACKGROUND_TOOL,
+]);
+
 /** The group coordination MCP tools every agent gets (orchestrator-side + subagent-side). */
 export const LIST_SUBAGENTS_TOOL = 'mcp__orc__list_subagents';
 export const ASK_SUBAGENT_TOOL = 'mcp__orc__ask_subagent';

@@ -68,6 +68,26 @@ export function capOutput(text: string, max = 32768): string {
   return head + marker + tail;
 }
 
+/**
+ * Slice an agent's pane-log buffer for a reader. `full` is the whole current buffer; `size` is its
+ * length. When `sinceOffset` is given, return only the bytes after it (incremental polling); a stale
+ * offset past the end yields empty text. Otherwise return the last `tailBytes` (a recent snapshot).
+ * Always reports `nextOffset = size` so the caller can poll again from where this read ended.
+ */
+export function slicePaneText(
+  full: string,
+  opts: { tailBytes?: number; sinceOffset?: number } = {},
+): { text: string; size: number; nextOffset: number } {
+  const size = full.length;
+  if (opts.sinceOffset !== undefined) {
+    const from = Math.max(0, Math.min(opts.sinceOffset, size));
+    return { text: full.slice(from), size, nextOffset: size };
+  }
+  const tail = opts.tailBytes ?? 8192;
+  const text = tail >= size ? full : full.slice(size - tail);
+  return { text, size, nextOffset: size };
+}
+
 /** Parse a done-file's contents into an rc; non-numeric → -1 sentinel. */
 export function parseDoneRc(raw: string): number {
   const n = Number.parseInt(raw.trim(), 10);

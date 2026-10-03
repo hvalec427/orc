@@ -18,6 +18,8 @@ import {
   LAUNCH_TOOL,
   RUN_STEP_TOOL,
   ORCHESTRATION_TOOLS,
+  PANE_READ_TOOLS,
+  RUN_BACKGROUND_TOOL,
   NEEDS_INPUT,
   DONE,
 } from '../agentPrompt.js';
@@ -34,6 +36,7 @@ import {
   buildSubagentTools,
   buildSpawnSubagentTool,
   buildRunTool,
+  buildPaneTools,
   buildOrcServer,
   type AskOrchestrator,
   type AskSubagent,
@@ -41,6 +44,11 @@ import {
   type ListSubagents,
   type ReportToOrchestrator,
   type SpawnSubagent,
+  type ListPanes,
+  type ReadPane,
+  type RunBackground,
+  type PollBackground,
+  type StopBackground,
 } from './orchestratorTools.js';
 import { createWorktree, type Worktree } from '../worktree.js';
 
@@ -179,6 +187,12 @@ export interface AgentSessionInit {
      * and the command's exit code.
      */
     runInPane?: (cmd: string, signal: AbortSignal) => Promise<{ output: string; rc: number }>;
+    /** Back the pane-visibility tools (list_panes/read_pane + the background run/poll/stop trio). */
+    listPanes?: ListPanes;
+    readPane?: ReadPane;
+    runBackground?: RunBackground;
+    pollBackground?: PollBackground;
+    stopBackground?: StopBackground;
   };
 }
 
@@ -803,9 +817,10 @@ export class AgentSession extends EventEmitter {
       opts.allowDangerouslySkipPermissions = true;
     } else if (this.config.permissionMode === 'default') {
       opts.canUseTool = (toolName, input, options) => {
-        // The group coordination tools only pass messages between agents in the same group — they
-        // never touch the codebase — so auto-allow them instead of prompting the human for each one.
-        if (ORCHESTRATION_TOOLS.has(toolName)) {
+        // The group coordination tools only pass messages between agents in the same group, and the
+        // pane read/list/poll/stop tools only read other agents' output — neither touches the
+        // codebase — so auto-allow them instead of prompting the human for each one.
+        if (ORCHESTRATION_TOOLS.has(toolName) || PANE_READ_TOOLS.has(toolName)) {
           return Promise.resolve({ behavior: 'allow', updatedInput: input });
         }
         return new Promise((resolve) => {
@@ -874,6 +889,25 @@ export class AgentSession extends EventEmitter {
         ...(this.orchestration.runInPane
           ? buildRunTool(this.orchestration.runInPane, readOnly)
           : []),
+        // Pane-visibility tools: see any agent's output and watch long-running commands evolve via
+        // non-blocking background runs. Reading/listing/polling is safe for read-only agents; the
+        // command a background run launches is gated by the same read-only filter as run.
+        ...(this.orchestration.listPanes &&
+        this.orchestration.readPane &&
+        this.orchestration.runBackground &&
+        this.orchestration.pollBackground &&
+        this.orchestration.stopBackground
+          ? buildPaneTools(
+              {
+                listPanes: this.orchestration.listPanes,
+                readPane: this.orchestration.readPane,
+                runBackground: this.orchestration.runBackground,
+                pollBackground: this.orchestration.pollBackground,
+                stopBackground: this.orchestration.stopBackground,
+              },
+              readOnly,
+            )
+          : []),
         ...(this.template === 'launcher' && this.launchFeature
           ? buildLauncherTools(this.launchFeature)
           : []),
@@ -908,7 +942,11 @@ export class AgentSession extends EventEmitter {
   ): { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string } {
     const ownTool =
       this.template === 'launcher' ? LAUNCH_TOOL : this.template === 'pipeline' ? RUN_STEP_TOOL : undefined;
-    if ((ownTool && toolName === ownTool) || ORCHESTRATION_TOOLS.has(toolName)) {
+    if (
+      (ownTool && toolName === ownTool) ||
+      ORCHESTRATION_TOOLS.has(toolName) ||
+      PANE_READ_TOOLS.has(toolName)
+    ) {
       return { behavior: 'allow', updatedInput: input };
     }
     if (READONLY_DENIED_TOOLS.has(toolName)) {
@@ -917,9 +955,9 @@ export class AgentSession extends EventEmitter {
         message: `"${toolName}" is disabled: this is a read-only ${this.template} agent that cannot modify the codebase. If you need to change files, spawn a full-access "feature"/"fix"/"worker" subagent to do that part.`,
       };
     }
-    // Bash and the custom mcp__orc__run pane tool are gated identically: a read-only agent may only
-    // run provably read-only commands; a state-changing command is denied with a delegation hint.
-    if (toolName === 'Bash' || toolName === 'mcp__orc__run') {
+    // Bash, the custom mcp__orc__run pane tool, and run_background are gated identically: a read-only
+    // agent may only run provably read-only commands; a state-changing command is denied with a hint.
+    if (toolName === 'Bash' || toolName === 'mcp__orc__run' || toolName === RUN_BACKGROUND_TOOL) {
       const command = typeof input.command === 'string' ? input.command : '';
       if (!isReadOnlyBashCommand(command)) {
         return {
