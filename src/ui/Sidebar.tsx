@@ -57,6 +57,11 @@ export function Sidebar({
       ? blockHeightOf(info, lastTopLevelProjectBefore(active, i))
       : blockHeightOf(info, lastTopLevelProjectBefore(shownArchived, i - active.length)),
   );
+  // The expanded "Done" section renders a header (marginTop:1 blank + "Done (N)" line = 2 rows) BEFORE
+  // the first archived block. It sits in the scrolled inner column but isn't an AgentRow, so fold those
+  // 2 rows into the first archived block's height — otherwise scrollOffset under-counts and the selected
+  // archived block drifts below the fold (its cost line, then the whole block, gets clipped).
+  if (shownArchived.length > 0) blockHeights[active.length] += 2;
   // Rows available for the list itself: the box interior (height - 2 for the round border) minus the
   // "Agents" title line. Clamp so we always render at least one row.
   const listRows = Math.max(1, height - 2 - 1);
