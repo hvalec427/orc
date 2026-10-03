@@ -1,7 +1,7 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, renameSync, writeFileSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -20,12 +20,13 @@ interface Fixture {
   fifo: string;
   doneDir: string;
   idsDir: string;
+  paneOut?: string;
   child?: ChildProcess;
 }
 
 const fixtures: Fixture[] = [];
 
-function makeFixture(startDriver = true): Fixture {
+function makeFixture(startDriver = true, captureStdout = false): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'orc-drv-'));
   const fifo = join(dir, 'cmd.fifo');
   const doneDir = join(dir, 'done');
@@ -37,8 +38,14 @@ function makeFixture(startDriver = true): Fixture {
   const fx: Fixture = { dir, fifo, doneDir, idsDir };
   if (startDriver) {
     const script = buildDriverScript({ fifo, doneDir, idsDir });
-    // Own process group so we can signal the whole driver + its child if needed.
-    fx.child = spawn('bash', ['-c', script], { detached: true, stdio: 'ignore' });
+    // Own process group so we can signal the whole driver + its child if needed. When captureStdout
+    // is set, redirect the driver's stdout to a file so a test can assert what the pane would show.
+    const paneOut = captureStdout ? join(dir, 'pane.out') : undefined;
+    if (paneOut) fx.paneOut = paneOut;
+    fx.child = spawn('bash', ['-c', script], {
+      detached: true,
+      stdio: paneOut ? ['ignore', openSync(paneOut, 'w'), 'ignore'] : 'ignore',
+    });
   }
   fixtures.push(fx);
   return fx;
@@ -86,6 +93,39 @@ describe('driver happy path', () => {
     assert.equal(rc, 0);
     const out = readFileSync(join(fx.idsDir, 'id1'), 'utf8');
     assert.match(out, /hi/, 'captured stdout contains hi');
+  });
+
+  test('command output is echoed to the pane (stdout), not only captured', async () => {
+    // Regression: the driver used to redirect the command's output solely into $IDS/$id, so the
+    // viewer pane showed only the `$ <cmd>` prompt and never the output. It must tee to both.
+    const fx = makeFixture(true, true);
+    writeRunLine(fx.fifo, encodeRunLine('id1', 'echo PANE_VISIBLE; echo ERRSIDE >&2'));
+    const rc = await withTimeout(
+      waitForDone(fx.doneDir, 'id1', new AbortController().signal),
+      5000,
+      'waitForDone id1',
+    );
+    assert.equal(rc, 0);
+    assert.ok(fx.paneOut, 'fixture captured the pane stdout');
+    const pane = readFileSync(fx.paneOut as string, 'utf8');
+    assert.match(pane, /\$ echo PANE_VISIBLE/, 'pane shows the command prompt');
+    assert.match(pane, /PANE_VISIBLE/, 'pane shows the command stdout');
+    assert.match(pane, /ERRSIDE/, 'pane shows the command stderr');
+    // The capture file still receives the output too (so readPaneOutput keeps working).
+    assert.match(readFileSync(join(fx.idsDir, 'id1'), 'utf8'), /PANE_VISIBLE/);
+  });
+
+  test('a non-zero exit is reported via PIPESTATUS, not tee', async () => {
+    // Regression: output now runs through `| tee`, so rc must come from PIPESTATUS[0] (the command)
+    // and not from tee (which exits 0).
+    const fx = makeFixture();
+    writeRunLine(fx.fifo, encodeRunLine('fail', 'echo boom; exit 7'));
+    const rc = await withTimeout(
+      waitForDone(fx.doneDir, 'fail', new AbortController().signal),
+      5000,
+      'waitForDone fail',
+    );
+    assert.equal(rc, 7, 'exit code is the command’s, not tee’s');
   });
 });
 

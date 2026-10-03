@@ -50,8 +50,8 @@ while :; do
     [ -z "$id" ] && continue
     cmd=$(printf '%s' "$b64" | base64 -d)
     printf '$ %s\\n' "$cmd"
-    ( trap - INT; exec bash -c "$cmd" ) > "$IDS/$id" 2>&1
-    rc=$?
+    ( trap - INT; exec bash -c "$cmd" ) 2>&1 | tee "$IDS/$id"
+    rc=\${PIPESTATUS[0]}
     printf '%s' "$rc" > "$DONE/.$id.tmp"; mv -f "$DONE/.$id.tmp" "$DONE/$id"
   fi
 done

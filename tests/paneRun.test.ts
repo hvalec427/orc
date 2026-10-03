@@ -98,8 +98,15 @@ describe('buildDriverScript invariants', () => {
     );
   });
 
-  test('redirects the child output to the per-id file', () => {
-    assert.ok(script.includes('> "$IDS/$id" 2>&1'), 'child stdout+stderr go to $IDS/$id');
+  test('tees the child output to the pane AND the per-id file', () => {
+    // Output must reach the pane (driver stdout) so the human sees it live, while still being
+    // captured to $IDS/$id for readPaneOutput. A bare `> "$IDS/$id"` would hide it from the pane.
+    assert.ok(script.includes('2>&1 | tee "$IDS/$id"'), 'child stdout+stderr tee to the pane and $IDS/$id');
+    assert.ok(!script.includes('> "$IDS/$id" 2>&1'), 'must NOT redirect output solely to the file');
+  });
+
+  test('captures the command exit code via PIPESTATUS, not tee', () => {
+    assert.ok(script.includes('rc=${PIPESTATUS[0]}'), 'rc comes from the command, not the tee pipe');
   });
 
   test('writes the done-file atomically (temp + mv -f)', () => {
