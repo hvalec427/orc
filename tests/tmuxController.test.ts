@@ -389,6 +389,53 @@ describe('showAgent reveals the shell beside the TUI, keeping focus on orc', () 
   });
 });
 
+describe('applyStage is reentrancy-safe (overlapping transitions)', () => {
+  test('two staging transitions to the same agent do not double-join its shell', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // join-pane is slow (we release it manually), so a second transition can start mid-flight.
+      const calls: string[][] = [];
+      const joinReleasers: Array<() => void> = [];
+      const run = async (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'list-panes') return { stdout: '%5 0\n', stderr: '' };
+        if (args[0] === 'new-window') return { stdout: '%9\n', stderr: '' };
+        if (args[0] === 'join-pane') {
+          await new Promise<void>((r) => joinReleasers.push(r));
+        }
+        return { stdout: '', stderr: '' };
+      };
+
+      // delay=0 → applyStage fires synchronously on each showAgent, so we can overlap two of them.
+      const c = new TmuxController({ run, logsDir, showAgentDebounceMs: 0 });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      await flush();
+
+      // First transition to a1: starts, blocks inside join-pane (stageOccupantId not set yet).
+      c.showAgent('a1');
+      await flush();
+      // Second transition to the SAME agent while the first is still joining.
+      c.showAgent('a1');
+      await flush();
+
+      // Release all join-panes and settle.
+      for (const r of joinReleasers) r();
+      await flush();
+      await flush();
+
+      const joins = calls.filter((a) => a[0] === 'join-pane' && a.includes('%9') && a.includes('%5'));
+      assert.equal(
+        joins.length,
+        1,
+        'a1 shell is joined to orc exactly once, not re-joined by an overlapping transition',
+      );
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runInPane injects a framed command and captures output', () => {
   test('returns null when the agent is not selected / has no shell', async () => {
     const logsDir = tmpLogsDir();

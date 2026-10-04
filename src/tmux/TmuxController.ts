@@ -238,6 +238,13 @@ export class TmuxController implements Tmux {
   private readonly showAgentDebounceMs: number;
   /** Pending break/join timer, so a rapid burst of selections only runs the last transition. */
   private showAgentTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Serializes stage break/join I/O. Each transition chains onto the previous one so two overlapping
+   * applyStage calls can never interleave their break/join sequences (which would double-join a shell
+   * and leave it detached — the agent then has no visible shell). Also lets a new transition observe
+   * the fully-settled occupant of the one before it.
+   */
+  private stageChain: Promise<void> = Promise.resolve();
 
   constructor(opts?: { run?: TmuxRunner; logsDir?: string; showAgentDebounceMs?: number }) {
     this.run = opts?.run ?? ((args) => execFileAsync('tmux', args));
@@ -399,16 +406,19 @@ export class TmuxController implements Tmux {
    */
   private applyStage(id?: string): void {
     if (!this.orcPaneId || !id) return;
-    const entry = this.agentPanes.get(id);
-    if (!entry) return; // shell not created yet; registerAgent re-calls showAgent once it exists
-    if (this.stageOccupantId === id) {
-      // Already shown — just make sure focus is on the TUI.
-      void this.run(argvSelectPane(this.orcPaneId)).catch(() => {});
-      return;
-    }
-    const prev = this.stageOccupantId ? this.agentPanes.get(this.stageOccupantId) : undefined;
     const orcPane = this.orcPaneId;
-    void (async () => {
+    // Chain onto any in-flight transition so two overlapping break/join sequences can never interleave
+    // (that double-joins a shell and leaves it detached — the agent ends up with no visible shell).
+    // All reads of the occupant/entry happen INSIDE the chained step, after the previous one settled.
+    this.stageChain = this.stageChain.then(async () => {
+      const entry = this.agentPanes.get(id);
+      if (!entry) return; // shell not created yet; registerAgent re-calls showAgent once it exists
+      if (this.stageOccupantId === id) {
+        // Already shown — just make sure focus is on the TUI.
+        await this.run(argvSelectPane(orcPane)).catch(() => {});
+        return;
+      }
+      const prev = this.stageOccupantId ? this.agentPanes.get(this.stageOccupantId) : undefined;
       try {
         // Break the previous occupant's shells back to its own window (preserved, not killed). The
         // first break re-creates the window; the rest rejoin it so all its shells stay grouped.
@@ -435,7 +445,7 @@ export class TmuxController implements Tmux {
       } catch {
         /* a tmux hiccup must never crash orc */
       }
-    })();
+    });
   }
 
   /**
