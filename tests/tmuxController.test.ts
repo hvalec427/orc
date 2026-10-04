@@ -434,6 +434,52 @@ describe('applyStage is reentrancy-safe (overlapping transitions)', () => {
       rmSync(logsDir, { recursive: true, force: true });
     }
   });
+
+  test('a join hiccup mid-switch never strands the stage pointing at the broken-away agent', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // Switching A→B: A is broken away first, then B's join onto orc hiccups once. The old occupant
+      // (A) is already detached, so the stage must NOT keep reporting A as the occupant — otherwise a
+      // later re-select of A takes the "already shown" shortcut and A is left invisible ("no shell").
+      const calls: string[][] = [];
+      let failBJoin = true;
+      const run = async (args: string[]) => {
+        calls.push(args);
+        if (args[0] === 'list-panes') return { stdout: '%5 0\n', stderr: '' };
+        if (args[0] === 'new-window') {
+          return { stdout: (args.includes(agentWindowName('a1')) ? '%9' : '%11') + '\n', stderr: '' };
+        }
+        if (args[0] === 'join-pane' && args.includes('%11') && args.includes('%5') && failBJoin) {
+          failBJoin = false;
+          throw new Error('tmux hiccup: no such pane');
+        }
+        return { stdout: '', stderr: '' };
+      };
+
+      const c = new TmuxController({ run, logsDir, showAgentDebounceMs: 0 });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'feature', '/work/a1');
+      c.registerAgent('a2', 'beta', 'feature', '/work/a2');
+      await flush();
+
+      c.showAgent('a1');
+      await flush();
+      c.showAgent('a2'); // B's join throws → transition fails partway
+      await flush();
+
+      // A was broken away, so it is no longer the occupant. Re-selecting A must actually re-join it
+      // (not take the "already shown" shortcut that would leave the broken-away A invisible).
+      const before = calls.length;
+      c.showAgent('a1');
+      await flush();
+      const rejoined = calls
+        .slice(before)
+        .some((a) => a[0] === 'join-pane' && a.includes('%9') && a.includes('%5'));
+      assert.ok(rejoined, 're-selecting the broken-away agent re-joins its shell onto the stage');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runInPane injects a framed command and captures output', () => {

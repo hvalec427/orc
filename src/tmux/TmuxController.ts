@@ -419,6 +419,12 @@ export class TmuxController implements Tmux {
         return;
       }
       const prev = this.stageOccupantId ? this.agentPanes.get(this.stageOccupantId) : undefined;
+      // Once we start breaking the previous occupant away it is no longer on the stage, so clear the
+      // slot up front. If a later join below hiccups, the stage must NOT keep reporting the detached
+      // prev agent as the occupant — that would make a re-select of it take the "already shown"
+      // shortcut and leave it invisible ("no shell"). We set the new occupant only after its shells
+      // actually join.
+      this.stageOccupantId = undefined;
       try {
         // Break the previous occupant's shells back to its own window (preserved, not killed). The
         // first break re-creates the window; the rest rejoin it so all its shells stay grouped.
@@ -433,11 +439,12 @@ export class TmuxController implements Tmux {
           }
         }
         // Join this agent's shells beside orc: the first anchors the stage region, the rest tile
-        // within it (joined to the first shell, not to orc, so they stack beside each other).
+        // within it (joined to the first shell, not to orc, so they stack beside each other). Each
+        // join is best-effort: a single tmux hiccup must not abort the rest and strand the stage.
         for (let i = 0; i < entry.shells.length; i++) {
           const s = entry.shells[i];
           const target = i === 0 ? orcPane : entry.shells[0].paneId;
-          await this.run(argvJoinPane(s.paneId, target));
+          await this.run(argvJoinPane(s.paneId, target)).catch(() => {});
         }
         this.stageOccupantId = id;
         // join-pane focuses the joined pane; pull focus back to the TUI (requirement: focus on orc).
