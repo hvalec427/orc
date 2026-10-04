@@ -18,7 +18,8 @@ pub enum TurnEnd {
 
 /// Detect a turn-end sentinel in a final message, capturing the commit hash for DONE.
 ///
-/// Recognizes `@@DONE@@ <hash>` (hash: 7–40 hex-ish chars) and `@@NEEDS_INPUT@@`.
+/// Recognizes `@@DONE@@ <hash>` (hash: the first whitespace-delimited token after the sentinel,
+/// possibly empty) and `@@NEEDS_INPUT@@`.
 pub fn detect_turn_end(text: &str) -> TurnEnd {
     let text = text.trim();
     // DONE wins over NEEDS_INPUT, matching the TS precedence in AgentSession.handleResult.

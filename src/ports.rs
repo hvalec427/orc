@@ -70,7 +70,7 @@ mod tests {
         let mut alloc = PortAllocator::new(range(54000, 54010));
         alloc.reserve(54000);
         let p = alloc.allocate().unwrap();
-        assert!(p >= 54000 && p <= 54010, "port {p} out of range");
+        assert!((54000..=54010).contains(&p), "port {p} out of range");
         assert_ne!(p, 54000, "allocated the reserved port");
     }
 

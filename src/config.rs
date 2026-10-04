@@ -209,9 +209,24 @@ pub fn expand_path(p: &str) -> String {
 
 /// Parse a raw config document from JSON text, rejecting unknown keys.
 ///
-/// Errors are prefixed with `Invalid config` to match the TS wording.
+/// Errors are prefixed with `Invalid config` to match the TS wording. Mirrors the TS schema's
+/// `z.array(ProjectSchema).min(1)` by rejecting an empty `projects` array, and
+/// `z.string().min(1)` by rejecting an empty `baseBranch` at the global or project level.
 pub fn parse_raw_config(text: &str) -> anyhow::Result<RawGlobalConfig> {
-    serde_json::from_str(text).map_err(|e| anyhow::anyhow!("Invalid config: {e}"))
+    let raw: RawGlobalConfig =
+        serde_json::from_str(text).map_err(|e| anyhow::anyhow!("Invalid config: {e}"))?;
+    if raw.projects.is_empty() {
+        anyhow::bail!("Invalid config: at least one project is required");
+    }
+    if matches!(raw.base_branch.as_deref(), Some("")) {
+        anyhow::bail!("Invalid config: baseBranch must not be empty");
+    }
+    for p in &raw.projects {
+        if matches!(p.base_branch.as_deref(), Some("")) {
+            anyhow::bail!("Invalid config: baseBranch must not be empty");
+        }
+    }
+    Ok(raw)
 }
 
 /// Resolve a raw config document into an [`OrcConfig`], overlaying global defaults per project and
@@ -424,6 +439,20 @@ mod tests {
     #[test]
     fn unknown_top_level_key_errors() {
         let text = r#"{ "bogus": 1, "projects": [ { "name": "A", "path": "/a" } ] }"#;
+        let err = parse_raw_config(text).unwrap_err().to_string();
+        assert!(err.contains("Invalid config"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_projects_errors() {
+        let text = r#"{ "projects": [] }"#;
+        let err = parse_raw_config(text).unwrap_err().to_string();
+        assert!(err.contains("Invalid config"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_base_branch_errors() {
+        let text = r#"{ "projects": [ { "name": "A", "path": "/a", "baseBranch": "" } ] }"#;
         let err = parse_raw_config(text).unwrap_err().to_string();
         assert!(err.contains("Invalid config"), "got: {err}");
     }
