@@ -229,11 +229,19 @@ impl TmuxController {
     }
 
     /// Provision an agent's long-lived interactive shell in a detached window in its worktree.
+    ///
+    /// The shell is the user's own `$SHELL` started interactively (visible prompt, their rc), so the
+    /// pane is immediately usable — click it (mouse is enabled) or use the tmux prefix to focus it.
+    /// The blank-prompt `__orc_run` protocol (see [`install_setup`](Self::install_setup)) is only
+    /// installed when a command is actually injected, so it never makes the interactive shell look
+    /// dead.
     pub fn register_agent(&mut self, id: &str, cwd: &str) {
         let capture = self.capture_path(id);
         let _ = std::fs::write(&capture, "");
         let window = agent_window_name(id);
-        let pane_id = match self.tmux(argv_new_window(&self.session_name, &window, cwd, "exec zsh -if")) {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell_cmd = format!("exec {shell} -i");
+        let pane_id = match self.tmux(argv_new_window(&self.session_name, &window, cwd, &shell_cmd)) {
             Ok(out) => out.trim().to_string(),
             Err(_) => return, // best-effort: no window → no pane for this agent
         };
@@ -241,7 +249,6 @@ impl TmuxController {
             return;
         }
         self.tmux_ok(argv_pipe_pane(&pane_id, &format!("cat >> {}", shq(&capture))));
-        self.install_setup(&pane_id);
         self.agents.insert(
             id.to_string(),
             AgentWindow { window, pane_id, capture_path: capture },
@@ -251,6 +258,9 @@ impl TmuxController {
         }
     }
 
+    /// Type the one-time blank-prompt `__orc_run` protocol into a shell. Used before injecting a
+    /// command (the future `mcp__orc__run` path); not run for plain interactive shells.
+    #[allow(dead_code)]
     fn install_setup(&self, pane_id: &str) {
         let dir = self.logs_dir.to_string_lossy().into_owned();
         self.tmux_ok(argv_send_keys_literal(pane_id, &build_setup_script(&dir)));
@@ -349,6 +359,9 @@ impl TmuxController {
         let _ = real_tmux(&argv_kill_session(SESSION_NAME)); // kill any stale session (ignore errors)
         real_tmux(&argv_new_session(SESSION_NAME, reexec_argv))?;
         let _ = real_tmux(&argv_status_off(SESSION_NAME));
+        // Enable the mouse so the human can click into an agent's shell pane (and scroll it) without
+        // knowing the tmux prefix; focus otherwise stays on the orc TUI by design.
+        let _ = real_tmux(&["set".into(), "-t".into(), SESSION_NAME.into(), "mouse".into(), "on".into()]);
         // Replace this process with `tmux attach` so the human sees the session.
         let err = std::process::Command::new("tmux")
             .args(["attach-session", "-t", SESSION_NAME])
@@ -469,6 +482,12 @@ mod tests {
         assert!(c.agents.contains_key("a1"), "agent window not registered");
         c.show_agent(Some("a1"));
         assert_eq!(c.stage_occupant.as_deref(), Some("a1"));
+
+        // Install the `__orc_run` protocol (register no longer does, so the interactive prompt stays
+        // visible); this is what a future `mcp__orc__run` call path would do before injecting.
+        let pane = c.agents.get("a1").unwrap().pane_id.clone();
+        c.install_setup(&pane);
+        std::thread::sleep(Duration::from_millis(300));
 
         let res = c.run_in_pane("a1", "echo hello-from-pane", Duration::from_secs(15));
         c.shutdown();
