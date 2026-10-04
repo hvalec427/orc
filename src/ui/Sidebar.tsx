@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { AgentInfo, AgentStatus } from '../types.js';
+import { blockHeightOf, scrollOffset } from './layout.js';
 
 /**
  * Single-width glyphs + colors instead of emojis: terminals render emojis at an
@@ -109,30 +110,6 @@ export function Sidebar({
       </Box>
     </Box>
   );
-}
-
-/** Rendered height (in rows) of one active-agent block: optional project header + name + cost line,
- *  plus the top margin that separates top-level agents. Mirrors AgentRow's layout. */
-function blockHeightOf(info: AgentInfo, prevProject: string | undefined): number {
-  const isChild = info.parentId !== undefined;
-  const marginTop = isChild ? 0 : 1;
-  const header = !isChild && info.project !== prevProject ? 1 : 0;
-  return marginTop + header + 1 /* name */ + 1 /* template·cost */;
-}
-
-/** Smallest number of leading rows to hide so the selected block fits within `listRows`.
- *  Scrolls by whole agent blocks: accumulate hidden rows until the selected block's bottom is in view. */
-function scrollOffset(blockHeights: number[], selectedIndex: number, listRows: number): number {
-  if (selectedIndex < 0) return 0;
-  let start = 0; // first visible block index
-  const heightFrom = (from: number, to: number) => {
-    let h = 0;
-    for (let i = from; i <= to; i++) h += blockHeights[i] ?? 0;
-    return h;
-  };
-  // Advance the window start until the selected block's cumulative height fits.
-  while (start < selectedIndex && heightFrom(start, selectedIndex) > listRows) start++;
-  return heightFrom(0, start - 1);
 }
 
 /**

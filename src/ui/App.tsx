@@ -7,7 +7,7 @@ import { AgentView } from './AgentView.js';
 import { InputBar } from './InputBar.js';
 import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
-import { visualRows } from './layout.js';
+import { visualRows, inputChrome as inputChromeFor, inputWidthFor, overlayRowsFor, bodyHeightFor } from './layout.js';
 import { buildPreviewInstructions } from '../previewInstructions.js';
 
 type Mode = 'list' | 'new' | 'input' | 'preview';
@@ -323,11 +323,11 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // terminal scrolls (the real flicker cause). We cap the input area so a very long
   // reply shrinks the log body instead of pushing the frame past the terminal.
   const inputQuestion = selected?.getInfo().question;
-  const inputChrome = 2 + 1 + (inputQuestion ? 1 : 0); // borders + label + optional question
+  const inputChrome = inputChromeFor(!!inputQuestion); // borders + label + optional question
   // Width available to the typed text inside the InputBar: full terminal width minus
   // the box border (2) + its paddingX (2) + the input's marginLeft (2). Mirror
   // InputBar.tsx / MultilineInput.tsx; keep in sync if that chrome changes.
-  const inputWidth = Math.max(1, (stdout?.columns ?? 80) - 6);
+  const inputWidth = inputWidthFor(stdout?.columns ?? 80);
   // Keep the log body usable; whatever rows remain can host the input text.
   const maxInputLines = Math.max(1, rows - 2 - 1 - inputChrome - 6);
   const inputLines = Math.min(maxInputLines, visualRows(replyValue, inputWidth));
@@ -341,12 +341,13 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   //   - ApprovalModal: 6 rows.
   //   - HelpBar: one line that can soft-wrap to a second → reserve 2 so the frame height
   //     is stable whether or not the command list wraps.
-  const overlayRows =
-    confirmingQuit ? 5
-    : approvalPending ? 6
-    : mode === 'input' ? inputChrome + inputLines
-    : 2;
-  const bodyHeight = Math.max(6, rows - 2 - overlayRows);
+  const overlayRows = overlayRowsFor(
+    confirmingQuit ? { kind: 'quit' }
+    : approvalPending ? { kind: 'approval' }
+    : mode === 'input' ? { kind: 'input', inputChrome, inputLines }
+    : { kind: 'list' },
+  );
+  const bodyHeight = bodyHeightFor(rows, overlayRows);
 
   // While previewing, build orc's "how to run/test this branch" instructions for the selected
   // agent from its project config (type, port, magic link) and worktree. Looked up by project name
