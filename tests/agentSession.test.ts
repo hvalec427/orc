@@ -372,3 +372,92 @@ test('stop() hard-kills: interrupts, aborts and drops the query', async () => {
   assert.equal(p.query, null, 'query nulled');
   assert.equal(p.status, 'stopped');
 });
+
+// ===================================================================================================
+// Stable snapshots for per-slice subscriptions (planned — flicker fix).
+//
+// The TUI will subscribe to each slice via useSyncExternalStore and only repaint a pane when THAT
+// slice's snapshot changes identity. That requires the session to expose:
+//   - eventsVersion(): a monotonically increasing integer bumped on every pushed log entry, so the
+//     log pane can cheaply tell "my events changed" without diffing the array.
+//   - getInfo(): a MEMOIZED snapshot — referentially equal (Object.is) across calls while nothing
+//     changed, and a fresh object after any status / pendingApproval / field change — so React.memo'd
+//     consumers don't re-render on unrelated updates.
+//
+// Accessed via runtime casts so `tsc --noEmit` stays green before the implementer adds them; the
+// assertions then fail at runtime with a clear message. Expected RED until the implementer adds the
+// version counter + getInfo() caching.
+// ===================================================================================================
+
+/** eventsVersion() accessor, asserting it exists as a function. */
+function eventsVersion(session: AgentSession): number {
+  const fn = (session as unknown as Record<string, unknown>).eventsVersion;
+  assert.equal(typeof fn, 'function', 'AgentSession must expose eventsVersion()');
+  return (fn as () => number).call(session);
+}
+
+/** Drive one log entry through the public message handler (an SDK 'user' tool_result message). */
+function pushOneEvent(session: AgentSession, text: string): void {
+  feed(session, userMessage([{ type: 'tool_result', tool_use_id: 't', content: text }]));
+}
+
+test('eventsVersion() exists and is a non-negative integer', () => {
+  const session = makeSession();
+  const v = eventsVersion(session);
+  assert.equal(typeof v, 'number');
+  assert.ok(Number.isInteger(v) && v >= 0, `expected a non-negative integer, got ${v}`);
+});
+
+test('eventsVersion() strictly increases after an event is pushed', () => {
+  const session = makeSession();
+  const before = eventsVersion(session);
+  pushOneEvent(session, 'first');
+  const afterOne = eventsVersion(session);
+  assert.ok(afterOne > before, `version must increase: ${before} -> ${afterOne}`);
+  pushOneEvent(session, 'second');
+  const afterTwo = eventsVersion(session);
+  assert.ok(afterTwo > afterOne, `version must keep increasing: ${afterOne} -> ${afterTwo}`);
+});
+
+test('getInfo() returns a referentially-equal snapshot when nothing changed', () => {
+  const session = makeSession();
+  const a = session.getInfo();
+  const b = session.getInfo();
+  assert.ok(Object.is(a, b), 'getInfo() must return the SAME object identity when nothing changed');
+});
+
+test('getInfo() returns a DIFFERENT snapshot after a status change', () => {
+  const session = makeSession();
+  const before = session.getInfo();
+  (session as unknown as { setStatus(s: string): void }).setStatus('working');
+  const after = session.getInfo();
+  assert.ok(!Object.is(before, after), 'a status change must invalidate the cached snapshot');
+  assert.equal(after.status, 'working');
+});
+
+test('a pendingApproval change invalidates the snapshot/version', () => {
+  const session = makeSession();
+  // Capture the pre-change identity (snapshot) and version.
+  const infoBefore = session.getInfo();
+  const versionBefore = eventsVersion(session);
+
+  // Set a pending approval the way the canUseTool gate does (field + status flip).
+  (session as unknown as { pendingApproval?: unknown }).pendingApproval = {
+    toolName: 'Bash',
+    input: { command: 'ls' },
+    resolve: () => {},
+  };
+  (session as unknown as { setStatus(s: string): void }).setStatus('needs_approval');
+
+  const infoAfter = session.getInfo();
+  const versionAfter = eventsVersion(session);
+
+  // The change must be observable through EITHER the snapshot identity or the version counter —
+  // whichever channel the implementer wires pendingApproval into.
+  const snapshotChanged = !Object.is(infoBefore, infoAfter);
+  const versionChanged = versionAfter !== versionBefore;
+  assert.ok(
+    snapshotChanged || versionChanged,
+    'a pendingApproval change must invalidate the getInfo() snapshot or bump a version counter',
+  );
+});
