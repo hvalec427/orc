@@ -16,16 +16,23 @@ them, and answer questions they raise — per agent, in the same session.
 
 ## Status (Rust rewrite)
 
-orc was rewritten from TypeScript to Rust (ratatui + crossterm). The **core loop works today**:
-launch the TUI, pick a project, start an agent (its own worktree + branch + port), watch its
-`claude` session stream live, answer it with `i`, resume with `r`, and `@@DONE@@`/`@@NEEDS_INPUT@@`
-drive its status. Config loading, port allocation, worktrees, persistence (`~/.orc/state.json`),
-and the human-in-the-loop protocol are all in.
+orc was rewritten from TypeScript to Rust (ratatui + crossterm). What works today:
 
-Not yet wired in this build (the `.rs` modules exist as stubs): the per-agent **tmux** shell panes,
-**iOS simulator** provisioning, **merge agents** (`m`), **pipelines**, the custom **orchestrator/
-launcher MCP tools**, and the `p` "install CLAUDE.md" action. Those keys currently report that they
-aren't available yet. Everything below describes the full intended design.
+- **Core loop**: launch the TUI, pick a project, start an agent (its own worktree + branch + port),
+  watch its `claude` session stream live, answer it with `i`, resume with `r`, and
+  `@@DONE@@`/`@@NEEDS_INPUT@@` drive its status. Config, ports, worktrees, persistence
+  (`~/.orc/state.json`), and the human-in-the-loop protocol are all in.
+- **tmux shell panes**: when `tmux` is installed and you're on a TTY, orc bootstraps a tmux session
+  (or adopts the one you're already in) and gives each agent its own long-lived interactive shell in
+  its worktree. Selecting an agent reveals its shell beside the TUI (focus stays on the TUI). Run
+  with `--no-tmux` for the plain UI.
+
+Not yet wired (the `.rs` modules exist as stubs): **iOS simulator** provisioning, **merge agents**
+(`m`), **pipelines**, the `p` "install CLAUDE.md" action, and the **`mcp__orc__run` tool**. That
+last one matters for the shell panes: until it lands, the agent's *own* commands run inside its
+`claude` process and show in the TUI log pane (the `⚙` lines), **not** in its tmux shell — the tmux
+shell is a live worktree terminal you can watch and type into. Those unfinished keys report that
+they aren't available yet. Everything below describes the full intended design.
 
 ## How it works
 
@@ -65,9 +72,9 @@ git clone git@github.com:hvalec427/orc.git ~/dev/orc && cd ~/dev/orc && ./instal
 `install.sh` is idempotent: it runs `cargo build --release` and points a launcher at the built
 binary. Then create `~/.orc/config.json` yourself and run `orc`.
 
-Requires a Rust toolchain (`cargo` / edition 2021), the `claude` CLI logged in, `tmux` (only if you
-enable the per-agent shell panes with `--tmux`), and (for the mobile flow) `xcrun`, a React Native
-app, and the Maestro MCP server on your `PATH`.
+Requires a Rust toolchain (`cargo` / edition 2021) and the `claude` CLI logged in. If `tmux` is on
+your `PATH` orc uses it for the per-agent shell panes (run `--no-tmux` to opt out); for the mobile
+flow you also need `xcrun`, a React Native app, and the Maestro MCP server on your `PATH`.
 
 <details>
 <summary>Manual install (no script)</summary>
@@ -108,7 +115,7 @@ orc                              # uses ~/.orc/config.json
 orc --config ./my-config.json    # alternate config
 orc --model claude-opus-4-8      # override model for all agents
 orc --no-maestro                 # don't attach the Maestro MCP server
-orc --tmux / --no-tmux           # enable / disable per-agent interactive shell panes
+orc --tmux / --no-tmux           # force tmux panes on / off (default: on when tmux is installed)
 ```
 
 Press `n` to start an agent: pick a **project**, a **name**, an optional **ticket** (a reference like

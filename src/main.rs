@@ -58,6 +58,10 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    use tmux::controller::{build_reexec_argv, detect_mode, Mode, TmuxController};
+
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
     let flags = Cli::parse().into_flags();
 
     let config = match config::load_config(&flags) {
@@ -69,6 +73,26 @@ fn run() -> anyhow::Result<()> {
         }
     };
 
+    // Decide whether to drive tmux BEFORE touching the terminal: a bootstrap re-exec must happen on
+    // the plain terminal so attaching tmux owns the screen cleanly.
+    let disabled = config.tmux == Some(false);
+    let is_tty = std::io::stdout().is_terminal();
+    let mode = detect_mode(
+        disabled,
+        is_tty,
+        TmuxController::is_available(),
+        std::env::var_os("TMUX").is_some(),
+        flags.tmux_child,
+    );
+
+    if mode == Mode::Bootstrap && !flags.tmux_child {
+        // Launch our own tmux session and re-exec orc inside it; this process is replaced.
+        let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+        let reexec = build_reexec_argv(&exe, &raw_args);
+        TmuxController::bootstrap_and_reexec(&reexec)?;
+        return Ok(());
+    }
+
     // A dedicated multi-thread runtime drives the agent subprocesses; the UI loop runs on the main
     // thread (not a runtime worker) so it can `Handle::block_on` to start sessions synchronously.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -76,6 +100,17 @@ fn run() -> anyhow::Result<()> {
         .build()?;
 
     let mut manager = agent::manager::AgentManager::new(config, rt.handle().clone());
+
+    // Attach tmux (if any) BEFORE restoring agents, so restored agents get their shell panes too.
+    if mode == Mode::Inside {
+        let mut controller = TmuxController::new();
+        if flags.tmux_child {
+            controller.adopt();
+        } else {
+            controller.adopt_inside(None);
+        }
+        manager.set_tmux(Some(controller));
+    }
     manager.restore();
 
     ui::app::run(&mut manager)?;

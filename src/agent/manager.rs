@@ -37,6 +37,7 @@ pub struct AgentManager {
     driver: Arc<dyn ClaudeDriver>,
     sessions: Vec<AgentSession>,
     allocators: HashMap<String, PortAllocator>,
+    tmux: Option<crate::tmux::controller::TmuxController>,
 }
 
 impl AgentManager {
@@ -59,7 +60,13 @@ impl AgentManager {
             driver,
             sessions: Vec::new(),
             allocators,
+            tmux: None,
         }
+    }
+
+    /// Attach a tmux controller (per-agent shell panes). `None` leaves orc in plain-TUI mode.
+    pub fn set_tmux(&mut self, tmux: Option<crate::tmux::controller::TmuxController>) {
+        self.tmux = tmux;
     }
 
     pub fn config(&self) -> &OrcConfig {
@@ -144,13 +151,28 @@ impl AgentManager {
         };
 
         let opts = self.session_opts(&project, &info, worktree.as_deref());
+        let agent_id = info.id.clone();
+        let tmux_cwd = worktree.clone().unwrap_or_else(|| project.repo.clone());
 
         let mut session = AgentSession::new(info, self.driver.clone(), self.rt.clone(), opts);
         session.start(params.prompt);
         self.sessions.push(session);
         let idx = self.sessions.len() - 1;
+
+        if let Some(t) = &mut self.tmux {
+            t.register_agent(&agent_id, &tmux_cwd);
+            t.show_agent(Some(&agent_id));
+        }
         self.persist();
         Ok(idx)
+    }
+
+    /// Reveal the agent at `idx` in its tmux pane (no-op when tmux is off).
+    pub fn show_selected(&mut self, idx: usize) {
+        let id = self.sessions.get(idx).map(|s| s.info().id);
+        if let (Some(t), Some(id)) = (&mut self.tmux, id) {
+            t.show_agent(Some(&id));
+        }
     }
 
     /// Build the `claude` session options (prompt, cwd, env, mcp) for an agent.
@@ -240,6 +262,9 @@ impl AgentManager {
         session.stop();
         let info = session.info();
 
+        if let Some(t) = &mut self.tmux {
+            t.unregister_agent(&info.id);
+        }
         if let Some(port) = info.metro_port {
             if let Some(a) = self.allocators.get_mut(&info.project) {
                 a.release(port);
@@ -261,6 +286,9 @@ impl AgentManager {
     pub fn stop_all(&mut self) {
         for s in &mut self.sessions {
             s.stop();
+        }
+        if let Some(t) = &mut self.tmux {
+            t.shutdown();
         }
         self.persist();
     }
@@ -284,8 +312,16 @@ impl AgentManager {
                 Some(p) => self.session_opts(p, &info, info.worktree.as_deref()),
                 None => SessionOpts::default(),
             };
+            let agent_id = info.id.clone();
+            let tmux_cwd = info
+                .worktree
+                .clone()
+                .or_else(|| project.as_ref().map(|p| p.repo.clone()));
             let session = AgentSession::new(info, self.driver.clone(), self.rt.clone(), opts);
             self.sessions.push(session);
+            if let (Some(t), Some(cwd)) = (&mut self.tmux, tmux_cwd) {
+                t.register_agent(&agent_id, &cwd);
+            }
         }
     }
 

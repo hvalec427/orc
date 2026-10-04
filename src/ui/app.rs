@@ -29,6 +29,7 @@ pub struct App {
     should_quit: bool,
     view_top: usize,
     view_max: usize,
+    last_shown: Option<String>,
 }
 
 impl App {
@@ -41,6 +42,7 @@ impl App {
             should_quit: false,
             view_top: 0,
             view_max: 0,
+            last_shown: None,
         }
     }
 }
@@ -72,6 +74,13 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, manager: &mut AgentManage
             app.selected = 0;
         } else if app.selected >= n {
             app.selected = n - 1;
+        }
+
+        // Reveal the selected agent's tmux pane when the selection changes.
+        let cur_id = manager.session(app.selected).map(|s| s.info().id);
+        if cur_id != app.last_shown {
+            manager.show_selected(app.selected);
+            app.last_shown = cur_id;
         }
 
         terminal.draw(|f| app.draw(f, manager))?;
