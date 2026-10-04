@@ -162,7 +162,8 @@ pub struct PendingApproval {
 }
 
 /// Runtime info about one agent, shown in the sidebar / persisted.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
     pub id: String,
     pub name: String,

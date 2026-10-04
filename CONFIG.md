@@ -1,15 +1,14 @@
 # `config.json` reference
 
 `orc` reads a single JSON config that lists the **projects** you can launch agents into, plus
-optional defaults. You can edit it by hand, or run `orc setup` to add/edit projects and the global
-defaults through a wizard (it preserves any keys it doesn't manage).
+optional defaults. You edit it by hand — orc never writes it.
 
 - **Default location:** `~/.orc/config.json`
 - **Override:** `orc --config <path>`
-- **Wizard:** `orc setup` (Add / Edit project, Global settings, Apply CLAUDE.md, Remove project)
 
 If the file is missing or invalid, `orc` exits with an error and prints a sample config. The schema
-is validated with [zod](https://zod.dev) in `src/config.ts`; unknown keys are rejected (`.strict()`).
+is validated with [serde](https://serde.rs) in `src/config.rs`; unknown keys are rejected
+(`deny_unknown_fields`).
 
 ---
 
@@ -59,12 +58,16 @@ A few settings are also influenced by CLI flags (see [CLI flags](#cli-flags)).
 | `portRange`      | string `"a-b"`      | No       | *(none)*             | Yes                     |
 | `maestroMcp`     | object              | No       | `{ "command": "maestro", "args": ["mcp"] }` | Yes (react-native only) |
 | `magicLink`      | string              | No       | *(none)*             | Yes (react-native only)  |
+| `tmux`           | boolean             | No       | *(off)*              | No (global only)        |
+
+`tmux` (global only): when `true`, each agent gets its own long-lived interactive `tmux` shell pane
+shown beside the TUI. Requires `tmux` on your `PATH`. The `--tmux` / `--no-tmux` flags override it.
 
 `projects` is the only key that is **not** overridable (it is the list itself). All the others may
 appear at the top level as a default and/or inside any project entry as an override.
 
-`maestroMcp` and `magicLink` apply only to `react-native` projects; the setup UI hides them for
-other project types.
+`maestroMcp` and `magicLink` apply only to `react-native` projects; they are ignored for other
+project types.
 
 ---
 
@@ -127,7 +130,7 @@ Controls how agent tool use is approved:
 | ------------------- | ----------------------------------------------------------------------------- |
 | `bypassPermissions` | Fully autonomous — all tools auto-approved (relies on the repo's `CLAUDE.md`). |
 | `default`           | Tool calls that need approval are routed to the UI; approve/deny with `y`/`n`. |
-| `acceptEdits`       | Passed through to the Claude Agent SDK's `acceptEdits` mode.                   |
+| `acceptEdits`       | Passed through to the `claude` CLI's `acceptEdits` mode.                       |
 
 Group coordination tools (inter-agent messaging) are always auto-allowed because they never touch the
 codebase.
@@ -191,7 +194,7 @@ environment as both `METRO_PORT` and `AGENT_PORT`.
 - **Applies to:** `react-native` projects only.
 
 The Maestro MCP server attached to every agent (drives the iOS simulator). Only relevant for
-`react-native` projects; the setup UI hides this option for other project types.
+`react-native` projects; ignored for other project types.
 
 | Field     | Type                      | Required | Description                               |
 | --------- | ------------------------- | -------- | ----------------------------------------- |
@@ -226,6 +229,7 @@ These override config at load time:
 | `--config <path>` | Load config from `<path>` instead of `~/.orc/config.json`. |
 | `--model <id>`    | Override `model` for **all** projects.                     |
 | `--no-maestro`    | Disable the Maestro MCP server even if configured.         |
+| `--tmux` / `--no-tmux` | Enable / disable the per-agent interactive shell panes (overrides the `tmux` config key). |
 
 ---
 

@@ -14,16 +14,30 @@ paths). When you start an agent you first pick its project; agents from differen
 coexist in one sidebar. From that one screen you watch each agent's live progress, toggle between
 them, and answer questions they raise — per agent, in the same session.
 
+## Status (Rust rewrite)
+
+orc was rewritten from TypeScript to Rust (ratatui + crossterm). The **core loop works today**:
+launch the TUI, pick a project, start an agent (its own worktree + branch + port), watch its
+`claude` session stream live, answer it with `i`, resume with `r`, and `@@DONE@@`/`@@NEEDS_INPUT@@`
+drive its status. Config loading, port allocation, worktrees, persistence (`~/.orc/state.json`),
+and the human-in-the-loop protocol are all in.
+
+Not yet wired in this build (the `.rs` modules exist as stubs): the per-agent **tmux** shell panes,
+**iOS simulator** provisioning, **merge agents** (`m`), **pipelines**, the custom **orchestrator/
+launcher MCP tools**, and the `p` "install CLAUDE.md" action. Those keys currently report that they
+aren't available yet. Everything below describes the full intended design.
+
 ## How it works
 
-Each agent is a streaming [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)
-session (`query()` with a push-able async input queue). For the project you pick, orc:
+Each agent is a streaming `claude` CLI session, spawned and driven through a `ClaudeDriver` seam
+(a push-able async input queue feeds your replies into the running session). For the project you
+pick, orc:
 
 - creates `git worktree add <repo>/.worktrees/<name> -b agent/<name>` in that project's repo,
 - allocates a free port from the project's `portRange` (if set) and injects it as `METRO_PORT`/`AGENT_PORT` plus `AGENT_NAME` into the session env,
 - attaches the Maestro MCP server,
 - appends an orchestration addendum to the worktree's own `CLAUDE.md` (loaded via
-  `settingSources`), and streams the agent's output live into the UI.
+  `settingSources`), and streams the agent's output live into the ratatui UI.
 
 The agent talks back to you with two sentinels (defined in the appended prompt):
 
@@ -42,25 +56,26 @@ file orc writes under `~/.orc` is `state.json` (runtime agent state).
 
 ## Install
 
-One command — clone, build, install a version-independent `orc` launcher, and scaffold the config:
+One command — clone, build the release binary, and install a version-independent `orc` launcher:
 
 ```bash
 git clone git@github.com:hvalec427/orc.git ~/dev/orc && cd ~/dev/orc && ./install.sh
 ```
 
-`install.sh` is idempotent and nvm-safe: it pins the launcher to the Node it finds so `orc` keeps
-working even when a project switches Node versions. Then edit `~/.orc/config.json` and run `orc`.
+`install.sh` is idempotent: it runs `cargo build --release` and points a launcher at the built
+binary. Then create `~/.orc/config.json` yourself and run `orc`.
 
-Requires Node ≥ 20, the `claude` CLI logged in, and (for the mobile flow) `xcrun`, a React Native
+Requires a Rust toolchain (`cargo` / edition 2021), the `claude` CLI logged in, `tmux` (only if you
+enable the per-agent shell panes with `--tmux`), and (for the mobile flow) `xcrun`, a React Native
 app, and the Maestro MCP server on your `PATH`.
 
 <details>
 <summary>Manual install (no script)</summary>
 
 ```bash
-npm install        # auto-builds via the prepare script
-npm link           # global `orc` for the active Node version
-# or run from source without installing:  npm run dev
+cargo build --release          # produces ./target/release/orc
+cargo install --path .         # or put `orc` on your PATH
+# or run from source without installing:  cargo run
 ```
 </details>
 
@@ -93,6 +108,7 @@ orc                              # uses ~/.orc/config.json
 orc --config ./my-config.json    # alternate config
 orc --model claude-opus-4-8      # override model for all agents
 orc --no-maestro                 # don't attach the Maestro MCP server
+orc --tmux / --no-tmux           # enable / disable per-agent interactive shell panes
 ```
 
 Press `n` to start an agent: pick a **project**, a **name**, an optional **ticket** (a reference like
@@ -189,15 +205,25 @@ Agent metadata (tagged with project) is mirrored to `~/.orc/state.json`.
 
 ```
 src/
-  index.tsx              CLI entry + Ink render
-  config.ts              config load/validate (zod)
-  ports.ts               Metro port allocator
-  worktree.ts            git worktree add/remove
-  agentPrompt.ts         orchestration addendum + sentinels
-  types.ts               shared domain types
+  main.rs                CLI entry (clap) + ratatui render
+  config.rs              config load/validate (serde)
+  ports.rs               Metro port allocator
+  worktree.rs            git worktree add/remove
+  persist.rs             ~/.orc/state.json persistence
+  simulators.rs          iOS simulator naming/boot
+  types.rs               shared domain types
   agent/
-    InputQueue.ts        push-able async input stream
-    AgentSession.ts      one query() session: streaming, status, sentinels
-    AgentManager.ts      registry + worktree/port lifecycle + persistence
-  ui/                    App, Sidebar, AgentView, InputBar, NewAgentForm, ApprovalModal
+    input_queue.rs       push-able async input stream
+    driver.rs            ClaudeDriver seam: spawn + stream a `claude` CLI session
+    session.rs           one agent session: streaming, status, sentinels
+    stream.rs            parse the streamed session output
+    manager.rs           registry + worktree/port lifecycle + persistence
+    prompt.rs            orchestration addendum + sentinels
+    instructions.rs      CLAUDE.md templates
+    tools.rs             orchestrator / launcher MCP tools
+    read_only.rs         read-only command classifier
+  tmux/
+    controller.rs        per-agent tmux shell panes (break/join stage)
+    pane_run.rs          inject commands into an agent's shell
+  ui/                    app, sidebar, agent_view, input_bar, forms, layout, log_format
 ```

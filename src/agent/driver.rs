@@ -48,6 +48,10 @@ pub struct SessionOpts {
     pub resume_session_id: Option<String>,
     pub system_prompt: Option<String>,
     pub permission_mode: Option<String>,
+    /// Extra environment variables injected into the child (e.g. `AGENT_NAME`, `AGENT_PORT`).
+    pub env: Vec<(String, String)>,
+    /// An inline `--mcp-config` JSON string (e.g. to attach the Maestro MCP server).
+    pub mcp_config: Option<String>,
 }
 
 /// A handle to a started session: its event stream, a stdin sender, and a cancel token.

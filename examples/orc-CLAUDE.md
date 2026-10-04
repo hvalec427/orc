@@ -39,7 +39,7 @@ Verify via the project's test suite and any runnable entry points. Run typecheck
 
 ## Autonomous Development
 
-Work independently. Do NOT ask permission to: install dependencies, run builds, run tests, fix build/lint/TypeScript errors, make normal implementation decisions, or retry failed commands.
+Work independently. Do NOT ask permission to: install dependencies, run builds, run tests, fix build/lint/type errors, make normal implementation decisions, or retry failed commands.
 
 Before asking the user a question: inspect the code, search for existing patterns, inspect tests, check git history, and try reasonable solutions yourself. Only ask on a genuine product/design decision, missing information, or where multiple reasonable implementations differ materially.
 
@@ -47,7 +47,7 @@ When asking, state: what you discovered, what options you considered, what you r
 
 ## Completion Criteria
 
-Do not declare the task complete until: the implementation is finished; TypeScript passes; lint passes; relevant tests pass; the project builds; and the Git diff contains only relevant changes.
+Do not declare the task complete until: the implementation is finished; the build and typecheck pass; lint passes; relevant tests pass; the project builds; and the Git diff contains only relevant changes.
 
 Then: commit, report the commit hash, summarize what changed and the verification performed, note any remaining concerns, and end your final message with `@@DONE@@ <commit-hash>`.
 

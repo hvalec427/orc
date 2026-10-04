@@ -1,5 +1,6 @@
 //! Agent subsystem: the Claude driver seam, session, manager, input queue, tools, prompts.
 
+pub mod cli_driver;
 pub mod driver;
 pub mod input_queue;
 pub mod instructions;
