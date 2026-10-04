@@ -482,6 +482,46 @@ describe('applyStage is reentrancy-safe (overlapping transitions)', () => {
   });
 });
 
+describe('runInPane waits for a just-selected agent to reach the stage', () => {
+  test('a command fired right after selection still drives the live pane (not in-process)', async () => {
+    const logsDir = tmpLogsDir();
+    try {
+      // Debounced controller like the real app: showAgent sets selectedId synchronously but defers the
+      // break/join behind the 80ms debounce. A command fired immediately after selection must NOT fall
+      // back in-process just because stageOccupantId isn't set yet — runInPane should settle the
+      // pending transition first, then drive the pane.
+      const { run, calls } = fakeRunner(['%5 0\n', '%9\n']);
+      const c = new TmuxController({ run, logsDir, showAgentDebounceMs: 80 });
+      await c.adopt();
+      c.registerAgent('a1', 'alpha', 'worker', '/work/a1');
+      await flush();
+
+      c.showAgent('a1'); // debounced: join hasn't happened yet, stageOccupantId still unset
+
+      const ac = new AbortController();
+      // Fire the command immediately, before the 80ms debounce would elapse.
+      const p = c.runInPane('a1', 'echo hi', ac.signal);
+      await flush();
+      ac.abort(); // no real shell writes the result file; abort to settle (rc 130)
+      const res = await p;
+
+      // The agent's shell (%9) was joined onto the stage (not skipped) and the command was driven
+      // in-pane: a non-null result means runInPane did NOT bail to the in-process fallback.
+      assert.ok(res, 'runInPane drove the pane instead of returning null (in-process fallback)');
+      assert.ok(
+        calls.some((a) => a[0] === 'join-pane' && a.includes('%9') && a.includes('%5')),
+        'the just-selected agent shell was joined onto the stage before the command ran',
+      );
+      const injected = calls.some(
+        (a) => a[0] === 'send-keys' && a.includes('-l') && (a[a.length - 1] as string).startsWith('__orc_run '),
+      );
+      assert.ok(injected, 'the command was injected into the live shell');
+    } finally {
+      rmSync(logsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runInPane injects a framed command and captures output', () => {
   test('returns null when the agent is not selected / has no shell', async () => {
     const logsDir = tmpLogsDir();

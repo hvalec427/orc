@@ -456,6 +456,29 @@ export class TmuxController implements Tmux {
   }
 
   /**
+   * Wait for any pending/in-flight stage transition toward `id` to settle so stageOccupantId reflects
+   * reality before runInPane decides whether to drive the pane. A just-selected agent has its
+   * break/join deferred behind the showAgent debounce + the serialized stageChain; without this a
+   * command fired immediately after selection would see the stage not-yet-joined and fall back
+   * in-process (invisible to the human). We flush the debounce so the transition fires now, then await
+   * the chain. Bail out early if the selection changed to another agent while we waited.
+   */
+  private async waitForStage(id: string): Promise<void> {
+    if (this.showAgentTimer) {
+      clearTimeout(this.showAgentTimer);
+      this.showAgentTimer = undefined;
+      this.applyStage(this.selectedId);
+    }
+    // Await the chain repeatedly until it's idle: applyStage may still be enqueuing I/O when we first
+    // await, so re-await until the promise stops changing (or the agent is no longer selected).
+    let prev: Promise<void> | undefined;
+    while (prev !== this.stageChain && this.selectedId === id) {
+      prev = this.stageChain;
+      await prev;
+    }
+  }
+
+  /**
    * Type the one-time pane protocol (blank prompt + __orc_run helper) into a shell and submit it, then
    * wipe the shell's screen + scrollback so the human never sees the setup script's own echo — leaving
    * a pristine pane that from then on shows only clean `$ <cmd>` banners and their output.
@@ -496,7 +519,14 @@ export class TmuxController implements Tmux {
     signal: AbortSignal,
   ): Promise<{ output: string; rc: number } | null> {
     const entry = this.agentPanes.get(agentId);
-    if (!entry || this.selectedId !== agentId || this.stageOccupantId !== agentId) return null;
+    if (!entry || this.selectedId !== agentId) return null;
+    // The agent is selected but its shells may not be on the stage yet: showAgent sets selectedId
+    // synchronously but defers the break/join behind an 80ms debounce + the serialized stageChain, so
+    // a command fired right after selection would otherwise see stageOccupantId still unset and fall
+    // back in-process — the human never sees it run in the live pane. Settle the pending transition
+    // first, then re-check, so a just-selected agent's command still runs in its visible shell.
+    if (this.stageOccupantId !== agentId) await this.waitForStage(agentId);
+    if (this.stageOccupantId !== agentId) return null;
 
     const shell = await this.acquireShell(agentId);
     if (!shell) return null; // all shells busy and at the cap → fall back in-process (acquire marks it busy)
