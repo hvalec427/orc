@@ -23,6 +23,7 @@ function makeSession() {
     pendingApproval: undefined,
     getInfo: () => info,
     getEvents: () => [{ kind: 'text', text: 'hello', done: true }],
+    eventsVersion: () => 0,
   } as any;
 }
 

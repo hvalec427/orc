@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Box, Text } from 'ink';
 import type { AgentInfo, AgentStatus } from '../types.js';
 import { blockHeightOf, scrollOffset } from './layout.js';
@@ -34,7 +35,7 @@ const STATUS_ICON: Record<AgentStatus, { glyph: string; color: string }> = {
  * whole agent blocks until the selected agent fits in view. This keeps the TOTAL frame height constant
  * regardless of agent count, so the frame never overflows the terminal and scrolls Ink off-screen.
  */
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   active,
   archived,
   showDone,
@@ -110,7 +111,7 @@ export function Sidebar({
       </Box>
     </Box>
   );
-}
+});
 
 /**
  * A full agent row: status glyph, name, optional project header, and the template·cost line. Used for
@@ -118,7 +119,7 @@ export function Sidebar({
  * renders dimmed, matching the "this group is finished" treatment while keeping the same layout
  * (project header + `└`-nested children) as the active view.
  */
-function AgentRow({
+const AgentRow = memo(function AgentRow({
   info,
   index,
   selected,
@@ -166,7 +167,7 @@ function AgentRow({
       </Text>
     </Box>
   );
-}
+});
 
 /** Project of the nearest top-level agent before index `i` (skipping nested children), or undefined. */
 function lastTopLevelProjectBefore(infos: AgentInfo[], i: number): string | undefined {

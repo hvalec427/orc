@@ -21,6 +21,7 @@ function session(rec: Rec) {
     pendingApproval: undefined,
     getInfo: () => info,
     getEvents: () => [{ kind: 'text', text: rec.name, done: true }],
+    eventsVersion: () => 0,
     retry: () => {},
     send: () => {},
     _info: info,

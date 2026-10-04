@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import type { OrcConfig, AgentStatus } from '../types.js';
+import type { OrcConfig, AgentStatus, AgentInfo } from '../types.js';
 import type { AgentManager } from '../agent/AgentManager.js';
 import { Sidebar } from './Sidebar.js';
 import { AgentView } from './AgentView.js';
@@ -8,6 +8,7 @@ import { InputBar } from './InputBar.js';
 import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
 import { visualRows, inputChrome as inputChromeFor, inputWidthFor, overlayRowsFor, bodyHeightFor } from './layout.js';
+import { subscribeRoster } from './subscriptions.js';
 import { buildPreviewInstructions } from '../previewInstructions.js';
 
 type Mode = 'list' | 'new' | 'input' | 'preview';
@@ -17,7 +18,6 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   const { stdout } = useStdout();
   const rows = stdout?.rows ?? 30;
 
-  const [, setTick] = useState(0);
   const [mode, setMode] = useState<Mode>('list');
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [notice, setNotice] = useState<string>('');
@@ -33,50 +33,38 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
   // are hidden (only a "Done (N)" header shows) and are not part of the navigable list.
   const [showDone, setShowDone] = useState(false);
 
-  // Re-render whenever any agent updates. A busy agent emits ~15fps token-delta
-  // updates; while the reply box is open, repainting the whole tree that fast
-  // moves the focused TextInput cursor and makes the TUI flicker. So while
-  // typing a reply we coalesce updates to a few frames per second — the log
-  // stays live (you still see the agent working/finishing), but the repaint is
-  // infrequent enough that the blink is negligible.
-  const replyOpen = mode === 'input';
+  // Per-slice subscription for the roster/status: App re-renders only when the set of agents OR any
+  // agent's getInfo() snapshot changes identity. Because getInfo() is memoized (stable identity
+  // unless a status/field it exposes changed), a pure CONTENT update (a token-delta pushEntry that
+  // bumps eventsVersion but not getInfo) leaves this snapshot unchanged, so the whole App tree does
+  // NOT repaint — that's the flicker fix. The AgentView subscribes to its own eventsVersion slice to
+  // pick those content updates up for the selected agent only.
+  const rosterStore = useRef<{ version: number; infos: readonly AgentInfo[] }>({ version: 0, infos: [] });
+  const rosterSnapshot = () => {
+    // Build the current ordered getInfo() identities (cheap: getInfo is memoized). Bump the cached
+    // version only when they differ from the last observed set, so getSnapshot returns a stable
+    // primitive between unrelated (content-only) updates — React requires getSnapshot be cached.
+    const infos = manager.list().map((a) => a.getInfo());
+    const prev = rosterStore.current.infos;
+    let changed = infos.length !== prev.length;
+    if (!changed) for (let i = 0; i < infos.length; i++) if (!Object.is(infos[i], prev[i])) { changed = true; break; }
+    if (changed) rosterStore.current = { version: rosterStore.current.version + 1, infos };
+    return rosterStore.current.version;
+  };
+  useSyncExternalStore(
+    (onChange) => subscribeRoster(manager as unknown as Parameters<typeof subscribeRoster>[0], onChange),
+    rosterSnapshot,
+    rosterSnapshot,
+  );
+
+  // Surface the manager's log lines as the transient notice.
   useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
-
-    if (!replyOpen) {
-      const onUpdate = () => bump();
-      const onLog = (m: string) => setNotice(m);
-      manager.on('update', onUpdate);
-      manager.on('log', onLog);
-      return () => {
-        manager.off('update', onUpdate);
-        manager.off('log', onLog);
-      };
-    }
-
-    // Throttled path while the reply box is open (~4fps).
-    let pending = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const flush = () => {
-      timer = undefined;
-      if (pending) {
-        pending = false;
-        bump();
-      }
-    };
-    const onUpdate = () => {
-      pending = true;
-      if (!timer) timer = setTimeout(flush, 250);
-    };
     const onLog = (m: string) => setNotice(m);
-    manager.on('update', onUpdate);
     manager.on('log', onLog);
     return () => {
-      manager.off('update', onUpdate);
       manager.off('log', onLog);
-      if (timer) clearTimeout(timer);
     };
-  }, [manager, replyOpen]);
+  }, [manager]);
 
   // The ONE flat navigable list: active agents, plus archived ones only while the Done section is
   // expanded. selectedIndex indexes into this list, and the Sidebar renders from the same split, so
@@ -384,6 +372,7 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
         />
         <AgentView
           session={selected}
+          manager={manager}
           height={bodyHeight}
           width={(stdout?.columns ?? 100) - 36}
           active={(mode === 'list' || mode === 'preview') && !approvalPending}

@@ -1,28 +1,42 @@
-import { useState, useEffect, useRef } from 'react';
+import { memo, useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { AgentSession } from '../agent/AgentSession.js';
+import type { AgentManager } from '../agent/AgentManager.js';
 import type { LogKind } from '../types.js';
 import { LOG_KIND_COLOR } from './logFormat.js';
+import { subscribeAgent } from './subscriptions.js';
 
 interface DLine {
   kind: LogKind;
   text: string;
 }
 
-export function AgentView({
+export const AgentView = memo(function AgentView({
   session,
+  manager,
   height,
   width,
   active,
   preview,
 }: {
   session: AgentSession | undefined;
+  manager: AgentManager;
   height: number;
   width: number;
   active: boolean;
   /** When set, show these "how to run/test this branch" instructions instead of the log. */
   preview?: string;
 }) {
+  // Subscribe ONLY to the selected agent's content slice: re-render this pane when its eventsVersion
+  // advances (a new log entry), falling back to the global 'update' event. A background update to a
+  // DIFFERENT agent leaves this agent's eventsVersion unchanged, so this pane does not repaint.
+  useSyncExternalStore(
+    (onChange) =>
+      subscribeAgent(manager as unknown as Parameters<typeof subscribeAgent>[0], session?.id, onChange),
+    () => session?.eventsVersion() ?? 0,
+    () => session?.eventsVersion() ?? 0,
+  );
+
   const [follow, setFollow] = useState(true);
   const [paused, setPaused] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
@@ -149,7 +163,7 @@ export function AgentView({
       </Box>
     </Box>
   );
-}
+});
 
 /** Split text on newlines and hard-wrap each segment to `width` (predictable line count). */
 function wrapText(s: string, width: number): string[] {
