@@ -174,6 +174,26 @@ describe('capture protocol end-to-end (real zsh, no tmux)', () => {
     assert.doesNotMatch(r.output, /first/);
   });
 
+  test('regression: a command with single-quoted #{…} args runs verbatim (no injection mangling)', async () => {
+    // The old protocol typed the WHOLE command (incl. its quotes/braces) into the pane as one long
+    // send-keys line; a long `tmux … -F '#{…}'` line got mangled by the line editor and reached tmux
+    // as a bogus subcommand ("unknown command: tmux"). The staged-file + __orc_run path must instead
+    // carry the command text byte-for-byte, so the exact format string survives.
+    const fx = makeFixture();
+    const fmt = `#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{window_name} #{pane_active}`;
+    // Echo back the format string the way `tmux … -F '<fmt>'` would embed it, through the full protocol.
+    const { res } = runInjected(fx, 'r1', `printf '%s\\n' '${fmt}'`);
+    const r = await withTimeout(
+      waitForCapture(res, 'r1', 0, new AbortController().signal),
+      5000,
+      'waitForCapture r1',
+    );
+    assert.equal(r.rc, 0);
+    // The whole format string survives intact — no wrapping/line-editor mangling of the quotes/braces.
+    assert.equal(r.output, fmt);
+    assert.doesNotMatch(r.output, /unknown command/);
+  });
+
   test('waitForCapture rejects promptly when the AbortController is aborted', async () => {
     const fx = makeFixture();
     // No frame is ever written for r1, so only the abort can settle it.
