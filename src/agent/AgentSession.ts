@@ -283,6 +283,7 @@ export class AgentSession extends EventEmitter {
   setArchived(v: boolean): void {
     if (this._archived === v) return;
     this._archived = v;
+    this.invalidateInfo();
     this.emitNow();
   }
   /** Nice name of the project this agent belongs to. */
@@ -330,6 +331,16 @@ export class AgentSession extends EventEmitter {
   pendingApproval?: PendingApproval;
 
   private emitScheduled = false;
+
+  /** Monotonic counter bumped on every pushed log entry so the log pane can cheaply detect change. */
+  private _eventsVersion = 0;
+  /**
+   * Memoized getInfo() snapshot. Null means "rebuild on next read"; invalidated whenever a field
+   * getInfo reads (status / question / sessionId / cost / archived / pendingApproval) changes, so
+   * React.memo'd consumers subscribing via useSyncExternalStore see a stable identity between
+   * unrelated updates and a fresh object after a real change.
+   */
+  private infoCache: AgentInfo | null = null;
 
   constructor(init: AgentSessionInit) {
     super();
@@ -417,6 +428,7 @@ export class AgentSession extends EventEmitter {
   hydrate(state: { sessionId?: string }): void {
     this.sessionId = state.sessionId;
     this.status = 'stopped';
+    this.invalidateInfo();
     this.addLog('system', '↻ restored from previous session (press retry/send to resume)');
     this.emitNow();
   }
@@ -515,6 +527,7 @@ export class AgentSession extends EventEmitter {
    */
   private deliver(text: string, entry: { kind: LogEntry['kind']; log: string }): void {
     this.question = undefined;
+    this.invalidateInfo();
     this.pausing = false;
     // If the turn has ended, the SDK subprocess is no longer consuming the input queue — for
     // 'needs_input' the turn resolved to a 'result' and the CLI typically exits — so pushing the
@@ -644,6 +657,7 @@ export class AgentSession extends EventEmitter {
     const pending = this.pendingApproval;
     if (!pending) return;
     this.pendingApproval = undefined;
+    this.invalidateInfo();
     pending.resolve(approved);
     this.addLog('system', approved ? `✓ approved ${pending.toolName}` : `✗ denied ${pending.toolName}`);
     this.setStatus('working');
@@ -698,24 +712,37 @@ export class AgentSession extends EventEmitter {
   }
 
   getInfo(): AgentInfo {
-    return {
-      id: this.id,
-      name: this.name,
-      template: this.template,
-      parentId: this.parentId,
-      project: this.project,
-      ticket: this.ticket,
-      branch: this.branch,
-      worktree: this.worktree,
-      ownsWorktree: this._ownsWorktree,
-      metroPort: this.metroPort,
-      simulatorUdid: this._simulatorUdid,
-      status: this.status,
-      question: this.question,
-      sessionId: this.sessionId,
-      totalCostUsd: this.totalCostUsd,
-      archived: this._archived,
-    };
+    if (this.infoCache === null) {
+      this.infoCache = {
+        id: this.id,
+        name: this.name,
+        template: this.template,
+        parentId: this.parentId,
+        project: this.project,
+        ticket: this.ticket,
+        branch: this.branch,
+        worktree: this.worktree,
+        ownsWorktree: this._ownsWorktree,
+        metroPort: this.metroPort,
+        simulatorUdid: this._simulatorUdid,
+        status: this.status,
+        question: this.question,
+        sessionId: this.sessionId,
+        totalCostUsd: this.totalCostUsd,
+        archived: this._archived,
+      };
+    }
+    return this.infoCache;
+  }
+
+  /** Drop the memoized getInfo() snapshot so the next read rebuilds it. */
+  private invalidateInfo(): void {
+    this.infoCache = null;
+  }
+
+  /** Monotonic version of the event log; bumped on every pushed entry. */
+  eventsVersion(): number {
+    return this._eventsVersion;
   }
 
   getEvents(): readonly LogEntry[] {
@@ -1143,6 +1170,7 @@ export class AgentSession extends EventEmitter {
       case 'system':
         if (msg.subtype === 'init') {
           this.sessionId = msg.session_id;
+          this.invalidateInfo();
           if (this.status === 'booting') this.setStatus('working');
           this.addLog('system', `session ready · model ${msg.model}`);
         }
@@ -1231,6 +1259,7 @@ export class AgentSession extends EventEmitter {
     }
     this.sessionId = msg.session_id;
     this.totalCostUsd = (this.totalCostUsd ?? 0) + (msg.total_cost_usd ?? 0);
+    this.invalidateInfo();
 
     if (msg.subtype !== 'success') {
       const detail = msg.errors.join('; ');
@@ -1259,6 +1288,7 @@ export class AgentSession extends EventEmitter {
     // Either an explicit NEEDS_INPUT, or a turn that ended without a sentinel.
     // In streaming mode the session is now idle and waiting for the human either way.
     this.question = text.replace(NEEDS_INPUT, '').trim();
+    this.invalidateInfo();
     this.lastResultText = this.question;
     this.addLog('result', '⏸ waiting for your input');
     this.setStatus('needs_input');
@@ -1327,6 +1357,7 @@ export class AgentSession extends EventEmitter {
   private pushEntry(entry: LogEntry): LogEntry {
     this.events.push(entry);
     if (this.events.length > MAX_EVENTS) this.events.splice(0, this.events.length - MAX_EVENTS);
+    this._eventsVersion++;
     this.scheduleEmit();
     return entry;
   }
@@ -1334,6 +1365,7 @@ export class AgentSession extends EventEmitter {
   private setStatus(status: AgentStatus): void {
     if (this.status === status) return;
     this.status = status;
+    this.invalidateInfo();
     this.emitNow();
   }
 
