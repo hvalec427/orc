@@ -264,6 +264,7 @@ export class AgentManager extends EventEmitter {
     });
     session.start();
     this.persist();
+    this.emit('roster');
     this.emit('update');
     return session;
   }
@@ -396,6 +397,10 @@ export class AgentManager extends EventEmitter {
     // the agent's worktree when it has one, else the project base repo (worktree-less templates).
     this.tmux?.registerAgent(id, name, template, session.worktree ?? project.repo);
     session.on('update', () => {
+      // Per-agent content signal so a pane subscribed to just this agent can wake without every
+      // other pane re-reading its snapshot; the global 'update' is kept for the roster/duck-typed
+      // mock managers that only listen on 'update'.
+      this.emit(`agent:${id}`);
       this.emit('update');
     });
     this.agents.set(id, session);
@@ -912,6 +917,7 @@ export class AgentManager extends EventEmitter {
     session.setArchived(true);
     for (const child of this.childrenOf(id)) child.setArchived(true);
     this.persist();
+    this.emit('roster');
     this.emit('update');
   }
 
@@ -921,6 +927,7 @@ export class AgentManager extends EventEmitter {
     if (!session) return;
     session.setArchived(false);
     this.persist();
+    this.emit('roster');
     this.emit('update');
   }
 
@@ -977,6 +984,7 @@ export class AgentManager extends EventEmitter {
       }
     }
     this.persist();
+    this.emit('roster');
     this.emit('update');
   }
 
@@ -1109,6 +1117,7 @@ export class AgentManager extends EventEmitter {
       // Restore the persisted archived flag; otherwise archived agents reappear as active on reopen.
       if (a.archived) session.setArchived(true);
     }
+    this.emit('roster');
     this.emit('update');
   }
 }
