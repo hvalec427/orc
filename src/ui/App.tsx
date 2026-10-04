@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { OrcConfig, AgentStatus, AgentInfo } from '../types.js';
 import type { AgentManager } from '../agent/AgentManager.js';
@@ -52,11 +52,14 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
     if (changed) rosterStore.current = { version: rosterStore.current.version + 1, infos };
     return rosterStore.current.version;
   };
-  useSyncExternalStore(
-    (onChange) => subscribeRoster(manager as unknown as Parameters<typeof subscribeRoster>[0], onChange),
-    rosterSnapshot,
-    rosterSnapshot,
+  // Stable subscribe identity: a fresh arrow each render would make React unsubscribe+resubscribe
+  // (EventEmitter off/on churn) on every commit. Only re-create it when `manager` changes.
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      subscribeRoster(manager as unknown as Parameters<typeof subscribeRoster>[0], onChange),
+    [manager],
   );
+  useSyncExternalStore(subscribe, rosterSnapshot, rosterSnapshot);
 
   // Surface the manager's log lines as the transient notice.
   useEffect(() => {
