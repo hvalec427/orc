@@ -9,6 +9,7 @@ import { NewAgentForm } from './NewAgentForm.js';
 import { ApprovalModal } from './ApprovalModal.js';
 import { visualRows, inputChrome as inputChromeFor, inputWidthFor, overlayRowsFor, bodyHeightFor } from './layout.js';
 import { subscribeRoster } from './subscriptions.js';
+import { debounce } from './debounce.js';
 import { buildPreviewInstructions } from '../previewInstructions.js';
 
 type Mode = 'list' | 'new' | 'input' | 'preview';
@@ -65,6 +66,21 @@ export function App({ manager, config }: { manager: AgentManager; config: OrcCon
       manager.off('log', onLog);
     };
   }, [manager]);
+
+  // Recompute the layout on terminal resize, but debounced: a drag-resize fires a storm of 'resize'
+  // events, and repainting the whole frame on each one flickers. Coalesce them into one trailing
+  // re-render. resizeTick is otherwise unused — bumping it just forces this component to re-read
+  // stdout.rows/columns and recompute the height math.
+  const [, setResizeTick] = useState(0);
+  useEffect(() => {
+    if (!stdout) return;
+    const onResize = debounce(() => setResizeTick((t) => t + 1), 100);
+    stdout.on('resize', onResize);
+    return () => {
+      onResize.cancel();
+      stdout.off('resize', onResize);
+    };
+  }, [stdout]);
 
   // The ONE flat navigable list: active agents, plus archived ones only while the Done section is
   // expanded. selectedIndex indexes into this list, and the Sidebar renders from the same split, so
