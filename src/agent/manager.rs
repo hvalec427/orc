@@ -150,19 +150,24 @@ impl AgentManager {
             archived: None,
         };
 
-        let opts = self.session_opts(&project, &info, worktree.as_deref());
         let agent_id = info.id.clone();
         let tmux_cwd = worktree.clone().unwrap_or_else(|| project.repo.clone());
 
+        // Register the agent's tmux pane FIRST so its `mcp__orc__run` tool can target the pane and
+        // its injected commands run in that visible shell.
+        let pane_id = if let Some(t) = &mut self.tmux {
+            let p = t.register_agent(&agent_id, &tmux_cwd);
+            t.show_agent(Some(&agent_id));
+            p
+        } else {
+            None
+        };
+
+        let opts = self.session_opts(&project, &info, worktree.as_deref(), pane_id.as_deref());
         let mut session = AgentSession::new(info, self.driver.clone(), self.rt.clone(), opts);
         session.start(params.prompt);
         self.sessions.push(session);
         let idx = self.sessions.len() - 1;
-
-        if let Some(t) = &mut self.tmux {
-            t.register_agent(&agent_id, &tmux_cwd);
-            t.show_agent(Some(&agent_id));
-        }
         self.persist();
         Ok(idx)
     }
@@ -175,12 +180,15 @@ impl AgentManager {
         }
     }
 
-    /// Build the `claude` session options (prompt, cwd, env, mcp) for an agent.
+    /// Build the `claude` session options (prompt, cwd, env, mcp) for an agent. When `pane_id` is
+    /// set (tmux on), the agent gets the `mcp__orc__run` tool wired to its pane and its built-in
+    /// `Bash` tool is disabled, so all shell runs visibly in the pane.
     fn session_opts(
         &self,
         project: &ProjectConfig,
         info: &AgentInfo,
         cwd: Option<&str>,
+        pane_id: Option<&str>,
     ) -> SessionOpts {
         let addendum = build_addendum(
             info.template,
@@ -190,6 +198,7 @@ impl AgentManager {
                 metro_port: info.metro_port,
                 simulator_udid: info.simulator_udid.clone(),
                 magic_link: project.magic_link.clone(),
+                pane_tool: pane_id.is_some(),
             },
         );
 
@@ -202,15 +211,32 @@ impl AgentManager {
             env.push(("MAGIC_LINK".to_string(), link.clone()));
         }
 
-        let mcp_config = if project.project_type == ProjectType::ReactNative {
-            project.maestro_mcp.as_ref().map(|m| {
-                serde_json::json!({
-                    "mcpServers": { "maestro": m }
-                })
-                .to_string()
-            })
-        } else {
-            None
+        // Maestro MCP server, attached only for react-native projects.
+        let maestro_extra: Option<(&str, serde_json::Value)> =
+            if project.project_type == ProjectType::ReactNative {
+                project
+                    .maestro_mcp
+                    .as_ref()
+                    .and_then(|m| serde_json::to_value(m).ok())
+                    .map(|v| ("maestro", v))
+            } else {
+                None
+            };
+
+        let (mcp_config, disallowed_tools) = match (pane_id, self.tmux.as_ref()) {
+            (Some(pane), Some(tmux)) => {
+                let exe = std::env::current_exe()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| "orc".to_string());
+                let cfg = crate::mcp::build_mcp_config(&exe, pane, tmux.logs_dir(), maestro_extra);
+                (Some(cfg), vec!["Bash".to_string()])
+            }
+            _ => {
+                let cfg = maestro_extra.map(|(name, def)| {
+                    serde_json::json!({ "mcpServers": { name: def } }).to_string()
+                });
+                (cfg, Vec::new())
+            }
         };
 
         SessionOpts {
@@ -226,6 +252,7 @@ impl AgentManager {
             ),
             env,
             mcp_config,
+            disallowed_tools,
         }
     }
 
@@ -308,20 +335,23 @@ impl AgentManager {
             info.status = AgentStatus::Stopped;
             info.question = None;
             let project = self.project(&info.project).cloned();
-            let opts = match &project {
-                Some(p) => self.session_opts(p, &info, info.worktree.as_deref()),
-                None => SessionOpts::default(),
-            };
             let agent_id = info.id.clone();
             let tmux_cwd = info
                 .worktree
                 .clone()
                 .or_else(|| project.as_ref().map(|p| p.repo.clone()));
+
+            // Register the pane first (if tmux) so a resumed agent also routes shell through it.
+            let pane_id = match (&mut self.tmux, &tmux_cwd) {
+                (Some(t), Some(cwd)) => t.register_agent(&agent_id, cwd),
+                _ => None,
+            };
+            let opts = match &project {
+                Some(p) => self.session_opts(p, &info, info.worktree.as_deref(), pane_id.as_deref()),
+                None => SessionOpts::default(),
+            };
             let session = AgentSession::new(info, self.driver.clone(), self.rt.clone(), opts);
             self.sessions.push(session);
-            if let (Some(t), Some(cwd)) = (&mut self.tmux, tmux_cwd) {
-                t.register_agent(&agent_id, &cwd);
-            }
         }
     }
 

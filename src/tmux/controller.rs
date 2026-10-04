@@ -213,6 +213,11 @@ impl TmuxController {
         }
     }
 
+    /// The panes/logs directory where injected-command `.cmd`/`.res` files live.
+    pub fn logs_dir(&self) -> &std::path::Path {
+        &self.logs_dir
+    }
+
     fn capture_path(&self, id: &str) -> String {
         self.logs_dir
             .join(format!("{}.cap", pane_slug(id)))
@@ -235,32 +240,37 @@ impl TmuxController {
     /// The blank-prompt `__orc_run` protocol (see [`install_setup`](Self::install_setup)) is only
     /// installed when a command is actually injected, so it never makes the interactive shell look
     /// dead.
-    pub fn register_agent(&mut self, id: &str, cwd: &str) {
+    /// Returns the new pane's id (so the caller can wire the agent's `mcp__orc__run` tool to it), or
+    /// `None` on any failure (agent then runs paneless, with shell in its own `claude` process).
+    pub fn register_agent(&mut self, id: &str, cwd: &str) -> Option<String> {
         let capture = self.capture_path(id);
         let _ = std::fs::write(&capture, "");
         let window = agent_window_name(id);
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        let shell_cmd = format!("exec {shell} -i");
-        let pane_id = match self.tmux(argv_new_window(&self.session_name, &window, cwd, &shell_cmd)) {
+        // zsh (`-if`: no rc, fast, default visible prompt) so the `__orc_run` protocol works and the
+        // pane is still a usable interactive terminal.
+        let pane_id = match self.tmux(argv_new_window(&self.session_name, &window, cwd, "exec zsh -if")) {
             Ok(out) => out.trim().to_string(),
-            Err(_) => return, // best-effort: no window → no pane for this agent
+            Err(_) => return None,
         };
         if pane_id.is_empty() {
-            return;
+            return None;
         }
         self.tmux_ok(argv_pipe_pane(&pane_id, &format!("cat >> {}", shq(&capture))));
+        // Install the __orc_run helper (keeps the shell's own prompt) so the agent's injected
+        // commands run in this visible pane and land in its history for the human to rerun.
+        self.install_setup(&pane_id);
         self.agents.insert(
             id.to_string(),
-            AgentWindow { window, pane_id, capture_path: capture },
+            AgentWindow { window, pane_id: pane_id.clone(), capture_path: capture },
         );
         if self.selected.as_deref() == Some(id) {
             self.show_agent(Some(id));
         }
+        Some(pane_id)
     }
 
-    /// Type the one-time blank-prompt `__orc_run` protocol into a shell. Used before injecting a
-    /// command (the future `mcp__orc__run` path); not run for plain interactive shells.
-    #[allow(dead_code)]
+    /// Type the one-time `__orc_run` protocol into a shell (prompt preserved) so injected commands
+    /// run visibly in the pane and land in history.
     fn install_setup(&self, pane_id: &str) {
         let dir = self.logs_dir.to_string_lossy().into_owned();
         self.tmux_ok(argv_send_keys_literal(pane_id, &build_setup_script(&dir)));
@@ -478,16 +488,14 @@ mod tests {
         c.adopt(); // discovers the session's window-0 pane as the orc anchor
         assert!(c.orc_pane_id.is_some(), "adopt found no orc pane");
 
-        c.register_agent("a1", &cwd.path().to_string_lossy());
+        let pane = c.register_agent("a1", &cwd.path().to_string_lossy());
+        assert!(pane.is_some(), "register_agent returned no pane id");
         assert!(c.agents.contains_key("a1"), "agent window not registered");
         c.show_agent(Some("a1"));
         assert_eq!(c.stage_occupant.as_deref(), Some("a1"));
 
-        // Install the `__orc_run` protocol (register no longer does, so the interactive prompt stays
-        // visible); this is what a future `mcp__orc__run` call path would do before injecting.
-        let pane = c.agents.get("a1").unwrap().pane_id.clone();
-        c.install_setup(&pane);
-        std::thread::sleep(Duration::from_millis(300));
+        // Give the shell a moment to process the injected `__orc_run` setup before the first run.
+        std::thread::sleep(Duration::from_millis(400));
 
         let res = c.run_in_pane("a1", "echo hello-from-pane", Duration::from_secs(15));
         c.shutdown();
@@ -496,5 +504,83 @@ mod tests {
         let (out, rc) = res.expect("run_in_pane returned None");
         assert_eq!(rc, 0, "command rc (output was {out:?})");
         assert!(out.contains("hello-from-pane"), "unexpected output: {out:?}");
+    }
+
+    /// Full end-to-end: REAL `claude` calls `mcp__orc__run` (served by the release `orc __mcp`
+    /// binary) to run a command in a REAL tmux pane. Ignored by default; requires a release build:
+    ///   cargo build --release && cargo test mcp_end_to_end_real -- --ignored --nocapture
+    #[ignore]
+    #[test]
+    fn mcp_end_to_end_real() {
+        use crate::agent::cli_driver::CliDriver;
+        use crate::agent::driver::{ClaudeDriver, DriverEvent, SessionOpts};
+
+        if !TmuxController::is_available() {
+            eprintln!("tmux unavailable; skipping");
+            return;
+        }
+        let exe = concat!(env!("CARGO_MANIFEST_DIR"), "/target/release/orc");
+        assert!(std::path::Path::new(exe).exists(), "run `cargo build --release` first");
+
+        let sess = format!("orcmcp-{}", std::process::id());
+        let logs = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let _ = real_tmux(&argv_kill_session(&sess));
+        real_tmux(&argv_new_session(&sess, &[])).unwrap();
+
+        let mut c = TmuxController::new_test(&sess, logs.path().to_path_buf());
+        c.adopt();
+        let pane = c.register_agent("a1", &cwd.path().to_string_lossy()).expect("pane");
+        c.show_agent(Some("a1"));
+        std::thread::sleep(Duration::from_millis(500));
+
+        let marker = "orcmcp-PONG-42";
+        let mcp_config = crate::mcp::build_mcp_config(exe, &pane, logs.path(), None);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let out = rt.block_on(async {
+            let driver = CliDriver::default();
+            let mut h = driver
+                .start(SessionOpts {
+                    cwd: Some(cwd.path().to_string_lossy().into_owned()),
+                    permission_mode: Some("bypassPermissions".into()),
+                    system_prompt: Some(
+                        "To run shell commands, you MUST use the mcp__orc__run tool (argument `command`). Bash is disabled.".into(),
+                    ),
+                    mcp_config: Some(mcp_config),
+                    disallowed_tools: vec!["Bash".into()],
+                    ..Default::default()
+                })
+                .await
+                .expect("spawn claude");
+            h.stdin
+                .send(format!("Use the mcp__orc__run tool to run exactly: echo {marker}\nThen reply with the command's output."))
+                .await
+                .unwrap();
+            let mut text = String::new();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if rem.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(rem, h.events.recv()).await {
+                    Ok(Some(DriverEvent::TextDelta(t))) => text.push_str(&t),
+                    Ok(Some(DriverEvent::TurnResult { text: t, .. })) => {
+                        text.push_str(&t);
+                        break;
+                    }
+                    Ok(Some(_)) => {}
+                    _ => break,
+                }
+            }
+            h.cancel.cancel();
+            text
+        });
+
+        c.shutdown();
+        let _ = real_tmux(&argv_kill_session(&sess));
+        eprintln!("agent final text: {out:?}");
+        assert!(out.contains(marker), "agent did not report the pane command output: {out:?}");
     }
 }

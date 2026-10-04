@@ -76,6 +76,9 @@ impl ClaudeDriver for CliDriver {
         if let Some(mcp) = &opts.mcp_config {
             cmd.arg("--mcp-config").arg(mcp);
         }
+        if !opts.disallowed_tools.is_empty() {
+            cmd.arg("--disallowedTools").arg(opts.disallowed_tools.join(","));
+        }
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }

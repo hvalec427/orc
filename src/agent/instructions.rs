@@ -16,6 +16,9 @@ pub struct PromptParams {
     pub metro_port: Option<u16>,
     pub simulator_udid: Option<String>,
     pub magic_link: Option<String>,
+    /// When true, the agent has a dedicated tmux shell pane and must run shell commands via the
+    /// `mcp__orc__run` tool (the built-in `Bash` tool is disabled) so the human sees them run.
+    pub pane_tool: bool,
 }
 
 /// A one-line role descriptor for the given template.
@@ -67,6 +70,19 @@ fn ticket_line(ticket: &str) -> String {
     }
 }
 
+/// The "### Running shell commands" section, present only when the agent has a tmux pane.
+fn pane_section(pane_tool: bool) -> String {
+    if !pane_tool {
+        return String::new();
+    }
+    "\n\n### Running shell commands\n\n\
+Run EVERY shell command with the `mcp__orc__run` tool (its `command` argument is the command line), \
+never any other way. Your built-in `Bash` tool is disabled. `mcp__orc__run` runs the command in \
+your own dedicated terminal pane so the human watches it run and can rerun it from the shell's \
+history; it returns the command's combined output and exit code. One command per call."
+        .to_string()
+}
+
 fn magic_section(magic_link: &Option<String>) -> String {
     match magic_link {
         Some(_) => "\n\n### Signing in\n\nA magic sign-in link is available in the MAGIC_LINK env var. Use it to authenticate before verifying any signed-in views. See your project's CLAUDE.md for how to open a link on your target.".to_string(),
@@ -111,8 +127,9 @@ pub fn build_addendum(template: AgentTemplate, params: &PromptParams) -> String 
         return format!(
             "## Orchestration context (injected by orc)\n\n\
 You are agent \"{name}\", running under an orchestrator that supervises several agents in parallel. {desc}\n\n\
-- Your unique agent name is \"{name}\".{port}{magic}\n\n{protocol}",
+- Your unique agent name is \"{name}\".{port}{pane}{magic}\n\n{protocol}",
             port = port_line(params.metro_port),
+            pane = pane_section(params.pane_tool),
             magic = magic_section(&params.magic_link),
             protocol = read_only_human_protocol(),
         );
@@ -133,7 +150,8 @@ directory you're running in and break your session. Just commit and report {DONE
     format!(
         "## Orchestration context (injected by orc)\n\n\
 You are agent \"{name}\", running under an orchestrator that supervises several agents in parallel. {desc}\n\n\
-{identity}{magic}\n\n{protocol}",
+{identity}{pane}{magic}\n\n{protocol}",
+        pane = pane_section(params.pane_tool),
         magic = magic_section(&params.magic_link),
         protocol = feature_human_protocol(),
     )

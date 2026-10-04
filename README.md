@@ -22,17 +22,18 @@ orc was rewritten from TypeScript to Rust (ratatui + crossterm). What works toda
   watch its `claude` session stream live, answer it with `i`, resume with `r`, and
   `@@DONE@@`/`@@NEEDS_INPUT@@` drive its status. Config, ports, worktrees, persistence
   (`~/.orc/state.json`), and the human-in-the-loop protocol are all in.
-- **tmux shell panes**: when `tmux` is installed and you're on a TTY, orc bootstraps a tmux session
-  (or adopts the one you're already in) and gives each agent its own long-lived interactive shell in
-  its worktree. Selecting an agent reveals its shell beside the TUI (focus stays on the TUI). Run
-  with `--no-tmux` for the plain UI.
+- **tmux shell panes + visible agent commands**: when `tmux` is installed and you're on a TTY, orc
+  bootstraps a tmux session (or adopts the one you're already in) and gives each agent its own
+  long-lived interactive shell in its worktree. Selecting an agent reveals its shell beside the TUI
+  (focus stays on the TUI; mouse is enabled so you can click into the pane). The agent runs **every**
+  shell command through the `mcp__orc__run` tool (its built-in `Bash` is disabled), so its commands
+  execute **in that visible pane** — you watch them run and can press ↑ to rerun any of them
+  yourself. Run with `--no-tmux` for the plain UI (then the agent keeps `Bash` and its commands show
+  in the TUI log pane instead).
 
 Not yet wired (the `.rs` modules exist as stubs): **iOS simulator** provisioning, **merge agents**
-(`m`), **pipelines**, the `p` "install CLAUDE.md" action, and the **`mcp__orc__run` tool**. That
-last one matters for the shell panes: until it lands, the agent's *own* commands run inside its
-`claude` process and show in the TUI log pane (the `⚙` lines), **not** in its tmux shell — the tmux
-shell is a live worktree terminal you can watch and type into. Those unfinished keys report that
-they aren't available yet. Everything below describes the full intended design.
+(`m`), **pipelines**, and the `p` "install CLAUDE.md" action. Those keys report that they aren't
+available yet. Everything below describes the full intended design.
 
 ## How it works
 

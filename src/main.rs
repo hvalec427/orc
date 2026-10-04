@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod config;
+pub mod mcp;
 pub mod persist;
 pub mod ports;
 pub mod simulators;
@@ -51,6 +52,25 @@ impl Cli {
 }
 
 fn main() {
+    // Internal: when launched as the per-agent MCP server (`orc __mcp --pane <id> --dir <dir>`),
+    // speak MCP on stdio and exit. This is spawned by each agent's `claude` via `--mcp-config`.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("__mcp") {
+        let (mut pane, mut dir) = (None, None);
+        let mut it = args.iter().skip(2);
+        while let Some(a) = it.next() {
+            match a.as_str() {
+                "--pane" => pane = it.next().cloned(),
+                "--dir" => dir = it.next().cloned(),
+                _ => {}
+            }
+        }
+        if let (Some(pane), Some(dir)) = (pane, dir) {
+            let _ = mcp::serve(&pane, std::path::Path::new(&dir));
+        }
+        return;
+    }
+
     if let Err(e) = run() {
         eprintln!("orc: {e}");
         std::process::exit(1);

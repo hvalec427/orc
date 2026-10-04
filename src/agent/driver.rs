@@ -50,8 +50,10 @@ pub struct SessionOpts {
     pub permission_mode: Option<String>,
     /// Extra environment variables injected into the child (e.g. `AGENT_NAME`, `AGENT_PORT`).
     pub env: Vec<(String, String)>,
-    /// An inline `--mcp-config` JSON string (e.g. to attach the Maestro MCP server).
+    /// An inline `--mcp-config` JSON string (e.g. the orc run tool + the Maestro MCP server).
     pub mcp_config: Option<String>,
+    /// Tool names to deny the agent (e.g. `Bash` when shell runs through the orc pane tool).
+    pub disallowed_tools: Vec<String>,
 }
 
 /// A handle to a started session: its event stream, a stdin sender, and a cancel token.

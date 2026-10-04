@@ -116,14 +116,21 @@ pub fn encode_injected_call(token: &str) -> String {
 }
 
 /// The one-time setup script orc types into a freshly created agent shell.
+///
+/// Defines the `__orc_run <token>` helper used to inject an agent's commands into its own visible
+/// interactive pane: it reads the command from `<token>.cmd`, pushes it into the shell's history
+/// (so the human can press ↑ to rerun it), echoes a clean `$ <cmd>` banner, runs it, and frames the
+/// combined output + exit code into `<token>.res` for the caller to read back. The shell's own
+/// prompt is left untouched so the pane stays a usable interactive terminal between runs.
 pub fn build_setup_script(dir: &str) -> String {
     format!(
-        "setopt no_prompt_cr no_prompt_sp 2>/dev/null; PROMPT='' RPROMPT='' PS2=''; \
+        "setopt no_prompt_cr no_prompt_sp 2>/dev/null; \
 __ORC_DIR={dir}; \
 __orc_run() {{ \
 local __orc_tok=$1; \
 local __orc_cmdf=\"$__ORC_DIR/$__orc_tok.cmd\" __orc_resf=\"$__ORC_DIR/$__orc_tok.res\"; \
 local __orc_cmd; __orc_cmd=$(cat \"$__orc_cmdf\"); \
+print -s -- \"$__orc_cmd\"; \
 printf '\\033[A\\r\\033[K'; \
 print -r -- \"$ $__orc_cmd\"; \
 print -r -- \"<<<ORC-BEGIN $__orc_tok>>>\" >> \"$__orc_resf\"; \
@@ -271,7 +278,7 @@ mod tests {
     fn build_setup_script_contains_dir_and_plumbing() {
         let s = build_setup_script("/run/dir");
         assert!(s.contains("'/run/dir'"), "dir single-quoted: {s}");
-        assert!(s.contains("PROMPT=''"), "blanks PROMPT");
+        assert!(s.contains("print -s --"), "pushes command into history for rerun");
         assert!(s.contains("__orc_run"), "defines __orc_run");
         assert!(s.contains("<<<ORC-BEGIN"), "writes BEGIN sentinel");
         assert!(s.contains("<<<ORC-END"), "writes END sentinel");
