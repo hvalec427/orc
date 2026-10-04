@@ -461,3 +461,18 @@ test('a pendingApproval change invalidates the snapshot/version', () => {
     'a pendingApproval change must invalidate the getInfo() snapshot or bump a version counter',
   );
 });
+
+test('adoptWorktree invalidates the getInfo() snapshot and reflects the new branch/worktree', () => {
+  const session = makeSession();
+  const prevInfo = session.getInfo();
+
+  session.adoptWorktree({ path: '/tmp/demo/.worktrees/a1', branch: 'agent/a1' }, 4321);
+
+  const nextInfo = session.getInfo();
+  // getInfo() is memoized: without invalidation the adopt mutations would be invisible because the
+  // cached ref stays identical, so the sidebar/header would show a stale branch/worktree/port.
+  assert.ok(!Object.is(prevInfo, nextInfo), 'adoptWorktree must invalidate the getInfo() snapshot');
+  assert.equal(nextInfo.branch, 'agent/a1');
+  assert.equal(nextInfo.worktree, '/tmp/demo/.worktrees/a1');
+  assert.equal(nextInfo.metroPort, 4321);
+});

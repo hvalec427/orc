@@ -392,6 +392,7 @@ export class AgentSession extends EventEmitter {
     this._ownsWorktree = true;
     if (port !== undefined) this._metroPort = port;
     if (simulatorUdid !== undefined) this._simulatorUdid = simulatorUdid;
+    this.invalidateInfo();
     const portNote = port !== undefined ? ` (port ${port})` : '';
     this.addLog(
       'system',
