@@ -234,10 +234,15 @@ export class TmuxController implements Tmux {
   private selectedId?: string;
   /** Monotonic run counter feeding nextRunToken (short, unique per-run ids/filenames). */
   private runCounter = 0;
+  /** Debounce (ms) for the break/join I/O inside showAgent; 0 = fire immediately (tests). */
+  private readonly showAgentDebounceMs: number;
+  /** Pending break/join timer, so a rapid burst of selections only runs the last transition. */
+  private showAgentTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(opts?: { run?: TmuxRunner; logsDir?: string }) {
+  constructor(opts?: { run?: TmuxRunner; logsDir?: string; showAgentDebounceMs?: number }) {
     this.run = opts?.run ?? ((args) => execFileAsync('tmux', args));
     this.logsDir = opts?.logsDir ?? join(homedir(), '.orc', 'panes');
+    this.showAgentDebounceMs = opts?.showAgentDebounceMs ?? 0;
     mkdirSync(this.logsDir, { recursive: true });
   }
 
@@ -371,6 +376,28 @@ export class TmuxController implements Tmux {
    */
   showAgent(id?: string): void {
     this.selectedId = id;
+    if (!this.orcPaneId || !id) return;
+    // Debounce only the break/join I/O: a rapid burst of selections (arrow-key scrolling) collapses to
+    // a single transition to the final target, avoiding flickering pane churn. selectedId above stays
+    // synchronous so callers always observe the latest selection. delay=0 fires immediately (tests).
+    if (this.showAgentDebounceMs > 0) {
+      if (this.showAgentTimer) clearTimeout(this.showAgentTimer);
+      this.showAgentTimer = setTimeout(() => {
+        this.showAgentTimer = undefined;
+        this.applyStage(this.selectedId);
+      }, this.showAgentDebounceMs);
+      return;
+    }
+    this.applyStage(id);
+  }
+
+  /**
+   * Perform the actual stage transition for `id`: break the current occupant back to its own window
+   * (preserved, not killed), then join the selected agent's shells beside orc and re-select orc's pane
+   * last. Resolves `id`/occupant against current state at call time so a debounced burst lands on the
+   * final target. No-op when there's nothing to show or it's already staged.
+   */
+  private applyStage(id?: string): void {
     if (!this.orcPaneId || !id) return;
     const entry = this.agentPanes.get(id);
     if (!entry) return; // shell not created yet; registerAgent re-calls showAgent once it exists

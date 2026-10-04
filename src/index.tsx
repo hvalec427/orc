@@ -139,7 +139,8 @@ async function main(): Promise<void> {
     return;
   } else if (mode === 'inside' || (mode === 'bootstrap' && flags.tmuxChild)) {
     try {
-      tmux = new TmuxController();
+      // Debounce the stage break/join so arrow-key scrolling through agents doesn't churn panes.
+      tmux = new TmuxController({ showAgentDebounceMs: 80 });
       if (flags.tmuxChild) {
         // We are the re-exec child in the session orc itself created and already split: adopt its
         // known orc:0 window (left = TUI, right = viewer).
