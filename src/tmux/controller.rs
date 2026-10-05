@@ -152,6 +152,7 @@ pub struct TmuxController {
     stage_occupant: Option<String>,
     selected: Option<String>,
     run_counter: u64,
+    last_error: Option<String>,
 }
 
 /// The default runner: shells out to the real `tmux` binary.
@@ -192,6 +193,24 @@ impl TmuxController {
             stage_occupant: None,
             selected: None,
             run_counter: 0,
+            last_error: None,
+        }
+    }
+
+    /// Take the most recent tmux error (e.g. a failed `new-window`) for surfacing in the UI.
+    pub fn take_last_error(&mut self) -> Option<String> {
+        self.last_error.take()
+    }
+
+    /// Append a diagnostic line to `~/.orc/panes/orc.log` (best-effort).
+    fn log_diag(&self, line: &str) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.logs_dir.join("orc.log"))
+        {
+            let _ = writeln!(f, "{line}");
         }
     }
 
@@ -218,6 +237,20 @@ impl TmuxController {
         &self.logs_dir
     }
 
+    /// orc's actual tmux session, resolved live from its own pane when known (robust against a
+    /// mis-detected session name), falling back to the stored name.
+    fn orc_session(&self) -> String {
+        if let Some(pane) = &self.orc_pane_id {
+            if let Ok(s) = self.tmux(argv_display_message("#{session_name}", Some(pane))) {
+                let s = s.trim().to_string();
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+        }
+        self.session_name.clone()
+    }
+
     fn capture_path(&self, id: &str) -> String {
         self.logs_dir
             .join(format!("{}.cap", pane_slug(id)))
@@ -230,7 +263,9 @@ impl TmuxController {
     }
 
     fn tmux_ok(&self, args: Vec<String>) {
-        let _ = (self.run)(&args);
+        if let Err(e) = (self.run)(&args) {
+            self.log_diag(&format!("tmux {}: {e}", args.first().map(String::as_str).unwrap_or("")));
+        }
     }
 
     /// Provision an agent's long-lived interactive shell in a detached window in its worktree.
@@ -248,11 +283,20 @@ impl TmuxController {
         let window = agent_window_name(id);
         // zsh (`-if`: no rc, fast, default visible prompt) so the `__orc_run` protocol works and the
         // pane is still a usable interactive terminal.
-        let pane_id = match self.tmux(argv_new_window(&self.session_name, &window, cwd, "exec zsh -if")) {
+        let session = self.orc_session();
+        let pane_id = match self.tmux(argv_new_window(&session, &window, cwd, "exec zsh -if")) {
             Ok(out) => out.trim().to_string(),
-            Err(_) => return None,
+            Err(e) => {
+                let msg = format!("new-window in session '{session}' (cwd {cwd}): {e}");
+                self.log_diag(&format!("register_agent {id}: {msg}"));
+                self.last_error = Some(msg);
+                return None;
+            }
         };
         if pane_id.is_empty() {
+            let msg = "new-window returned an empty pane id".to_string();
+            self.log_diag(&format!("register_agent {id}: {msg}"));
+            self.last_error = Some(msg);
             return None;
         }
         self.tmux_ok(argv_pipe_pane(&pane_id, &format!("cat >> {}", shq(&capture))));

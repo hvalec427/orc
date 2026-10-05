@@ -160,16 +160,23 @@ impl AgentManager {
 
         // Register the agent's tmux pane FIRST so its `mcp__orc__run` tool can target the pane and
         // its injected commands run in that visible shell.
-        let pane_id = if let Some(t) = &mut self.tmux {
+        let (pane_id, tmux_err) = if let Some(t) = &mut self.tmux {
             let p = t.register_agent(&agent_id, &tmux_cwd);
             t.show_agent(Some(&agent_id));
-            p
+            let err = if p.is_none() { t.take_last_error() } else { None };
+            (p, err)
         } else {
-            None
+            (None, None)
         };
 
         let opts = self.session_opts(&project, &info, worktree.as_deref(), pane_id.as_deref());
         let mut session = AgentSession::new(info, self.driver.clone(), self.rt.clone(), opts);
+        if let Some(err) = tmux_err {
+            session.note(format!(
+                "⚠ tmux pane could not be created ({err}). This agent's shell runs in-process (Bash) \
+and only shows here, not in a separate pane."
+            ));
+        }
         session.start(params.prompt);
         self.sessions.push(session);
         let idx = self.sessions.len() - 1;

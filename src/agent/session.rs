@@ -120,6 +120,11 @@ impl AgentSession {
         self.state.lock().unwrap().clone()
     }
 
+    /// Append a system note to the agent's log (e.g. an orc-side diagnostic).
+    pub fn note(&self, msg: impl Into<String>) {
+        self.state.lock().unwrap().add_log(LogKind::System, msg);
+    }
+
     /// Launch the `claude` process and begin consuming its events, then deliver the initial prompt.
     pub fn start(&mut self, initial_prompt: String) {
         self.spawn_process(None);
