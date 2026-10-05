@@ -24,6 +24,16 @@ pub fn format_log_entry(entry: &LogEntry) -> String {
     match entry.kind {
         LogKind::Tool => {
             let name = entry.tool_name.as_deref().unwrap_or("tool");
+            // The orc pane-run tool: show it as a shell command (it ran in the agent's tmux pane).
+            if name == "mcp__orc__run" {
+                if let Some(cmd) = serde_json::from_str::<serde_json::Value>(&entry.text)
+                    .ok()
+                    .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(str::to_string))
+                {
+                    return format!("⚙ shell (in pane): {cmd}");
+                }
+                return "⚙ shell (in pane)".to_string();
+            }
             if entry.text.is_empty() {
                 format!("⚙ {name}")
             } else {

@@ -375,6 +375,14 @@ impl App {
                 Style::default().fg(Color::Magenta),
             ));
         }
+        // Make the shell-routing mode unmistakable: with tmux, the agent's commands run in a
+        // separate pane; without it, they only appear in the log stream.
+        let (txt, color) = if manager.tmux_active() {
+            ("  · shell → tmux pane", Color::Green)
+        } else {
+            ("  · shell in log (no tmux)", Color::Yellow)
+        };
+        spans.push(Span::styled(txt, Style::default().fg(color)));
         f.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 

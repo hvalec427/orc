@@ -69,6 +69,11 @@ impl AgentManager {
         self.tmux = tmux;
     }
 
+    /// Whether tmux pane-routing is active (agents run their shell via `mcp__orc__run` in a pane).
+    pub fn tmux_active(&self) -> bool {
+        self.tmux.is_some()
+    }
+
     pub fn config(&self) -> &OrcConfig {
         &self.config
     }
