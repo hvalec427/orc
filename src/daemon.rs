@@ -263,7 +263,7 @@ fn system_prompt(req: &Request) -> String {
         "You are working in a git worktree of the {project} React Native app at {wt}, on branch {branch}, as one of several \
          agents run by orc (each in its own worktree). The app is built and running on a dedicated iOS simulator with its own Metro, \
          managed by metroctl in a tmux window. Use the metroctl MCP tools to check your work: `errors` and `logs` after changes, \
-         `network` for API calls, `screenshot` to see the screen, `open_url` for deep links, `reload` if the JS state is stale, and \
+         `network` for API calls, `screenshot` to see the screen, `ui`/`tap`/`swipe`/`type_text`/`press` to use the app like a user (tap by testID), `open_url` for deep links, `reload` if the JS state is stale, and \
          `rebuild` after native changes (Podfile, ios/, new native modules; run `cd ios && pod install` first if pods changed). \
          The app may still be building when you start: call `wait_ready` (it blocks until the app runs or the build fails) instead \
          of ending your turn or sleeping in the background to wait — nothing wakes you up after a turn ends. Commit your work on this branch when a step is done. \
