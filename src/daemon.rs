@@ -261,12 +261,18 @@ fn prepare(st: &Shared, p: &Project, session: &str, id: &str, prompt: &str) -> R
 fn system_prompt(req: &Request) -> String {
     format!(
         "You are working in a git worktree of the {project} React Native app at {wt}, on branch {branch}, as one of several \
-         agents run by orc (each in its own worktree). The app is built and running on a dedicated iOS simulator with its own Metro, \
-         managed by metroctl in a tmux window. Use the metroctl MCP tools to check your work: `errors` and `logs` after changes, \
-         `network` for API calls, `screenshot` to see the screen, `ui`/`tap`/`swipe`/`type_text`/`press` to use the app like a user (tap by testID), `open_url` for deep links, `reload` if the JS state is stale, and \
-         `rebuild` after native changes (Podfile, ios/, new native modules; run `cd ios && pod install` first if pods changed). \
-         The app may still be building when you start: call `wait_ready` (it blocks until the app runs or the build fails) instead \
-         of ending your turn or sleeping in the background to wait — nothing wakes you up after a turn ends. Commit your work on this branch when a step is done. \
+         agents run by orc (each in its own worktree). The app runs on a dedicated iOS simulator with its own Metro, managed by \
+         metroctl in a tmux window.\n\n\
+         The app and Metro, through the metroctl MCP tools: `wait_ready` (blocks until the app is built and running, or the build \
+         failed), `errors` and `logs` after changes, `network` and `request` for API calls, `reload` if the JS state is stale, \
+         `rebuild` after native changes (Podfile, ios/, native modules; run `cd ios && pod install` first if pods changed), \
+         `restart_metro` after metro config or JS dependency changes.\n\n\
+         The screen, through the `touchctl` CLI (it already targets your simulator): `touchctl screenshot` prints a JPEG path, \
+         read it to see the screen; `touchctl ui` lists elements with #testID, \"label\" and @x,y; `touchctl tap --id <testID>` \
+         (or --label <text>, or x y); `touchctl swipe up|down|left|right`; `touchctl type <text> --id <field>`; \
+         `touchctl press home|enter`; `touchctl open <url>` for deep links.\n\n\
+         The app may still be building when you start: call `wait_ready` instead of ending your turn or sleeping in the \
+         background to wait, since nothing wakes you up after a turn ends. Commit your work on this branch when a step is done. \
          Never push, and never touch other worktrees.",
         project = req.project,
         wt = req.worktree,
@@ -291,7 +297,16 @@ fn start_agent(st: &Shared, id: &str, first: Option<&str>) -> Result<()> {
         resume: req.session_id.clone(),
         mcp_config: mcp.to_string(),
         permission_mode: Some(p.permission_mode.clone().unwrap_or_else(|| "acceptEdits".into())),
-        allowed_tools: if p.allowed_tools.is_empty() { vec!["mcp__metroctl__*".into()] } else { p.allowed_tools.clone() },
+        allowed_tools: {
+            // The session tools are always allowed, on top of the project's list.
+            let mut t = p.allowed_tools.clone();
+            for must in ["mcp__metroctl__*", "Bash(touchctl *)"] {
+                if !t.iter().any(|x| x == must) {
+                    t.push(must.into());
+                }
+            }
+            t
+        },
         model: p.model.clone(),
         system_prompt: system_prompt(&req),
     };
