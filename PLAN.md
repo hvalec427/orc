@@ -29,9 +29,9 @@ orcd (orc daemon)           detached; owns agents, setup, state
 - `config.json`: projects
   ```json
   { "projects": [{
-      "name": "laundryheap",
-      "root": "/Users/me/dev/laundryheap-mobile",
-      "worktrees": "/Users/me/dev/laundryheap-mobile-worktree",
+      "name": "myapp",
+      "root": "/Users/me/dev/myapp",
+      "worktrees": "/Users/me/dev/myapp-worktree",
       "copy": ["node_modules", "ios/Pods", ".env", "ios/.xcode.env.local"],
       "setup": "cd ios && pod install",
       "metroctl": "metroctl up --port auto --new-sim",

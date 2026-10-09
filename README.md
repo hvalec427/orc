@@ -20,18 +20,15 @@ orc stop          # stop the daemon and its agents
 
 ## Install
 
-The repo is private, so installing goes through the GitHub CLI (`gh auth login` first):
-
 ```sh
-gh api repos/hvalec427/orc/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+curl -fsSL https://raw.githubusercontent.com/hvalec427/orc/master/install.sh | sh
 ```
 
 Or the latest build from `develop` with `… | sh -s -- dev`. Update with
-`orc update` (`--stable`, `--nightly`, `--dev` to switch channels; it uses
-`gh`'s login, or `$GH_TOKEN`). Uninstall:
+`orc update` (`--stable`, `--nightly`, `--dev` to switch channels). Uninstall:
 
 ```sh
-gh api repos/hvalec427/orc/contents/uninstall.sh -H "Accept: application/vnd.github.raw" | sh
+curl -fsSL https://raw.githubusercontent.com/hvalec427/orc/master/uninstall.sh | sh
 ```
 
 Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.

@@ -54,8 +54,8 @@ pub fn channel_of(version: &str) -> Channel {
     }
 }
 
-/// The orc repo is private: authenticate with $GH_TOKEN / $GITHUB_TOKEN, or
-/// the GitHub CLI's login.
+/// Authenticate with $GH_TOKEN / $GITHUB_TOKEN or the GitHub CLI's login when
+/// there is one (higher API rate limits).
 fn token() -> Option<String> {
     for v in ["GH_TOKEN", "GITHUB_TOKEN"] {
         if let Ok(t) = std::env::var(v) {
@@ -228,7 +228,7 @@ fn asset_name() -> &'static str {
 }
 
 pub fn download_binary(tag: &str) -> Result<PathBuf> {
-    // Private repo: release files come through the API's asset endpoint.
+    // Release files come through the API's asset endpoint (works with or without a token).
     let c = client();
     let rel: serde_json::Value = c.get(format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}")).send()?.json()?;
     let asset = rel["assets"]
