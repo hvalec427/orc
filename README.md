@@ -56,7 +56,7 @@ Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.
     "name": "app",
     "root": "/Users/me/dev/app",
     "worktrees": "/Users/me/dev/app-worktrees",
-    "copy": ["node_modules", "ios/Pods", ".env", "ios/.xcode.env.local"],
+    "copy": ["node_modules", "ios/Pods", "ios/build", ".env", "ios/.xcode.env.local"],
     "setup": "cd ios && pod install",
     "metroctl": "metroctl up --port auto --new-sim --prebuilt",
     "permissionMode": "acceptEdits",

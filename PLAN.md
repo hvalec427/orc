@@ -32,7 +32,7 @@ orcd (orc daemon)           detached; owns agents, setup, state
       "name": "myapp",
       "root": "/Users/me/dev/myapp",
       "worktrees": "/Users/me/dev/myapp-worktree",
-      "copy": ["node_modules", "ios/Pods", ".env", "ios/.xcode.env.local"],
+      "copy": ["node_modules", "ios/Pods", "ios/build", ".env", "ios/.xcode.env.local"],
       "setup": "cd ios && pod install",
       "metroctl": "metroctl up --port auto --new-sim",
       "permissionMode": "acceptEdits",
