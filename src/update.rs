@@ -54,8 +54,29 @@ pub fn channel_of(version: &str) -> Channel {
     }
 }
 
+/// The orc repo is private: authenticate with $GH_TOKEN / $GITHUB_TOKEN, or
+/// the GitHub CLI's login.
+fn token() -> Option<String> {
+    for v in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(t) = std::env::var(v) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    let out = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !t.is_empty()).then_some(t)
+}
+
 fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder().user_agent(UA).build().expect("http client")
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(t) = token() {
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {t}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, v);
+        }
+    }
+    reqwest::blocking::Client::builder().user_agent(UA).default_headers(headers).build().expect("http client")
 }
 
 #[derive(Deserialize)]
@@ -207,8 +228,17 @@ fn asset_name() -> &'static str {
 }
 
 pub fn download_binary(tag: &str) -> Result<PathBuf> {
-    let url = format!("https://github.com/{REPO}/releases/download/{tag}/{}", asset_name());
-    let resp = client().get(&url).send()?;
+    // Private repo: release files come through the API's asset endpoint.
+    let c = client();
+    let rel: serde_json::Value = c.get(format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}")).send()?.json()?;
+    let asset = rel["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["name"] == asset_name())
+        .and_then(|a| a["url"].as_str().map(String::from))
+        .ok_or_else(|| anyhow::anyhow!("release {tag} has no {} (log in with `gh auth login`?)", asset_name()))?;
+    let resp = c.get(&asset).header(reqwest::header::ACCEPT, "application/octet-stream").send()?;
     if !resp.status().is_success() {
         bail!("Download failed: {}", resp.status());
     }

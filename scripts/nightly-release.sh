@@ -47,7 +47,7 @@ NOTES=$(mktemp)
   echo "### Install this build"
   echo
   echo '```sh'
-  echo "curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/orc-darwin-arm64 -o orc \\"
+  echo "gh release download ${TAG} -R ${REPO} -p orc-darwin-arm64 -O orc \\"
   echo "  && chmod +x orc && sudo mv orc /usr/local/bin/orc"
   echo '```'
   echo
