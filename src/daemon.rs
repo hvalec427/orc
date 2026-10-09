@@ -134,9 +134,11 @@ fn client(stream: UnixStream, st: Shared) -> Result<()> {
                 reply(&mut out, &Ev::Decision { allow, message: (!allow).then(|| "The user denied this in orc.".to_string()) })?;
             }
             Cmd::Shutdown => {
-                reply(&mut out, &Ev::Ok { message: Some("orcd stopping".into()) })?;
-                st.lock().unwrap().agents.clear(); // kills the claude processes
+                // Socket first, so a client right behind us starts a new orcd
+                // instead of reaching this one while it exits.
                 let _ = std::fs::remove_file(config::socket_path());
+                st.lock().unwrap().agents.clear(); // kills the claude processes
+                reply(&mut out, &Ev::Ok { message: Some("orcd stopped".into()) })?;
                 std::process::exit(0);
             }
             other => {
@@ -252,7 +254,8 @@ fn system_prompt(req: &Request) -> String {
          managed by metroctl in a tmux window. Use the metroctl MCP tools to check your work: `errors` and `logs` after changes, \
          `network` for API calls, `screenshot` to see the screen, `open_url` for deep links, `reload` if the JS state is stale, and \
          `rebuild` after native changes (Podfile, ios/, new native modules; run `cd ios && pod install` first if pods changed). \
-         Metro may still be building when you start; `status` shows progress. Commit your work on this branch when a step is done. \
+         The app may still be building when you start: call `wait_ready` (it blocks until the app runs or the build fails) instead \
+         of ending your turn or sleeping in the background to wait — nothing wakes you up after a turn ends. Commit your work on this branch when a step is done. \
          Never push, and never touch other worktrees.",
         project = req.project,
         wt = req.worktree,

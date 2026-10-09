@@ -37,7 +37,8 @@ impl Agent {
     pub fn start(o: AgentOpts, on_event: impl Fn(AgentEvent) + Send + 'static) -> Result<Agent> {
         let mut cmd = Command::new("claude");
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]);
-        cmd.args(["--mcp-config", &o.mcp_config, "--permission-prompt-tool", "mcp__orc__approve"]);
+        // Only orc's MCP servers: user-level ones (e.g. Maestro) would compete with metroctl's tools.
+        cmd.args(["--mcp-config", &o.mcp_config, "--strict-mcp-config", "--permission-prompt-tool", "mcp__orc__approve"]);
         cmd.args(["--append-system-prompt", &o.system_prompt]);
         if let Some(m) = &o.permission_mode {
             cmd.args(["--permission-mode", m]);
