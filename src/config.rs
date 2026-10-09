@@ -57,7 +57,7 @@ impl Project {
     }
 
     pub fn metroctl_command(&self) -> String {
-        self.metroctl.clone().unwrap_or_else(|| "metroctl up --port auto --new-sim".into())
+        self.metroctl.clone().unwrap_or_else(|| "metroctl up --port auto --new-sim --prebuilt".into())
     }
 }
 

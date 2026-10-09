@@ -58,7 +58,7 @@ Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.
     "worktrees": "/Users/me/dev/app-worktrees",
     "copy": ["node_modules", "ios/Pods", ".env", "ios/.xcode.env.local"],
     "setup": "cd ios && pod install",
-    "metroctl": "metroctl up --port auto --new-sim",
+    "metroctl": "metroctl up --port auto --new-sim --prebuilt",
     "permissionMode": "acceptEdits",
     "allowedTools": ["mcp__metroctl__*", "Bash(yarn *)", "Bash(git *)"],
     "model": "opus"
