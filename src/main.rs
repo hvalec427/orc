@@ -43,8 +43,13 @@ enum Command {
     Ls,
     /// Print a request's conversation
     Log { id: String },
-    /// Tear a request down (worktree, simulator, window; the branch is kept)
-    Down { id: String },
+    /// Tear a request down (agent, simulator, worktree; the branch is kept if it has commits)
+    Down {
+        id: String,
+        /// Delete the branch even if it has commits
+        #[arg(long)]
+        delete_branch: bool,
+    },
     /// Finish a request: pr (push + open a PR), rebase or squash (land on the base branch locally, then tear down)
     Finish { id: String, how: String },
     /// Remove a torn-down request from the list
@@ -87,7 +92,7 @@ fn main() {
         Some(Command::Stop) => print(client::request(&Cmd::Shutdown)),
         Some(Command::New { project, title, prompt }) => print(client::request(&Cmd::New { project, title, prompt })),
         Some(Command::Send { id, text }) => print(client::request(&Cmd::Send { id, text })),
-        Some(Command::Down { id }) => print(client::request(&Cmd::Teardown { id })),
+        Some(Command::Down { id, delete_branch }) => print(client::request(&Cmd::Teardown { id, delete_branch })),
         Some(Command::Rm { id }) => print(client::request(&Cmd::Remove { id })),
         Some(Command::Finish { id, how }) => {
             let how = match how.as_str() {

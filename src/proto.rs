@@ -91,7 +91,13 @@ pub enum Cmd {
     Send { id: String, text: String },
     Interrupt { id: String },
     Answer { id: String, perm: String, allow: bool },
-    Teardown { id: String },
+    /// Stop the agent, delete its simulator and worktree. The branch is deleted
+    /// when it has no commits of its own, or when `delete_branch`.
+    Teardown {
+        id: String,
+        #[serde(default)]
+        delete_branch: bool,
+    },
     /// Finish a request: open a PR, or land it on the base branch (and tear it down).
     Finish { id: String, how: Finish },
     /// Forget a torn-down request (its conversation log too).

@@ -266,13 +266,13 @@ impl App {
                 return;
             }
             Mode::ConfirmDown => {
-                if let (KeyCode::Char('y'), Some(r)) = (k.code, self.selected()) {
+                if let (KeyCode::Char(c @ ('y' | 'D')), Some(r)) = (k.code, self.selected()) {
                     let id = r.id.clone();
                     if r.status == Status::Stopped {
                         self.convos.remove(&id);
                         self.do_request(Cmd::Remove { id });
                     } else {
-                        self.do_request(Cmd::Teardown { id });
+                        self.do_request(Cmd::Teardown { id, delete_branch: c == 'D' });
                     }
                 }
                 self.mode = Mode::Normal;
@@ -439,13 +439,13 @@ fn render(app: &mut App, f: &mut Frame) {
             f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)).title(format!(" Finish {id} "))), r);
         }
         Mode::ConfirmDown => {
-            let r = centered(f.area(), 72, 6);
+            let r = centered(f.area(), 76, 7);
             f.render_widget(Clear, r);
             let (id, stopped) = app.selected().map(|r| (r.id.clone(), r.status == Status::Stopped)).unwrap_or_default();
             let (title, lines) = if stopped {
                 (" Remove ", vec![Line::raw(""), Line::raw(format!("  Remove {id} from the list?")), Line::raw("  Its conversation is deleted; the branch stays in git."), Line::raw("  y remove · any key cancel")])
             } else {
-                (" Tear down ", vec![Line::raw(""), Line::raw(format!("  Tear down {id}?")), Line::raw("  Stops the agent, deletes its simulator and worktree; keeps the branch."), Line::raw("  y tear down · any key cancel")])
+                (" Tear down ", vec![Line::raw(""), Line::raw(format!("  Tear down {id}?")), Line::raw("  Stops the agent, deletes its simulator and worktree. The branch is"), Line::raw("  kept if it has commits."), Line::raw("  y tear down · D also delete the branch · any key cancel")])
             };
             f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title(title)), r);
         }

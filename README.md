@@ -13,7 +13,7 @@ orc ls            # list requests
 orc new --project app --title "Price screen" "Add a prices screen…"
 orc send <id> "…" # message an agent
 orc log <id>      # print a conversation
-orc down <id>     # tear a request down (keeps the branch)
+orc down <id>     # tear a request down (keeps the branch if it has commits; --delete-branch)
 orc rm <id>       # remove a torn-down request from the list
 orc stop          # stop the daemon and its agents
 ```
@@ -80,7 +80,7 @@ session name.
 | `y` / `d` | allow / deny a permission prompt |
 | `g` | go to the request's metroctl window |
 | `ctrl-c` | interrupt the agent's turn |
-| `x` | tear down (agent, simulator, worktree; branch kept); on a torn-down request, remove it from the list |
+| `x` | tear down (agent, simulator, worktree; the branch is kept if it has commits, `D` deletes it anyway); on a torn-down request, remove it from the list |
 | `ctrl-u` / `ctrl-d`, `G` | scroll the conversation, back to the bottom |
 | `q` | quit the TUI (agents keep running) |
 

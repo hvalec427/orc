@@ -180,8 +180,8 @@ fn handle(st: &Shared, cmd: Cmd) -> Result<Ev> {
             let _ = rid;
             Ok(Ev::Ok { message: None })
         }
-        Cmd::Teardown { id } => {
-            teardown(st, &id)?;
+        Cmd::Teardown { id, delete_branch } => {
+            teardown(st, &id, delete_branch)?;
             Ok(Ev::Ok { message: Some(format!("tearing down {id}")) })
         }
         Cmd::Finish { id, how } => {
@@ -390,7 +390,7 @@ fn send(st: &Shared, id: &str, text: &str) -> Result<()> {
     }
 }
 
-fn teardown(st: &Shared, id: &str) -> Result<()> {
+fn teardown(st: &Shared, id: &str, delete_branch: bool) -> Result<()> {
     let (p, session, wt, branch) = {
         let mut s = st.lock().unwrap();
         let r = s.req(id).cloned().ok_or_else(|| anyhow!("no request {id}"))?;
@@ -408,11 +408,25 @@ fn teardown(st: &Shared, id: &str) -> Result<()> {
     let (st2, id) = (st.clone(), id.to_string());
     std::thread::spawn(move || {
         let problems = setup::teardown(&p, &session, &id, &wt);
+        // A branch without commits of its own has nothing to keep.
+        let own = std::process::Command::new("git")
+            .args(["-C", &p.root, "rev-list", "--count", &format!("{}..{branch}", p.base_branch())])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok());
+        let delete = delete_branch || own == Some(0);
+        let deleted = delete && std::process::Command::new("git").args(["-C", &p.root, "branch", "-D", &branch]).output().is_ok_and(|o| o.status.success());
+        let branch_note = match (deleted, own) {
+            (true, Some(0)) => format!("branch {branch} deleted (no commits)"),
+            (true, _) => format!("branch {branch} deleted"),
+            (false, Some(n)) => format!("branch {branch} kept ({n} commit{})", if n == 1 { "" } else { "s" }),
+            (false, None) => format!("branch {branch} kept"),
+        };
         let mut s = st2.lock().unwrap();
         if problems.is_empty() {
-            s.system(&id, format!("torn down (branch {branch} kept)"));
+            s.system(&id, format!("torn down; {branch_note}"));
         } else {
-            s.system(&id, format!("torn down with problems:\n{}", problems.join("\n")));
+            s.system(&id, format!("torn down with problems; {branch_note}:\n{}", problems.join("\n")));
         }
         if let Some(r) = s.req(&id) {
             r.port = None;

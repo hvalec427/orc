@@ -74,7 +74,12 @@ pub fn ensure_tmux_session(session: &str) -> Result<()> {
     if Command::new("tmux").args(["has-session", "-t", session]).output()?.status.success() {
         return Ok(());
     }
-    run(Command::new("tmux").args(["new-session", "-d", "-s", session]))?;
+    // Two requests started together both get here; losing that race is fine.
+    if let Err(e) = run(Command::new("tmux").args(["new-session", "-d", "-s", session])) {
+        if !Command::new("tmux").args(["has-session", "-t", session]).output()?.status.success() {
+            return Err(e);
+        }
+    }
     Ok(())
 }
 
