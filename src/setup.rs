@@ -22,24 +22,29 @@ fn tail(s: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// `git worktree add` a new branch `id` (or an existing one) under the
-/// project's worktrees dir.
-pub fn create_worktree(p: &Project, id: &str) -> Result<PathBuf> {
-    let dir = p.worktrees_dir().join(id);
+/// Branch and worktree folder for request `id`: `orc/<id>` and `orc-<id>`.
+pub fn names(p: &Project, id: &str) -> (String, PathBuf) {
+    (format!("orc/{id}"), p.worktrees_dir().join(format!("orc-{id}")))
+}
+
+/// `git worktree add` the request's branch, new from the project's base
+/// branch (whatever the main checkout has checked out doesn't matter), or the
+/// existing one.
+pub fn create_worktree(p: &Project, branch: &str, dir: &Path) -> Result<()> {
     if dir.exists() {
         bail!("{} already exists", dir.display());
     }
     std::fs::create_dir_all(p.worktrees_dir())?;
-    let branch_exists = Command::new("git").args(["-C", &p.root, "rev-parse", "--verify", "--quiet"]).arg(format!("refs/heads/{id}")).output()?.status.success();
+    let branch_exists = Command::new("git").args(["-C", &p.root, "rev-parse", "--verify", "--quiet"]).arg(format!("refs/heads/{branch}")).output()?.status.success();
     let mut cmd = Command::new("git");
     cmd.args(["-C", &p.root, "worktree", "add"]);
     if branch_exists {
-        cmd.arg(&dir).arg(id);
+        cmd.arg(dir).arg(branch);
     } else {
-        cmd.args(["-b", id]).arg(&dir);
+        cmd.args(["-b", branch]).arg(dir).arg(p.base_branch());
     }
     run(&mut cmd)?;
-    Ok(dir)
+    Ok(())
 }
 
 /// Clone each `copy` path from the main checkout (APFS clones: fast, no extra

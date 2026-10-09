@@ -49,7 +49,7 @@ orcd (orc daemon)           detached; owns agents, setup, state
 1. `new`: project, title, prompt. The id/branch/window name is a slug of the
    title.
 2. Setup (orcd thread, each step logged into the conversation):
-   `git worktree add -b <slug>` → copy `copy` entries with `cp -cR` (APFS
+   `git worktree add -b orc/<slug>` from the base branch into `orc-<slug>` → copy `copy` entries with `cp -cR` (APFS
    clones) → run `setup` → `tmux new-window -d -n <slug>` running the
    `metroctl` command.
 3. The agent starts as soon as the worktree is ready. It doesn't wait for the

@@ -212,9 +212,10 @@ fn new_request(st: &Shared, project: &str, title: &str, prompt: &str) -> Result<
         let p = s.cfg.project(project)?.clone();
         let taken: Vec<String> = s.requests.iter().map(|r| r.id.clone()).collect();
         let id = config::slug(title, &taken);
+        let (branch, dir) = setup::names(&p, &id);
         let req = Request {
-            worktree: p.worktrees_dir().join(&id).display().to_string(),
-            branch: id.clone(),
+            worktree: dir.display().to_string(),
+            branch,
             id,
             project: p.name.clone(),
             title: title.to_string(),
@@ -244,8 +245,9 @@ fn new_request(st: &Shared, project: &str, title: &str, prompt: &str) -> Result<
 /// Worktree → copies → setup command → metroctl window → agent.
 fn prepare(st: &Shared, p: &Project, session: &str, id: &str, prompt: &str) -> Result<()> {
     let log = |t: String| st.lock().unwrap().system(id, t);
-    let wt = setup::create_worktree(p, id)?;
-    log(format!("worktree {} on branch {id}", wt.display()));
+    let (branch, wt) = setup::names(p, id);
+    setup::create_worktree(p, &branch, &wt)?;
+    log(format!("worktree {} on branch {branch} (from {})", wt.display(), p.base_branch()));
     let copied = setup::copy_files(p, &wt)?;
     if !copied.is_empty() {
         log(format!("copied {}", copied.join(", ")));
@@ -389,7 +391,7 @@ fn send(st: &Shared, id: &str, text: &str) -> Result<()> {
 }
 
 fn teardown(st: &Shared, id: &str) -> Result<()> {
-    let (p, session, wt) = {
+    let (p, session, wt, branch) = {
         let mut s = st.lock().unwrap();
         let r = s.req(id).cloned().ok_or_else(|| anyhow!("no request {id}"))?;
         s.agents.remove(id);
@@ -401,14 +403,14 @@ fn teardown(st: &Shared, id: &str) -> Result<()> {
             }
         }
         s.system(id, "tearing down…");
-        (s.cfg.project(&r.project)?.clone(), s.cfg.tmux_session(), PathBuf::from(r.worktree))
+        (s.cfg.project(&r.project)?.clone(), s.cfg.tmux_session(), PathBuf::from(&r.worktree), r.branch)
     };
     let (st2, id) = (st.clone(), id.to_string());
     std::thread::spawn(move || {
         let problems = setup::teardown(&p, &session, &id, &wt);
         let mut s = st2.lock().unwrap();
         if problems.is_empty() {
-            s.system(&id, format!("torn down (branch {id} kept)"));
+            s.system(&id, format!("torn down (branch {branch} kept)"));
         } else {
             s.system(&id, format!("torn down with problems:\n{}", problems.join("\n")));
         }

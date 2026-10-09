@@ -40,7 +40,8 @@ Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.
 - The agents run under **orcd**, a background daemon. Quitting the TUI leaves
   them working, and reopening it reattaches. When orcd restarts, agents
   resume their sessions on your next message.
-- New request: `git worktree add` a branch in `<root>-worktrees/<id>`, clone
+- New request: `git worktree add` a branch `orc/<id>`, from the project's base
+  branch (`base`, default `develop`), in `<root>-worktrees/orc-<id>`; clone
   the `copy` paths from the main checkout (APFS clones, so it's instant), run
   `setup`, open the metroctl window, start the agent with your prompt.
 - Tool permission prompts show up in the conversation; answer with `y`/`d`.
