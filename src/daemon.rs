@@ -184,6 +184,17 @@ fn handle(st: &Shared, cmd: Cmd) -> Result<Ev> {
             teardown(st, &id)?;
             Ok(Ev::Ok { message: Some(format!("tearing down {id}")) })
         }
+        Cmd::Remove { id } => {
+            let mut s = st.lock().unwrap();
+            let r = s.req(&id).ok_or_else(|| anyhow!("no request {id}"))?;
+            if r.status != Status::Stopped {
+                return Err(anyhow!("tear {id} down first"));
+            }
+            s.requests.retain(|r| r.id != id);
+            config::remove_items(&id);
+            s.save_and_broadcast();
+            Ok(Ev::Ok { message: Some(format!("removed {id}")) })
+        }
         Cmd::Subscribe | Cmd::PermRequest { .. } | Cmd::Shutdown => unreachable!(),
     }
 }

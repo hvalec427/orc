@@ -126,6 +126,10 @@ pub fn append_item(id: &str, item: &Item) {
     }
 }
 
+pub fn remove_items(id: &str) {
+    let _ = std::fs::remove_file(log_path(id));
+}
+
 pub fn load_items(id: &str) -> Vec<Item> {
     std::fs::read_to_string(log_path(id)).map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default()
 }

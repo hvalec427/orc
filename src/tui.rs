@@ -243,8 +243,14 @@ impl App {
                 return;
             }
             Mode::ConfirmDown => {
-                if let (KeyCode::Char('y'), Some(id)) = (k.code, self.selected().map(|r| r.id.clone())) {
-                    self.do_request(Cmd::Teardown { id });
+                if let (KeyCode::Char('y'), Some(r)) = (k.code, self.selected()) {
+                    let id = r.id.clone();
+                    if r.status == Status::Stopped {
+                        self.convos.remove(&id);
+                        self.do_request(Cmd::Remove { id });
+                    } else {
+                        self.do_request(Cmd::Teardown { id });
+                    }
                 }
                 self.mode = Mode::Normal;
                 return;
@@ -370,7 +376,7 @@ fn render(app: &mut App, f: &mut Frame) {
     } else if pending {
         " permission requested — y allow · d deny".into()
     } else {
-        " n new · ⏎ message · j/k select · g metroctl window · ^c interrupt · x tear down · ^u/^d scroll · q quit (agents keep running)".into()
+        " n new · ⏎ message · j/k select · g metroctl window · ^c interrupt · x tear down/remove · ^u/^d scroll · q quit (agents keep running)".into()
     };
     let bg = if pending && app.flash.is_none() { Color::Yellow } else { Color::Rgb(59, 66, 82) };
     let fg = if pending && app.flash.is_none() { Color::Black } else { Color::White };
@@ -381,9 +387,13 @@ fn render(app: &mut App, f: &mut Frame) {
         Mode::ConfirmDown => {
             let r = centered(f.area(), 72, 6);
             f.render_widget(Clear, r);
-            let id = app.selected().map(|r| r.id.clone()).unwrap_or_default();
-            let p = Paragraph::new(vec![Line::raw(""), Line::raw(format!("  Tear down {id}?")), Line::raw("  Stops the agent, deletes its simulator and worktree; keeps the branch."), Line::raw("  y tear down · any key cancel")]);
-            f.render_widget(p.block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title(" Tear down ")), r);
+            let (id, stopped) = app.selected().map(|r| (r.id.clone(), r.status == Status::Stopped)).unwrap_or_default();
+            let (title, lines) = if stopped {
+                (" Remove ", vec![Line::raw(""), Line::raw(format!("  Remove {id} from the list?")), Line::raw("  Its conversation is deleted; the branch stays in git."), Line::raw("  y remove · any key cancel")])
+            } else {
+                (" Tear down ", vec![Line::raw(""), Line::raw(format!("  Tear down {id}?")), Line::raw("  Stops the agent, deletes its simulator and worktree; keeps the branch."), Line::raw("  y tear down · any key cancel")])
+            };
+            f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title(title)), r);
         }
         _ => {}
     }
@@ -414,6 +424,15 @@ fn conversation_lines(items: &[Item], partial: Option<&String>, width: usize, ou
     }
     let mut shown: Vec<&str> = Vec::new();
     let dim = Style::default().fg(Color::DarkGray);
+    // Parallel tool calls finish in any order: show each result under its call.
+    let results: HashMap<&str, (bool, &str)> = items
+        .iter()
+        .filter_map(|i| if let Item::ToolResult { id, ok, preview } = i { Some((id.as_str(), (*ok, preview.as_str()))) } else { None })
+        .collect();
+    let result_lines = |out: &mut Vec<Line<'static>>, ok: bool, preview: &str| {
+        let style = if ok { dim } else { Style::default().fg(Color::Red) };
+        wrap_push(out, preview, width, "    ", style);
+    };
     for i in items {
         match i {
             Item::User { text } => {
@@ -424,11 +443,13 @@ fn conversation_lines(items: &[Item], partial: Option<&String>, width: usize, ou
                 out.push(Line::raw(""));
                 wrap_push(out, text, width, "", Style::default());
             }
-            Item::Tool { name, summary, .. } => wrap_push(out, &format!("⚙ {name} {summary}"), width, "  ", Style::default().fg(Color::Magenta)),
-            Item::ToolResult { ok, preview, .. } => {
-                let style = if *ok { dim } else { Style::default().fg(Color::Red) };
-                wrap_push(out, preview, width, "    ", style);
+            Item::Tool { id, name, summary } => {
+                wrap_push(out, &format!("⚙ {name} {summary}"), width, "  ", Style::default().fg(Color::Magenta));
+                if let Some((ok, preview)) = results.get(id.as_str()) {
+                    result_lines(out, *ok, preview);
+                }
             }
+            Item::ToolResult { .. } => {} // shown under its call
             Item::System { text } => wrap_push(out, &format!("· {text}"), width, "", Style::default().fg(Color::Blue)),
             Item::Permission { id, tool, summary, .. } => {
                 if shown.contains(&id.as_str()) {

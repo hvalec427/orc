@@ -84,6 +84,8 @@ pub enum Cmd {
     Interrupt { id: String },
     Answer { id: String, perm: String, allow: bool },
     Teardown { id: String },
+    /// Forget a torn-down request (its conversation log too).
+    Remove { id: String },
     /// From `orc perm-mcp`: blocks until the user answers in the TUI.
     PermRequest { id: String, tool: String, input: serde_json::Value },
     Shutdown,

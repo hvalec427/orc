@@ -44,6 +44,8 @@ enum Command {
     Log { id: String },
     /// Tear a request down (worktree, simulator, window; the branch is kept)
     Down { id: String },
+    /// Remove a torn-down request from the list
+    Rm { id: String },
     /// Permission-prompt MCP server for an agent (used by orcd)
     #[command(name = "perm-mcp", hide = true)]
     PermMcp {
@@ -83,6 +85,7 @@ fn main() {
         Some(Command::New { project, title, prompt }) => print(client::request(&Cmd::New { project, title, prompt })),
         Some(Command::Send { id, text }) => print(client::request(&Cmd::Send { id, text })),
         Some(Command::Down { id }) => print(client::request(&Cmd::Teardown { id })),
+        Some(Command::Rm { id }) => print(client::request(&Cmd::Remove { id })),
         Some(Command::Ls) => client::request(&Cmd::List).map(|ev| {
             if let Ev::Requests { list } = ev {
                 for r in list {
