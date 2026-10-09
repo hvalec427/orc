@@ -184,6 +184,10 @@ fn handle(st: &Shared, cmd: Cmd) -> Result<Ev> {
             teardown(st, &id)?;
             Ok(Ev::Ok { message: Some(format!("tearing down {id}")) })
         }
+        Cmd::Finish { id, how } => {
+            finish(st, &id, how)?;
+            Ok(Ev::Ok { message: Some(format!("{} {id}…", match how { crate::proto::Finish::Pr => "opening a PR for", _ => "landing" })) })
+        }
         Cmd::Remove { id } => {
             let mut s = st.lock().unwrap();
             let r = s.req(&id).ok_or_else(|| anyhow!("no request {id}"))?;
@@ -412,6 +416,51 @@ fn teardown(st: &Shared, id: &str) -> Result<()> {
         }
         s.set_status(&id, Status::Stopped);
         s.save_and_broadcast();
+    });
+    Ok(())
+}
+
+fn finish(st: &Shared, id: &str, how: crate::proto::Finish) -> Result<()> {
+    use crate::proto::Finish;
+    let (r, p, session) = {
+        let s = st.lock().unwrap();
+        let r = s.requests.iter().find(|r| r.id == id).cloned().ok_or_else(|| anyhow!("no request {id}"))?;
+        if r.status == Status::Stopped {
+            return Err(anyhow!("{id} was torn down"));
+        }
+        if matches!(r.status, Status::Working | Status::Approval | Status::Setup) {
+            return Err(anyhow!("{id}'s agent is still busy; wait for it (or ^c to interrupt)"));
+        }
+        (r.clone(), s.cfg.project(&r.project)?.clone(), s.cfg.tmux_session())
+    };
+    let (st2, id) = (st.clone(), id.to_string());
+    std::thread::spawn(move || {
+        let log = |t: String| st2.lock().unwrap().system(&id, t);
+        match how {
+            Finish::Pr => match crate::finish::create_pr(&p, &r) {
+                Ok(url) => log(format!("PR: {url}")),
+                Err(e) => log(format!("couldn't open a PR: {e:#}")),
+            },
+            Finish::Rebase | Finish::Squash => match crate::finish::land(&p, &r, how == Finish::Squash) {
+                Ok(summary) => {
+                    log(summary);
+                    st2.lock().unwrap().agents.remove(&id);
+                    let problems = setup::teardown(&p, &session, &id, Path::new(&r.worktree));
+                    let deleted = std::process::Command::new("git").args(["-C", &p.root, "branch", "-D", &r.branch]).output().is_ok_and(|o| o.status.success());
+                    let mut s = st2.lock().unwrap();
+                    if !problems.is_empty() {
+                        s.system(&id, format!("teardown problems:\n{}", problems.join("\n")));
+                    }
+                    s.system(&id, format!("worktree removed{}", if deleted { format!(", branch {} deleted", r.branch) } else { String::new() }));
+                    if let Some(r) = s.req(&id) {
+                        (r.port, r.udid, r.app) = (None, None, None);
+                    }
+                    s.set_status(&id, Status::Stopped);
+                    s.save_and_broadcast();
+                }
+                Err(e) => log(format!("couldn't land {id}: {e:#}")),
+            },
+        }
     });
     Ok(())
 }

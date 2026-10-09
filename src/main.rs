@@ -6,6 +6,7 @@ mod agent;
 mod client;
 mod config;
 mod daemon;
+mod finish;
 mod perm;
 mod proto;
 mod setup;
@@ -44,6 +45,8 @@ enum Command {
     Log { id: String },
     /// Tear a request down (worktree, simulator, window; the branch is kept)
     Down { id: String },
+    /// Finish a request: pr (push + open a PR), rebase or squash (land on the base branch locally, then tear down)
+    Finish { id: String, how: String },
     /// Remove a torn-down request from the list
     Rm { id: String },
     /// Permission-prompt MCP server for an agent (used by orcd)
@@ -86,6 +89,18 @@ fn main() {
         Some(Command::Send { id, text }) => print(client::request(&Cmd::Send { id, text })),
         Some(Command::Down { id }) => print(client::request(&Cmd::Teardown { id })),
         Some(Command::Rm { id }) => print(client::request(&Cmd::Remove { id })),
+        Some(Command::Finish { id, how }) => {
+            let how = match how.as_str() {
+                "pr" => proto::Finish::Pr,
+                "rebase" => proto::Finish::Rebase,
+                "squash" => proto::Finish::Squash,
+                h => {
+                    eprintln!("unknown way to finish {h:?} (pr, rebase, squash)");
+                    std::process::exit(2);
+                }
+            };
+            print(client::request(&Cmd::Finish { id, how }))
+        }
         Some(Command::Ls) => client::request(&Cmd::List).map(|ev| {
             if let Ev::Requests { list } = ev {
                 for r in list {

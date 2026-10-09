@@ -4,7 +4,7 @@
 
 use crate::client;
 use crate::config;
-use crate::proto::{Cmd, Ev, Item, PermState, Request, Status};
+use crate::proto::{Cmd, Ev, Finish, Item, PermState, Request, Status};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
@@ -19,6 +19,7 @@ enum Mode {
     Input(String),
     New(NewForm),
     ConfirmDown,
+    Finish,
 }
 
 struct NewForm {
@@ -135,6 +136,15 @@ impl App {
     fn on_event(&mut self, ev: Ev) {
         match ev {
             Ev::Requests { list } => {
+                // Ring when an agent finishes its turn or needs approval, so a
+                // background tmux window/terminal flags it.
+                let needs_you = |s: Status| matches!(s, Status::Waiting | Status::Approval | Status::Error);
+                let rang = list.iter().any(|r| needs_you(r.status) && self.requests.iter().any(|o| o.id == r.id && o.status != r.status));
+                if rang {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(b"\x07");
+                    let _ = std::io::stdout().flush();
+                }
                 let cur = self.selected().map(|r| r.id.clone());
                 self.requests = list;
                 self.requests.sort_by_key(|r| (r.status == Status::Stopped, std::cmp::Reverse(r.created)));
@@ -242,6 +252,19 @@ impl App {
                 }
                 return;
             }
+            Mode::Finish => {
+                let how = match k.code {
+                    KeyCode::Char('p') | KeyCode::Char('1') => Some(Finish::Pr),
+                    KeyCode::Char('r') | KeyCode::Char('2') => Some(Finish::Rebase),
+                    KeyCode::Char('s') | KeyCode::Char('3') => Some(Finish::Squash),
+                    _ => None,
+                };
+                self.mode = Mode::Normal;
+                if let (Some(how), Some(id)) = (how, self.selected().map(|r| r.id.clone())) {
+                    self.do_request(Cmd::Finish { id, how });
+                }
+                return;
+            }
             Mode::ConfirmDown => {
                 if let (KeyCode::Char('y'), Some(r)) = (k.code, self.selected()) {
                     let id = r.id.clone();
@@ -278,15 +301,30 @@ impl App {
             KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(20),
             KeyCode::Char('G') => self.scroll = 0,
             KeyCode::Enter | KeyCode::Char('i') if id.is_some() => self.mode = Mode::Input(String::new()),
+            KeyCode::Char('y') | KeyCode::Char('n') if self.pending_perm().is_some() => {
+                if let (Some(perm), Some(id)) = (self.pending_perm(), id) {
+                    self.do_request(Cmd::Answer { id, perm, allow: k.code == KeyCode::Char('y') });
+                }
+            }
             KeyCode::Char('n') => match client::request(&Cmd::Projects) {
                 Ok(Ev::Projects { list }) if !list.is_empty() => self.mode = Mode::New(NewForm { projects: list, project: 0, title: String::new(), prompt: String::new(), field: 1 }),
                 Ok(_) => self.set_flash(format!("no projects — add one to {}", config::config_path().display())),
                 Err(e) => self.set_flash(format!("{e:#}")),
             },
-            KeyCode::Char('y') | KeyCode::Char('d') => match (self.pending_perm(), id) {
-                (Some(perm), Some(id)) => self.do_request(Cmd::Answer { id, perm, allow: k.code == KeyCode::Char('y') }),
-                _ => self.set_flash("no permission prompt waiting"),
-            },
+            KeyCode::Char('d') => {
+                if let Some(r) = self.selected().filter(|r| r.status != Status::Stopped) {
+                    // The branch's changes against its base (committed and not), in a tmux popup.
+                    let base = config::load_config().ok().and_then(|c| c.project(&r.project).ok().map(|p| p.base_branch())).unwrap_or_else(|| "develop".into());
+                    let script = format!(
+                        "mb=$(git merge-base {base} HEAD); {{ git -c color.ui=always log --oneline {base}..HEAD; echo; git -c color.ui=always diff --stat $mb; echo; git -c color.ui=always diff $mb; }} | less -R"
+                    );
+                    let ok = Command::new("tmux").args(["display-popup", "-E", "-w", "90%", "-h", "90%", "-d", &r.worktree, "-T", &format!(" {} · q to close ", r.id), &script]).status().is_ok_and(|s| s.success());
+                    if !ok {
+                        self.set_flash("couldn't open a tmux popup");
+                    }
+                }
+            }
+            KeyCode::Char('m') if self.selected().is_some_and(|r| r.status != Status::Stopped) => self.mode = Mode::Finish,
             KeyCode::Char('g') => {
                 if let Some(id) = id {
                     let target = format!("{}:{id}", self.session);
@@ -374,9 +412,9 @@ fn render(app: &mut App, f: &mut Frame) {
     let text = if let Some((m, _)) = &app.flash {
         format!(" {m}")
     } else if pending {
-        " permission requested — y allow · d deny".into()
+        " permission requested — y allow · n deny".into()
     } else {
-        " n new · ⏎ message · j/k select · g metroctl window · ^c interrupt · x tear down/remove · ^u/^d scroll · q quit (agents keep running)".into()
+        " n new · ⏎ message · d diff · m finish (PR/land) · g metroctl · ^c interrupt · x tear down · ^u/^d scroll · q quit".into()
     };
     let bg = if pending && app.flash.is_none() { Color::Yellow } else { Color::Rgb(59, 66, 82) };
     let fg = if pending && app.flash.is_none() { Color::Black } else { Color::White };
@@ -384,6 +422,22 @@ fn render(app: &mut App, f: &mut Frame) {
 
     match &app.mode {
         Mode::New(form) => render_new(form, f),
+        Mode::Finish => {
+            let r = centered(f.area(), 64, 9);
+            f.render_widget(Clear, r);
+            let key = |k: &'static str| Span::styled(format!("  {k} "), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+            let lines = vec![
+                Line::raw(""),
+                Line::from(vec![key("p"), Span::raw("create a PR (push the branch, keep the request)")]),
+                Line::from(vec![key("r"), Span::raw("rebase onto the base branch, then tear down")]),
+                Line::from(vec![key("s"), Span::raw("squash into one commit, rebase, then tear down")]),
+                Line::raw(""),
+                Line::styled("  Landing is local (nothing pushed); the branch is deleted.", Style::default().fg(Color::DarkGray)),
+                Line::styled("  any other key cancels", Style::default().fg(Color::DarkGray)),
+            ];
+            let id = app.selected().map(|r| r.id.clone()).unwrap_or_default();
+            f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)).title(format!(" Finish {id} "))), r);
+        }
         Mode::ConfirmDown => {
             let r = centered(f.area(), 72, 6);
             f.render_widget(Clear, r);
@@ -459,7 +513,7 @@ fn conversation_lines(items: &[Item], partial: Option<&String>, width: usize, ou
                 let (mark, style) = match latest.get(id.as_str()) {
                     Some(PermState::Allowed) => ("✓ allowed", Style::default().fg(Color::Green)),
                     Some(PermState::Denied) => ("✗ denied", Style::default().fg(Color::Red)),
-                    _ => ("? waiting — y allow · d deny", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    _ => ("? waiting — y allow · n deny", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 };
                 wrap_push(out, &format!("{tool} {summary}  {mark}"), width, "  ⚠ ", style);
             }

@@ -54,6 +54,8 @@ impl Agent {
         }
         // touchctl (UI control) finds the session's simulator through metroctl's session file.
         cmd.env("TOUCHCTL_DEVICE_FROM", ".metroctl/session.json");
+        // bash, not the user's zsh: agents write bash (zsh fails on unquoted globs like --include=*.tsx).
+        cmd.env("SHELL", "/bin/bash");
         cmd.current_dir(&o.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| anyhow!("couldn't start claude: {e}"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;

@@ -30,6 +30,9 @@ pub struct Project {
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// Branch requests start from and finish into (default: develop, else main, else master).
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 impl Project {
@@ -38,6 +41,19 @@ impl Project {
             Some(w) => PathBuf::from(w),
             None => PathBuf::from(format!("{}-worktrees", self.root.trim_end_matches('/'))),
         }
+    }
+
+    pub fn base_branch(&self) -> String {
+        if let Some(b) = &self.base {
+            return b.clone();
+        }
+        for b in ["develop", "main", "master"] {
+            let ok = std::process::Command::new("git").args(["-C", &self.root, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success());
+            if ok {
+                return b.to_string();
+            }
+        }
+        "main".into()
     }
 
     pub fn metroctl_command(&self) -> String {

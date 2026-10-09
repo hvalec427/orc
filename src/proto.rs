@@ -71,6 +71,14 @@ pub enum PermState {
     Denied,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Finish {
+    Pr,
+    Rebase,
+    Squash,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Cmd {
@@ -84,6 +92,8 @@ pub enum Cmd {
     Interrupt { id: String },
     Answer { id: String, perm: String, allow: bool },
     Teardown { id: String },
+    /// Finish a request: open a PR, or land it on the base branch (and tear it down).
+    Finish { id: String, how: Finish },
     /// Forget a torn-down request (its conversation log too).
     Remove { id: String },
     /// From `orc perm-mcp`: blocks until the user answers in the TUI.
