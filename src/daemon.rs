@@ -275,6 +275,9 @@ fn system_prompt(req: &Request) -> String {
          read it to see the screen; `touchctl ui` lists elements with #testID, \"label\" and @x,y; `touchctl tap --id <testID>` \
          (or --label <text>, or x y); `touchctl swipe up|down|left|right`; `touchctl type <text> --id <field>`; \
          `touchctl press home|enter`; `touchctl open <url>` for deep links.\n\n\
+         Deep links: the metroctl `deeplinks` tool lists the app's links, with <placeholders> to fill in. If the task gives you \
+         a magic login link or a token, log in by opening it (or the matching link with the token filled in) with \
+         `touchctl open`, then check the screen.\n\n\
          The app may still be building when you start: call `wait_ready` instead of ending your turn or sleeping in the \
          background to wait, since nothing wakes you up after a turn ends. Commit your work on this branch when a step is done. \
          Never push, and never touch other worktrees.",
