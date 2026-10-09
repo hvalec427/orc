@@ -1,471 +1,172 @@
-//! Loading + validating the central orc config (`~/.orc/config.json`).
+//! `~/.config/orc/`: the projects config, the request registry, and each
+//! request's conversation log.
 
-use crate::types::{
-    MaestroMcp, MergeStrategy, OrcConfig, PermissionMode, PortRange, ProjectConfig, ProjectType,
-    SettingSource,
-};
-use serde::Deserialize;
+use crate::proto::{Item, Request};
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::PathBuf;
 
-/// Default model id used when no override is set.
-pub const DEFAULT_MODEL: &str = "claude-opus-4-8";
-/// Default directory (relative to repo) where worktrees are created.
-pub const DEFAULT_WORKTREE_DIR: &str = ".worktrees";
-/// Default merge strategy wire value.
-pub const DEFAULT_MERGE_STRATEGY: MergeStrategy = MergeStrategy::Rebase;
-/// Default permission mode.
-pub const DEFAULT_PERMISSION_MODE: PermissionMode = PermissionMode::BypassPermissions;
-/// Default project type.
-pub const DEFAULT_PROJECT_TYPE: ProjectType = ProjectType::ReactNative;
-
-/// Default setting sources: user, project, local.
-pub fn default_setting_sources() -> Vec<SettingSource> {
-    vec![
-        SettingSource::User,
-        SettingSource::Project,
-        SettingSource::Local,
-    ]
-}
-
-/// Default maestro MCP: `maestro mcp`.
-pub fn default_maestro_mcp() -> MaestroMcp {
-    MaestroMcp {
-        command: "maestro".to_string(),
-        args: Some(vec!["mcp".to_string()]),
-        env: None,
-    }
-}
-
-/// CLI flags that influence config resolution.
-#[derive(Debug, Clone, Default)]
-pub struct CliFlags {
-    pub config: Option<String>,
-    pub model: Option<String>,
-    pub no_maestro: bool,
-    pub tmux: Option<bool>,
-    pub no_tmux: bool,
-    pub tmux_child: bool,
-}
-
-/// Fields overridable at the global or per-project level in the raw config document.
-///
-/// `deny_unknown_fields` and `#[serde(flatten)]` are mutually exclusive in serde, so rather than
-/// flattening a shared struct (which would silently accept unknown keys), the overridable fields are
-/// listed explicitly on both [`RawGlobalConfig`] and [`RawProjectConfig`] so each can carry
-/// `deny_unknown_fields` and reject typos.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct RawOverridable {
-    #[serde(rename = "type")]
-    pub project_type: Option<ProjectType>,
-    pub model: Option<String>,
-    pub worktree_dir: Option<String>,
-    pub permission_mode: Option<PermissionMode>,
-    pub setting_sources: Option<Vec<SettingSource>>,
-    pub base_branch: Option<String>,
-    pub merge_strategy: Option<MergeStrategy>,
-    pub port_range: Option<String>,
-    pub maestro_mcp: Option<MaestroMcp>,
-    pub magic_link: Option<String>,
-}
-
-/// A single project entry in the raw config.json document.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawProjectConfig {
+pub struct Project {
     pub name: String,
-    pub path: String,
-    #[serde(rename = "type")]
-    pub project_type: Option<ProjectType>,
+    pub root: String,
+    /// Where worktrees go (default `<root>-worktrees`).
+    #[serde(default)]
+    pub worktrees: Option<String>,
+    /// Paths (relative to root) cloned into each new worktree: deps, env files.
+    #[serde(default)]
+    pub copy: Vec<String>,
+    /// Shell command run in the worktree after copying (e.g. `cd ios && pod install`).
+    #[serde(default)]
+    pub setup: Option<String>,
+    /// metroctl command for the request's tmux window.
+    #[serde(default)]
+    pub metroctl: Option<String>,
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
     pub model: Option<String>,
-    pub worktree_dir: Option<String>,
-    pub permission_mode: Option<PermissionMode>,
-    pub setting_sources: Option<Vec<SettingSource>>,
-    pub base_branch: Option<String>,
-    pub merge_strategy: Option<MergeStrategy>,
-    pub port_range: Option<String>,
-    pub maestro_mcp: Option<MaestroMcp>,
-    pub magic_link: Option<String>,
 }
 
-impl RawProjectConfig {
-    fn overridable(&self) -> RawOverridable {
-        RawOverridable {
-            project_type: self.project_type,
-            model: self.model.clone(),
-            worktree_dir: self.worktree_dir.clone(),
-            permission_mode: self.permission_mode,
-            setting_sources: self.setting_sources.clone(),
-            base_branch: self.base_branch.clone(),
-            merge_strategy: self.merge_strategy,
-            port_range: self.port_range.clone(),
-            maestro_mcp: self.maestro_mcp.clone(),
-            magic_link: self.magic_link.clone(),
+impl Project {
+    pub fn worktrees_dir(&self) -> PathBuf {
+        match &self.worktrees {
+            Some(w) => PathBuf::from(w),
+            None => PathBuf::from(format!("{}-worktrees", self.root.trim_end_matches('/'))),
+        }
+    }
+
+    pub fn metroctl_command(&self) -> String {
+        self.metroctl.clone().unwrap_or_else(|| "metroctl up --port auto --new-sim".into())
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    /// tmux session that holds the TUI and the metroctl windows.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+}
+
+impl Config {
+    pub fn project(&self, name: &str) -> Result<&Project> {
+        self.projects.iter().find(|p| p.name == name).ok_or_else(|| anyhow!("no project {name:?} in {}", config_path().display()))
+    }
+
+    pub fn tmux_session(&self) -> String {
+        self.tmux_session.clone().unwrap_or_else(|| "orc".into())
+    }
+}
+
+pub fn dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::env::var("ORC_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(home).join(".config/orc"))
+}
+
+pub fn config_path() -> PathBuf {
+    dir().join("config.json")
+}
+
+/// `<dir>/orcd.sock`, or a short temp path when that's too long for a Unix
+/// socket (~104 bytes on macOS).
+pub fn socket_path() -> PathBuf {
+    let p = dir().join("orcd.sock");
+    if p.as_os_str().len() < 100 {
+        return p;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dir().hash(&mut h);
+    std::env::temp_dir().join(format!("orcd-{:x}.sock", h.finish()))
+}
+
+pub fn load_config() -> Result<Config> {
+    let p = config_path();
+    if !p.exists() {
+        return Ok(Config::default());
+    }
+    serde_json::from_slice(&std::fs::read(&p)?).with_context(|| format!("parsing {}", p.display()))
+}
+
+fn requests_path() -> PathBuf {
+    dir().join("requests.json")
+}
+
+pub fn load_requests() -> Vec<Request> {
+    std::fs::read(requests_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_requests(list: &[Request]) {
+    let _ = std::fs::create_dir_all(dir());
+    let tmp = dir().join("requests.json.tmp");
+    if let Ok(json) = serde_json::to_vec_pretty(list) {
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, requests_path());
         }
     }
 }
 
-/// The top-level raw config.json document.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RawGlobalConfig {
-    #[serde(rename = "type")]
-    pub project_type: Option<ProjectType>,
-    pub model: Option<String>,
-    pub worktree_dir: Option<String>,
-    pub permission_mode: Option<PermissionMode>,
-    pub setting_sources: Option<Vec<SettingSource>>,
-    pub base_branch: Option<String>,
-    pub merge_strategy: Option<MergeStrategy>,
-    pub port_range: Option<String>,
-    pub maestro_mcp: Option<MaestroMcp>,
-    pub magic_link: Option<String>,
-    pub projects: Vec<RawProjectConfig>,
-    pub tmux: Option<bool>,
+fn log_path(id: &str) -> PathBuf {
+    dir().join("requests").join(format!("{id}.jsonl"))
 }
 
-impl RawGlobalConfig {
-    fn overridable(&self) -> RawOverridable {
-        RawOverridable {
-            project_type: self.project_type,
-            model: self.model.clone(),
-            worktree_dir: self.worktree_dir.clone(),
-            permission_mode: self.permission_mode,
-            setting_sources: self.setting_sources.clone(),
-            base_branch: self.base_branch.clone(),
-            merge_strategy: self.merge_strategy,
-            port_range: self.port_range.clone(),
-            maestro_mcp: self.maestro_mcp.clone(),
-            magic_link: self.magic_link.clone(),
+pub fn append_item(id: &str, item: &Item) {
+    let p = log_path(id);
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        let _ = writeln!(f, "{}", serde_json::to_string(item).unwrap_or_default());
+    }
+}
+
+pub fn load_items(id: &str) -> Vec<Item> {
+    std::fs::read_to_string(log_path(id)).map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default()
+}
+
+/// `Fix login crash!` → `fix-login-crash`, unique among `taken`.
+pub fn slug(title: &str, taken: &[String]) -> String {
+    let mut s = String::new();
+    for c in title.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else if !s.ends_with('-') && !s.is_empty() {
+            s.push('-');
+        }
+        if s.len() >= 40 {
+            break;
         }
     }
+    let base = s.trim_end_matches('-').to_string();
+    let base = if base.is_empty() { "request".to_string() } else { base };
+    let mut out = base.clone();
+    let mut n = 2;
+    while taken.contains(&out) {
+        out = format!("{base}-{n}");
+        n += 1;
+    }
+    out
 }
 
-/// Parse a validated "start-end" string into a [`PortRange`].
-///
-/// Errors contain `portRange must look like "8000-8099"` when the shape is wrong and
-/// `0 < start <= end` when the numeric bounds are invalid.
-pub fn parse_port_range(range: &str) -> anyhow::Result<PortRange> {
-    let re = regex::Regex::new(r"^\d+-\d+$").unwrap();
-    if !re.is_match(range) {
-        anyhow::bail!(r#"portRange must look like "8000-8099""#);
-    }
-    let (start_s, end_s) = range.split_once('-').unwrap();
-    let start: u32 = start_s.parse()?;
-    let end: u32 = end_s.parse()?;
-    if !(start > 0 && end > 0 && start <= end) || start > u16::MAX as u32 || end > u16::MAX as u32 {
-        anyhow::bail!(r#"portRange must be "start-end" with 0 < start <= end"#);
-    }
-    Ok(PortRange {
-        start: start as u16,
-        end: end as u16,
-    })
-}
-
-/// Default config path: `~/.orc/config.json`.
-pub fn default_config_path() -> std::path::PathBuf {
-    let home = dirs::home_dir().unwrap_or_default();
-    home.join(".orc").join("config.json")
-}
-
-/// Collapse the home dir back to `~` for friendlier messages.
-pub fn display_path(p: &str) -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    if home.is_empty() {
-        return p.to_string();
-    }
-    if p == home {
-        return "~".to_string();
-    }
-    let prefix = format!("{home}/");
-    if let Some(rest) = p.strip_prefix(&prefix) {
-        format!("~/{rest}")
-    } else {
-        p.to_string()
-    }
-}
-
-/// Expand a leading `~` and resolve to an absolute path.
-pub fn expand_path(p: &str) -> String {
-    let home = dirs::home_dir().unwrap_or_default();
-    if p == "~" {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = p.strip_prefix("~/") {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    let path = std::path::Path::new(p);
-    if path.is_absolute() {
-        p.to_string()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(p)
-            .to_string_lossy()
-            .into_owned()
-    }
-}
-
-/// Parse a raw config document from JSON text, rejecting unknown keys.
-///
-/// Errors are prefixed with `Invalid config` to match the TS wording. Mirrors the TS schema's
-/// `z.array(ProjectSchema).min(1)` by rejecting an empty `projects` array, and
-/// `z.string().min(1)` by rejecting an empty `baseBranch` at the global or project level.
-pub fn parse_raw_config(text: &str) -> anyhow::Result<RawGlobalConfig> {
-    let raw: RawGlobalConfig =
-        serde_json::from_str(text).map_err(|e| anyhow::anyhow!("Invalid config: {e}"))?;
-    if raw.projects.is_empty() {
-        anyhow::bail!("Invalid config: at least one project is required");
-    }
-    if matches!(raw.base_branch.as_deref(), Some("")) {
-        anyhow::bail!("Invalid config: baseBranch must not be empty");
-    }
-    for p in &raw.projects {
-        if matches!(p.base_branch.as_deref(), Some("")) {
-            anyhow::bail!("Invalid config: baseBranch must not be empty");
-        }
-    }
-    Ok(raw)
-}
-
-/// Resolve a raw config document into an [`OrcConfig`], overlaying global defaults per project and
-/// applying CLI flag precedence. Duplicate project names error with
-/// `Duplicate project name in config: "<name>"`.
-pub fn resolve_config(raw: RawGlobalConfig, flags: &CliFlags) -> anyhow::Result<OrcConfig> {
-    let global = raw.overridable();
-    let global_maestro = if flags.no_maestro {
-        None
-    } else {
-        global
-            .maestro_mcp
-            .clone()
-            .or_else(|| Some(default_maestro_mcp()))
-    };
-
-    let mut projects = Vec::with_capacity(raw.projects.len());
-    let mut names = std::collections::HashSet::new();
-
-    for p in &raw.projects {
-        if !names.insert(p.name.clone()) {
-            anyhow::bail!("Duplicate project name in config: \"{}\"", p.name);
-        }
-        let po = p.overridable();
-
-        let range_str = po.port_range.clone().or_else(|| global.port_range.clone());
-        let port_range = match range_str {
-            Some(ref s) => Some(parse_port_range(s)?),
-            None => None,
-        };
-
-        let maestro_mcp = if flags.no_maestro {
-            None
-        } else {
-            po.maestro_mcp.clone().or_else(|| global_maestro.clone())
-        };
-
-        projects.push(ProjectConfig {
-            name: p.name.clone(),
-            project_type: po
-                .project_type
-                .or(global.project_type)
-                .unwrap_or(DEFAULT_PROJECT_TYPE),
-            repo: expand_path(&p.path),
-            model: flags
-                .model
-                .clone()
-                .or_else(|| po.model.clone())
-                .or_else(|| global.model.clone())
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            worktree_dir: po
-                .worktree_dir
-                .clone()
-                .or_else(|| global.worktree_dir.clone())
-                .unwrap_or_else(|| DEFAULT_WORKTREE_DIR.to_string()),
-            permission_mode: po
-                .permission_mode
-                .or(global.permission_mode)
-                .unwrap_or(DEFAULT_PERMISSION_MODE),
-            setting_sources: po
-                .setting_sources
-                .clone()
-                .or_else(|| global.setting_sources.clone())
-                .unwrap_or_else(default_setting_sources),
-            base_branch: po
-                .base_branch
-                .clone()
-                .or_else(|| global.base_branch.clone()),
-            merge_strategy: po
-                .merge_strategy
-                .or(global.merge_strategy)
-                .unwrap_or(DEFAULT_MERGE_STRATEGY),
-            port_range,
-            maestro_mcp,
-            magic_link: po.magic_link.clone().or_else(|| global.magic_link.clone()),
-        });
-    }
-
-    let tmux = if flags.no_tmux {
-        Some(false)
-    } else {
-        flags.tmux.or(raw.tmux)
-    };
-
-    Ok(OrcConfig { projects, tmux })
-}
-
-/// Load + resolve the config from disk per the CLI flags.
-pub fn load_config(flags: &CliFlags) -> anyhow::Result<OrcConfig> {
-    let config_path = match &flags.config {
-        Some(c) => std::path::PathBuf::from(expand_path(c)),
-        None => default_config_path(),
-    };
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No config found at {}.",
-            display_path(&config_path.to_string_lossy())
-        );
-    }
-    let text = std::fs::read_to_string(&config_path)?;
-    let raw = parse_raw_config(&text)?;
-    resolve_config(raw, flags)
+pub fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn flags() -> CliFlags {
-        CliFlags::default()
-    }
-
     #[test]
-    fn parse_port_range_ok() {
-        let r = parse_port_range("8000-8099").unwrap();
-        assert_eq!(r.start, 8000);
-        assert_eq!(r.end, 8099);
-    }
-
-    #[test]
-    fn parse_port_range_reversed_errors() {
-        let err = parse_port_range("8099-8000").unwrap_err().to_string();
-        assert!(err.contains("0 < start <= end"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_port_range_garbage_errors() {
-        let err = parse_port_range("abc").unwrap_err().to_string();
-        assert!(err.contains("portRange must look like"), "got: {err}");
-    }
-
-    #[test]
-    fn merge_strategy_per_project_override_wins() {
-        let text = r#"{
-            "mergeStrategy": "merge",
-            "projects": [
-                { "name": "A", "path": "/a", "mergeStrategy": "squash-merge" },
-                { "name": "B", "path": "/b" }
-            ]
-        }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let cfg = resolve_config(raw, &flags()).unwrap();
-        let a = cfg.projects.iter().find(|p| p.name == "A").unwrap();
-        let b = cfg.projects.iter().find(|p| p.name == "B").unwrap();
-        assert_eq!(a.merge_strategy, MergeStrategy::SquashMerge);
-        assert_eq!(b.merge_strategy, MergeStrategy::Merge);
-    }
-
-    #[test]
-    fn merge_strategy_defaults_to_rebase() {
-        let text = r#"{ "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let cfg = resolve_config(raw, &flags()).unwrap();
-        assert_eq!(cfg.projects[0].merge_strategy, MergeStrategy::Rebase);
-    }
-
-    #[test]
-    fn invalid_merge_strategy_errors() {
-        let text =
-            r#"{ "projects": [ { "name": "A", "path": "/a", "mergeStrategy": "octopus" } ] }"#;
-        let err = parse_raw_config(text).unwrap_err().to_string();
-        assert!(err.contains("Invalid config"), "got: {err}");
-    }
-
-    #[test]
-    fn tmux_resolution_absent_is_none() {
-        let text = r#"{ "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let cfg = resolve_config(raw, &flags()).unwrap();
-        assert_eq!(cfg.tmux, None);
-    }
-
-    #[test]
-    fn tmux_parsed_true() {
-        let text = r#"{ "tmux": true, "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let cfg = resolve_config(raw, &flags()).unwrap();
-        assert_eq!(cfg.tmux, Some(true));
-    }
-
-    #[test]
-    fn tmux_parsed_false() {
-        let text = r#"{ "tmux": false, "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let cfg = resolve_config(raw, &flags()).unwrap();
-        assert_eq!(cfg.tmux, Some(false));
-    }
-
-    #[test]
-    fn flag_tmux_forces_true() {
-        let text = r#"{ "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let mut f = flags();
-        f.tmux = Some(true);
-        let cfg = resolve_config(raw, &f).unwrap();
-        assert_eq!(cfg.tmux, Some(true));
-    }
-
-    #[test]
-    fn no_tmux_overrides_flag() {
-        let text = r#"{ "tmux": true, "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let mut f = flags();
-        f.tmux = Some(true);
-        f.no_tmux = true;
-        let cfg = resolve_config(raw, &f).unwrap();
-        assert_eq!(cfg.tmux, Some(false));
-    }
-
-    #[test]
-    fn unknown_top_level_key_errors() {
-        let text = r#"{ "bogus": 1, "projects": [ { "name": "A", "path": "/a" } ] }"#;
-        let err = parse_raw_config(text).unwrap_err().to_string();
-        assert!(err.contains("Invalid config"), "got: {err}");
-    }
-
-    #[test]
-    fn empty_projects_errors() {
-        let text = r#"{ "projects": [] }"#;
-        let err = parse_raw_config(text).unwrap_err().to_string();
-        assert!(err.contains("Invalid config"), "got: {err}");
-    }
-
-    #[test]
-    fn empty_base_branch_errors() {
-        let text = r#"{ "projects": [ { "name": "A", "path": "/a", "baseBranch": "" } ] }"#;
-        let err = parse_raw_config(text).unwrap_err().to_string();
-        assert!(err.contains("Invalid config"), "got: {err}");
-    }
-
-    #[test]
-    fn duplicate_project_name_errors() {
-        let text =
-            r#"{ "projects": [ { "name": "X", "path": "/a" }, { "name": "X", "path": "/b" } ] }"#;
-        let raw = parse_raw_config(text).unwrap();
-        let err = resolve_config(raw, &flags()).unwrap_err().to_string();
-        assert!(
-            err.contains(r#"Duplicate project name in config: "X""#),
-            "got: {err}"
-        );
+    fn slugs() {
+        assert_eq!(slug("Fix login crash!", &[]), "fix-login-crash");
+        assert_eq!(slug("Fix login crash", &["fix-login-crash".into()]), "fix-login-crash-2");
+        assert_eq!(slug("  ", &[]), "request");
+        assert_eq!(slug("Add ÄÖ price screen", &[]), "add-price-screen");
     }
 }

@@ -1,142 +1,144 @@
-//! orc — orchestrate many `claude` CLI agents in parallel from a ratatui TUI.
+//! orc — run Claude Code agents on React Native feature requests, each in its
+//! own worktree with its own Metro and simulator (via metroctl). `orc` opens
+//! the TUI; the agents live in the background daemon (`orc daemon`).
 
-pub mod agent;
-pub mod config;
-pub mod mcp;
-pub mod persist;
-pub mod ports;
-pub mod simulators;
-pub mod tmux;
-pub mod types;
-pub mod ui;
-pub mod worktree;
+mod agent;
+mod client;
+mod config;
+mod daemon;
+mod perm;
+mod proto;
+mod setup;
+mod tui;
+mod update;
 
-use clap::Parser;
-use config::CliFlags;
+use clap::{Parser, Subcommand};
+use proto::{Cmd, Ev, Item};
 
-/// Orchestrate many `claude` CLI agents in parallel from a ratatui TUI.
-#[derive(Parser, Debug)]
-#[command(name = "orc", version, about)]
+#[derive(Parser)]
+#[command(name = "orc", version, about = "Run Claude Code agents on feature requests, one worktree and simulator each")]
 struct Cli {
-    /// Central config file (default: ~/.orc/config.json).
-    #[arg(long)]
-    config: Option<String>,
-    /// Override the model for all agents.
-    #[arg(long)]
-    model: Option<String>,
-    /// Do not attach the Maestro MCP server.
-    #[arg(long = "no-maestro")]
-    no_maestro: bool,
-    /// Force-enable the per-agent tmux shell panes.
-    #[arg(long)]
-    tmux: bool,
-    /// Disable the per-agent tmux shell panes.
-    #[arg(long = "no-tmux")]
-    no_tmux: bool,
-    /// Internal: we are the re-exec child inside the tmux session orc created.
-    #[arg(long = "tmux-child", hide = true)]
-    tmux_child: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-impl Cli {
-    fn into_flags(self) -> CliFlags {
-        CliFlags {
-            config: self.config,
-            model: self.model,
-            no_maestro: self.no_maestro,
-            tmux: if self.tmux { Some(true) } else { None },
-            no_tmux: self.no_tmux,
-            tmux_child: self.tmux_child,
-        }
-    }
+#[derive(Subcommand)]
+enum Command {
+    /// Run orcd in the foreground (normally started for you)
+    Daemon,
+    /// Stop orcd and its agents
+    Stop,
+    /// Start a feature request
+    New {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        title: String,
+        prompt: String,
+    },
+    /// Send a message to a request's agent
+    Send { id: String, text: String },
+    /// List requests
+    Ls,
+    /// Print a request's conversation
+    Log { id: String },
+    /// Tear a request down (worktree, simulator, window; the branch is kept)
+    Down { id: String },
+    /// Permission-prompt MCP server for an agent (used by orcd)
+    #[command(name = "perm-mcp", hide = true)]
+    PermMcp {
+        #[arg(long)]
+        request: String,
+    },
+    /// Check whether a newer version of orc is available
+    #[command(name = "check-update")]
+    CheckUpdate {
+        #[arg(long)]
+        stable: bool,
+        #[arg(long)]
+        nightly: bool,
+        #[arg(long)]
+        dev: bool,
+    },
+    /// Update orc to the latest version (stays on the installed build's channel)
+    Update {
+        #[arg(long)]
+        stable: bool,
+        #[arg(long)]
+        nightly: bool,
+        #[arg(long)]
+        dev: bool,
+        /// Install the channel's latest even if it's the same or an older version
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() {
-    // Internal: when launched as the per-agent MCP server (`orc __mcp --pane <id> --dir <dir>`),
-    // speak MCP on stdio and exit. This is spawned by each agent's `claude` via `--mcp-config`.
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("__mcp") {
-        let (mut pane, mut dir) = (None, None);
-        let mut it = args.iter().skip(2);
-        while let Some(a) = it.next() {
-            match a.as_str() {
-                "--pane" => pane = it.next().cloned(),
-                "--dir" => dir = it.next().cloned(),
-                _ => {}
+    let cli = Cli::parse();
+    let res = match cli.command {
+        None => tui::run(),
+        Some(Command::Daemon) => daemon::run(),
+        Some(Command::Stop) => print(client::request(&Cmd::Shutdown)),
+        Some(Command::New { project, title, prompt }) => print(client::request(&Cmd::New { project, title, prompt })),
+        Some(Command::Send { id, text }) => print(client::request(&Cmd::Send { id, text })),
+        Some(Command::Down { id }) => print(client::request(&Cmd::Teardown { id })),
+        Some(Command::Ls) => client::request(&Cmd::List).map(|ev| {
+            if let Ev::Requests { list } = ev {
+                for r in list {
+                    let app = match (r.port, &r.app) {
+                        (Some(p), Some(a)) => format!(":{p} {a}"),
+                        _ => String::new(),
+                    };
+                    println!("{:<28} {:<9} {:<14} {}", r.id, r.status.label(), app, r.title);
+                }
             }
+        }),
+        Some(Command::Log { id }) => client::request(&Cmd::History { id }).map(|ev| {
+            if let Ev::History { items, .. } = ev {
+                for i in items {
+                    println!("{}", plain(&i));
+                }
+            }
+        }),
+        Some(Command::PermMcp { request }) => {
+            perm::run(&request);
+            Ok(())
         }
-        if let (Some(pane), Some(dir)) = (pane, dir) {
-            let _ = mcp::serve(&pane, std::path::Path::new(&dir));
+        Some(Command::CheckUpdate { stable, nightly, dev }) => {
+            update::check_update(stable, nightly, dev);
+            Ok(())
         }
-        return;
-    }
-
-    if let Err(e) = run() {
-        eprintln!("orc: {e}");
+        Some(Command::Update { stable, nightly, dev, force }) => {
+            update::update(stable, nightly, dev, force);
+            Ok(())
+        }
+    };
+    if let Err(e) = res {
+        eprintln!("{e:#}");
         std::process::exit(1);
     }
 }
 
-fn run() -> anyhow::Result<()> {
-    use std::io::IsTerminal;
-    use tmux::controller::{build_reexec_argv, detect_mode, Mode, TmuxController};
-
-    let raw_args: Vec<String> = std::env::args().skip(1).collect();
-    let flags = Cli::parse().into_flags();
-
-    let config = match config::load_config(&flags) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            eprintln!("\nCreate ~/.orc/config.json (see examples/config.json).");
-            std::process::exit(1);
-        }
-    };
-
-    // Decide whether to drive tmux BEFORE touching the terminal: a bootstrap re-exec must happen on
-    // the plain terminal so attaching tmux owns the screen cleanly.
-    let disabled = config.tmux == Some(false);
-    let is_tty = std::io::stdout().is_terminal();
-    let mode = detect_mode(
-        disabled,
-        is_tty,
-        TmuxController::is_available(),
-        std::env::var_os("TMUX").is_some(),
-        flags.tmux_child,
-    );
-
-    if mode == Mode::Bootstrap && !flags.tmux_child {
-        // Launch our own tmux session and re-exec orc inside it; this process is replaced.
-        let exe = std::env::current_exe()?.to_string_lossy().into_owned();
-        let reexec = build_reexec_argv(&exe, &raw_args);
-        TmuxController::bootstrap_and_reexec(&reexec)?;
-        return Ok(());
+fn print(r: anyhow::Result<Ev>) -> anyhow::Result<()> {
+    if let Ev::Ok { message: Some(m) } = r? {
+        println!("{m}");
     }
-
-    // A dedicated multi-thread runtime drives the agent subprocesses; the UI loop runs on the main
-    // thread (not a runtime worker) so it can `Handle::block_on` to start sessions synchronously.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    let mut manager = agent::manager::AgentManager::new(config, rt.handle().clone());
-
-    // Attach tmux (if any) BEFORE restoring agents, so restored agents get their shell panes too.
-    if mode == Mode::Inside {
-        let mut controller = TmuxController::new();
-        if flags.tmux_child {
-            controller.adopt();
-        } else {
-            controller.adopt_inside(None);
-        }
-        manager.set_tmux(Some(controller));
-    }
-    manager.restore();
-
-    ui::app::run(&mut manager)?;
-
-    manager.stop_all();
-    // Give in-flight cancellations a moment to land, then drop the runtime.
-    rt.shutdown_timeout(std::time::Duration::from_millis(200));
     Ok(())
+}
+
+/// A conversation item as plain text (for `orc log`).
+fn plain(i: &Item) -> String {
+    match i {
+        Item::User { text } => format!("> {text}"),
+        Item::Assistant { text } => text.clone(),
+        Item::Tool { name, summary, .. } => format!("  ⚙ {name} {summary}"),
+        Item::ToolResult { ok, preview, .. } => format!("    {} {}", if *ok { "↳" } else { "✗" }, preview.replace('\n', "\n      ")),
+        Item::System { text } => format!("· {text}"),
+        Item::Permission { tool, summary, state, .. } => format!("  ? {tool} {summary} [{state:?}]"),
+        Item::Turn { cost, error } => match error {
+            Some(e) => format!("— turn failed: {e}"),
+            None => format!("— turn done{}", cost.map(|c| format!(" (${c:.2})")).unwrap_or_default()),
+        },
+    }
 }
