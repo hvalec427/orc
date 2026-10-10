@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const REPO: &str = "hvalec427/orc";
-const DEFAULT_INSTALL_PATH: &str = "/usr/local/bin/orc";
 const UA: &str = "orc-cli";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +267,8 @@ pub fn install_target() -> PathBuf {
             return std::fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(p));
         }
     }
-    PathBuf::from(DEFAULT_INSTALL_PATH)
+    // Where install.sh puts it: ~/.orc/bin/orc.
+    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".orc/bin/orc")
 }
 
 pub fn needs_sudo(target: &std::path::Path) -> bool {

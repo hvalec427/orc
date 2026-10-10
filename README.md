@@ -24,6 +24,9 @@ orc stop          # stop the daemon and its agents
 curl -fsSL https://raw.githubusercontent.com/hvalec427/orc/master/install.sh | sh
 ```
 
+It installs to `~/.orc/bin/orc` (no sudo) and adds that folder to your PATH in
+your shell config (`INSTALL_DIR=…` installs elsewhere).
+
 Or the latest build from `develop` with `… | sh -s -- dev`. Update with
 `orc update` (`--stable`, `--nightly`, `--dev` to switch channels). Uninstall:
 
