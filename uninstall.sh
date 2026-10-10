@@ -1,9 +1,9 @@
 #!/bin/sh
-# Remove orc from ~/.orc/bin (or $INSTALL_DIR) and its PATH line.
+# Remove orc from ~/.orc/bin and its PATH line.
 set -e
 
 TOOL="orc"
-BIN_DIR="${INSTALL_DIR:-$HOME/.$TOOL/bin}"
+BIN_DIR="$HOME/.$TOOL/bin"
 
 if [ -f "$BIN_DIR/$TOOL" ]; then
   rm -f "$BIN_DIR/$TOOL"

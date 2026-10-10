@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/hvalec427/orc/master/install.sh | s
 ```
 
 It installs to `~/.orc/bin/orc` (no sudo) and adds that folder to your PATH in
-your shell config (`INSTALL_DIR=…` installs elsewhere).
+your shell config.
 
 Or the latest build from `develop` with `… | sh -s -- dev`. Update with
 `orc update` (`--stable`, `--nightly`, `--dev` to switch channels). Uninstall:
