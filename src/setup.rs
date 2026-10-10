@@ -105,6 +105,9 @@ pub fn teardown(p: &Project, session: &str, id: &str, wt: &Path) -> Vec<String> 
             problems.push(format!("metroctl down: {e}"));
         }
     }
+    // Catches a session whose metroctl died without cleaning up (e.g. its
+    // window was closed): deletes the simulator it created.
+    let _ = Command::new("metroctl").arg("gc").output();
     kill_window(session, id);
     if wt.exists() {
         if let Err(e) = run(Command::new("git").args(["-C", &p.root, "worktree", "remove", "--force"]).arg(wt)) {
