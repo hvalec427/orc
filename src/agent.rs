@@ -25,6 +25,7 @@ pub struct AgentOpts {
     pub permission_mode: Option<String>,
     pub allowed_tools: Vec<String>,
     pub model: Option<String>,
+    pub device: Option<String>, // the request's simulator, for touchctl
     pub system_prompt: String,
 }
 
@@ -53,7 +54,10 @@ impl Agent {
             cmd.args(["--resume", r]);
         }
         // touchctl (UI control) finds the session's simulator through metroctl's session file.
-        cmd.env("TOUCHCTL_DEVICE_FROM", ".metroctl/session.json");
+        match &o.device {
+            Some(d) => cmd.env("TOUCHCTL_DEVICE", d),
+            None => cmd.env("TOUCHCTL_DEVICE_FROM", ".metroctl/session.json"),
+        };
         // bash, not the user's zsh: agents write bash (zsh fails on unquoted globs like --include=*.tsx).
         cmd.env("SHELL", "/bin/bash");
         cmd.current_dir(&o.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());

@@ -21,7 +21,8 @@ pub struct Project {
     /// Shell command run in the worktree after copying (e.g. `cd ios && pod install`).
     #[serde(default)]
     pub setup: Option<String>,
-    /// metroctl command for the request's tmux window.
+    /// metroctl command for the request's tmux window; orc appends
+    /// `--port <port> --device <udid>` for the port and simulator it owns.
     #[serde(default)]
     pub metroctl: Option<String>,
     #[serde(default)]
@@ -56,8 +57,32 @@ impl Project {
         "main".into()
     }
 
-    pub fn metroctl_command(&self) -> String {
-        self.metroctl.clone().unwrap_or_else(|| "metroctl up --port auto --new-sim --prebuilt".into())
+    /// The metroctl command for a request's port and simulator. Flags that
+    /// would make metroctl pick a port or create a simulator itself (from older
+    /// configs) are dropped: orc owns those.
+    pub fn metroctl_command(&self, port: u16, udid: &str) -> String {
+        let base = self.metroctl.clone().unwrap_or_else(|| "metroctl up --prebuilt".into());
+        let mut words: Vec<&str> = base.split_whitespace().collect();
+        let mut i = 0;
+        while i < words.len() {
+            match words[i] {
+                "--new-sim" => {
+                    words.remove(i);
+                    // its optional NAME
+                    if i < words.len() && !words[i].starts_with('-') {
+                        words.remove(i);
+                    }
+                }
+                "--port" | "--device" => {
+                    words.remove(i);
+                    if i < words.len() {
+                        words.remove(i);
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        format!("{} --port {port} --device {udid}", words.join(" "))
     }
 }
 
@@ -181,6 +206,16 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metroctl_command_uses_orcs_port_and_sim() {
+        let mut p = Project::default();
+        assert_eq!(p.metroctl_command(8083, "U"), "metroctl up --prebuilt --port 8083 --device U");
+        p.metroctl = Some("metroctl up --port auto --new-sim --prebuilt".into());
+        assert_eq!(p.metroctl_command(8083, "U"), "metroctl up --prebuilt --port 8083 --device U");
+        p.metroctl = Some("metroctl up --new-sim foo --install".into());
+        assert_eq!(p.metroctl_command(8090, "X"), "metroctl up --install --port 8090 --device X");
+    }
 
     #[test]
     fn slugs() {

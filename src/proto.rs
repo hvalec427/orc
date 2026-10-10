@@ -40,7 +40,8 @@ pub struct Request {
     pub session_id: Option<String>,
     pub status: Status,
     pub created: u64,
-    /// Metro port / simulator, once metroctl wrote its session file.
+    /// The Metro port and simulator orc picked/created for this request. orc
+    /// owns them: teardown deletes the simulator by this udid.
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]

@@ -257,7 +257,23 @@ fn prepare(st: &Shared, p: &Project, session: &str, id: &str, prompt: &str) -> R
         setup::run_setup(cmd, &wt)?;
         log("setup done".into());
     }
-    let mc = p.metroctl_command();
+    // orc owns the port and the simulator; metroctl just uses them.
+    let port = {
+        let s = st.lock().unwrap();
+        let taken: Vec<u16> = s.requests.iter().filter(|r| r.id != id && r.status != Status::Stopped).filter_map(|r| r.port).collect();
+        setup::free_port(&taken)?
+    };
+    log(format!("creating simulator orc-{id} (the first one also builds a template, a few minutes)…"));
+    let udid = setup::create_simulator(id)?;
+    {
+        let mut s = st.lock().unwrap();
+        if let Some(r) = s.req(id) {
+            (r.port, r.udid) = (Some(port), Some(udid.clone()));
+        }
+        s.save_and_broadcast();
+    }
+    log(format!("simulator orc-{id} ({udid}), Metro port {port}"));
+    let mc = p.metroctl_command(port, &udid);
     setup::open_window(session, id, &wt, &mc)?;
     log(format!("tmux window {session}:{id} running `{mc}`"));
     start_agent(st, id, Some(prompt))?;
@@ -317,6 +333,7 @@ fn start_agent(st: &Shared, id: &str, first: Option<&str>) -> Result<()> {
             t
         },
         model: p.model.clone(),
+        device: req.udid.clone(),
         system_prompt: system_prompt(&req),
     };
     let (st2, rid) = (st.clone(), id.to_string());
@@ -391,7 +408,7 @@ fn send(st: &Shared, id: &str, text: &str) -> Result<()> {
 }
 
 fn teardown(st: &Shared, id: &str, delete_branch: bool) -> Result<()> {
-    let (p, session, wt, branch) = {
+    let (p, session, wt, branch, udid) = {
         let mut s = st.lock().unwrap();
         let r = s.req(id).cloned().ok_or_else(|| anyhow!("no request {id}"))?;
         s.agents.remove(id);
@@ -403,11 +420,11 @@ fn teardown(st: &Shared, id: &str, delete_branch: bool) -> Result<()> {
             }
         }
         s.system(id, "tearing down…");
-        (s.cfg.project(&r.project)?.clone(), s.cfg.tmux_session(), PathBuf::from(&r.worktree), r.branch)
+        (s.cfg.project(&r.project)?.clone(), s.cfg.tmux_session(), PathBuf::from(&r.worktree), r.branch, r.udid)
     };
     let (st2, id) = (st.clone(), id.to_string());
     std::thread::spawn(move || {
-        let problems = setup::teardown(&p, &session, &id, &wt);
+        let problems = setup::teardown(&p, &session, &id, &wt, udid.as_deref());
         // A branch without commits of its own has nothing to keep.
         let own = std::process::Command::new("git")
             .args(["-C", &p.root, "rev-list", "--count", &format!("{}..{branch}", p.base_branch())])
@@ -464,7 +481,7 @@ fn finish(st: &Shared, id: &str, how: crate::proto::Finish) -> Result<()> {
                 Ok(summary) => {
                     log(summary);
                     st2.lock().unwrap().agents.remove(&id);
-                    let problems = setup::teardown(&p, &session, &id, Path::new(&r.worktree));
+                    let problems = setup::teardown(&p, &session, &id, Path::new(&r.worktree), r.udid.as_deref());
                     let deleted = std::process::Command::new("git").args(["-C", &p.root, "branch", "-D", &r.branch]).output().is_ok_and(|o| o.status.success());
                     let mut s = st2.lock().unwrap();
                     if !problems.is_empty() {
@@ -519,11 +536,12 @@ fn watch_metroctl(st: Shared) {
         let found: Vec<(String, Option<(Option<u16>, Option<String>, Option<String>)>)> = wts.into_iter().map(|(id, wt)| (id, setup::metro_session(Path::new(&wt)))).collect();
         let mut s = st.lock().unwrap();
         let mut changed = false;
+        // Only the app status: the port and simulator are orc's own records.
         for (id, ms) in found {
-            let (port, udid, app) = ms.unwrap_or((None, None, None));
+            let app = ms.and_then(|m| m.2);
             if let Some(r) = s.req(&id) {
-                if r.port != port || r.udid != udid || r.app != app {
-                    (r.port, r.udid, r.app) = (port, udid, app);
+                if r.app != app {
+                    r.app = app;
                     changed = true;
                 }
             }

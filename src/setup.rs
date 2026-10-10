@@ -96,19 +96,44 @@ pub fn kill_window(session: &str, id: &str) {
     let _ = Command::new("tmux").args(["kill-window", "-t", &format!("{session}:{id}")]).output();
 }
 
-/// Stop metroctl (deleting the simulator it created), close the window and
-/// remove the worktree. The branch is kept.
-pub fn teardown(p: &Project, session: &str, id: &str, wt: &Path) -> Vec<String> {
+/// A Metro port for a new request: from 8082 (8081 is the main checkout's),
+/// skipping `taken` (other requests') and anything listening.
+pub fn free_port(taken: &[u16]) -> Result<u16> {
+    (8082..8200)
+        .find(|p| !taken.contains(p) && std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], *p).into(), std::time::Duration::from_millis(150)).is_err())
+        .ok_or_else(|| anyhow::anyhow!("no free port in 8082–8199"))
+}
+
+/// A simulator for request `id`, cloned by metroctl from its settled template.
+/// orc owns it (and deletes it on teardown). Returns its udid.
+pub fn create_simulator(id: &str) -> Result<String> {
+    let out = Command::new("metroctl").args(["sim", "new", "--name", &format!("orc-{id}")]).output().context("running metroctl sim new")?;
+    let udid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || udid.is_empty() {
+        bail!("creating the simulator: {}", tail(&String::from_utf8_lossy(&out.stderr), 10));
+    }
+    Ok(udid)
+}
+
+pub fn delete_simulator(udid: &str) -> Result<()> {
+    let _ = Command::new("xcrun").args(["simctl", "shutdown", udid]).output();
+    run(Command::new("xcrun").args(["simctl", "delete", udid])).map(|_| ())
+}
+
+/// Stop metroctl, close the window, delete the request's simulator (by the
+/// udid orc recorded, whatever state metroctl is in) and remove the worktree.
+pub fn teardown(p: &Project, session: &str, id: &str, wt: &Path, udid: Option<&str>) -> Vec<String> {
     let mut problems = Vec::new();
     if wt.join(".metroctl/session.json").exists() {
-        if let Err(e) = run(Command::new("metroctl").arg("down").current_dir(wt)) {
-            problems.push(format!("metroctl down: {e}"));
+        // Just stops it: the simulator is orc's, metroctl didn't create it.
+        let _ = Command::new("metroctl").args(["down", "--keep-sim"]).current_dir(wt).output();
+    }
+    kill_window(session, id);
+    if let Some(u) = udid {
+        if let Err(e) = delete_simulator(u) {
+            problems.push(format!("deleting simulator {u}: {e}"));
         }
     }
-    // Catches a session whose metroctl died without cleaning up (e.g. its
-    // window was closed): deletes the simulator it created.
-    let _ = Command::new("metroctl").arg("gc").output();
-    kill_window(session, id);
     if wt.exists() {
         if let Err(e) = run(Command::new("git").args(["-C", &p.root, "worktree", "remove", "--force"]).arg(wt)) {
             problems.push(format!("git worktree remove: {e}"));

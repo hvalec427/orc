@@ -43,7 +43,11 @@ Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.
 - New request: `git worktree add` a branch `orc/<id>`, from the project's base
   branch (`base`, default `develop`), in `<root>-worktrees/orc-<id>`; clone
   the `copy` paths from the main checkout (APFS clones, so it's instant), run
-  `setup`, open the metroctl window, start the agent with your prompt.
+  `setup`, pick a Metro port and create a simulator (`orc-<id>`, cloned by
+  `metroctl sim new`), open the metroctl window on them (`metroctl` +
+  `--port <port> --device <udid>`), start the agent with your prompt.
+- orc owns each request's branch, worktree, port and simulator, and teardown
+  removes them whatever state metroctl is in.
 - Tool permission prompts show up in the conversation; answer with `y`/`d`.
 - State lives in `~/.config/orc/` (`ORC_HOME` overrides it).
 
@@ -59,7 +63,7 @@ Needs `claude` (logged in), `metroctl`, `tmux` and `git` on PATH. macOS only.
     "worktrees": "/Users/me/dev/app-worktrees",
     "copy": ["node_modules", "ios/Pods", "ios/build", ".env", "ios/.xcode.env.local"],
     "setup": "cd ios && pod install",
-    "metroctl": "metroctl up --port auto --new-sim --prebuilt",
+    "metroctl": "metroctl up --prebuilt",
     "permissionMode": "acceptEdits",
     "allowedTools": ["mcp__metroctl__*", "Bash(yarn *)", "Bash(git *)"],
     "model": "opus"
