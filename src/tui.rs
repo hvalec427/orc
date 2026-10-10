@@ -76,7 +76,10 @@ pub fn run() -> Result<()> {
     });
     let mut app = App { requests: Vec::new(), sel: 0, convos: HashMap::new(), partial: HashMap::new(), scroll: 0, mode: Mode::Normal, flash: None, rx, session, quit: false };
     let mut term = ratatui::init();
+    // A paste arrives as one event, so its newlines don't act as Enter.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let res = app.main_loop(&mut term);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     res
 }
@@ -93,10 +96,10 @@ impl App {
             }
             term.draw(|f| render(self, f))?;
             if event::poll(Duration::from_millis(80))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
-                        self.on_key(k);
-                    }
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
+                    Event::Paste(text) => self.on_paste(&text),
+                    _ => {}
                 }
             }
             if self.quit {
@@ -193,6 +196,23 @@ impl App {
         state.into_iter().find(|(_, s)| *s == PermState::Pending).map(|(p, _)| p)
     }
 
+    /// Pasted text goes into whatever is being typed, newlines included.
+    fn on_paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let has_request = self.selected().is_some();
+        match &mut self.mode {
+            Mode::Input(buf) => buf.push_str(&text),
+            Mode::New(f) => match f.field {
+                1 => f.title.push_str(text.lines().next().unwrap_or("").trim()), // titles are one line
+                2 => f.prompt.push_str(&text),
+                _ => {}
+            },
+            // Pasting while nothing is focused starts a message with it.
+            Mode::Normal if has_request => self.mode = Mode::Input(text),
+            _ => {}
+        }
+    }
+
     fn on_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match &mut self.mode {
@@ -225,6 +245,7 @@ impl App {
                     KeyCode::Left if f.field == 0 => f.project = (f.project + f.projects.len().max(1) - 1) % f.projects.len().max(1),
                     KeyCode::Right if f.field == 0 => f.project = (f.project + 1) % f.projects.len().max(1),
                     KeyCode::Enter if f.field < 2 => f.field += 1,
+                    KeyCode::Enter if f.field == 2 && (k.modifiers.contains(KeyModifiers::ALT) || k.modifiers.contains(KeyModifiers::SHIFT)) => f.prompt.push('\n'),
                     KeyCode::Enter => {
                         let (project, title, prompt) = (f.projects.get(f.project).cloned(), f.title.trim().to_string(), f.prompt.trim().to_string());
                         match project {
@@ -556,7 +577,7 @@ fn render_new(form: &NewForm, f: &mut Frame) {
         Line::raw(""),
         field(2, "prompt", prompt),
         Line::raw(""),
-        Line::styled("  ⇥ next field · ←/→ project · ⏎ start · esc cancel", Style::default().fg(Color::DarkGray)),
+        Line::styled("  ⇥ next field · ←/→ project · alt-⏎ newline · paste ok · ⏎ start · esc cancel", Style::default().fg(Color::DarkGray)),
     ];
     let p = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(p.block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)).title(" New request ")), r);

@@ -63,6 +63,16 @@ impl State {
 }
 
 pub fn run() -> Result<()> {
+    // The tools' install dirs, whatever shell started orcd: agents (metroctl
+    // MCP, touchctl), setup and teardown all run them by name.
+    if let Ok(home) = std::env::var("HOME") {
+        let mut dirs: Vec<std::path::PathBuf> = ["metroctl", "touchctl", "orc"].iter().map(|t| Path::new(&home).join(format!(".{t}/bin"))).collect();
+        dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        dirs.dedup();
+        if let Ok(path) = std::env::join_paths(dirs) {
+            std::env::set_var("PATH", path);
+        }
+    }
     std::fs::create_dir_all(config::dir())?;
     let path = config::socket_path();
     if UnixStream::connect(&path).is_ok() {
@@ -257,11 +267,18 @@ fn prepare(st: &Shared, p: &Project, session: &str, id: &str, prompt: &str) -> R
         setup::run_setup(cmd, &wt)?;
         log("setup done".into());
     }
-    // orc owns the port and the simulator; metroctl just uses them.
+    // orc owns the port and the simulator; metroctl just uses them. The port
+    // is recorded right away (under the lock), so a request started meanwhile
+    // can't pick the same one while this simulator is being created.
     let port = {
-        let s = st.lock().unwrap();
+        let mut s = st.lock().unwrap();
         let taken: Vec<u16> = s.requests.iter().filter(|r| r.id != id && r.status != Status::Stopped).filter_map(|r| r.port).collect();
-        setup::free_port(&taken)?
+        let port = setup::free_port(&taken)?;
+        if let Some(r) = s.req(id) {
+            r.port = Some(port);
+        }
+        s.save_and_broadcast();
+        port
     };
     log(format!("creating simulator orc-{id} (the first one also builds a template, a few minutes)…"));
     let udid = setup::create_simulator(id)?;
